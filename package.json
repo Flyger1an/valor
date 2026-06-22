@@ -1,0 +1,38 @@
+{
+  "name": "valor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private local-first crypto relative-value research, risk intelligence, backtesting, and paper trading engine.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "worker": "tsx scripts/worker.ts",
+    "scheduler": "node scripts/scheduler.mjs",
+    "verify:dashboard": "node scripts/verify-dashboard.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "better-sqlite3": "12.11.1",
+    "drizzle-orm": "0.45.2",
+    "lucide-react": "1.21.0",
+    "next": "16.2.9",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "26.0.0",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.9",
+    "tsx": "4.22.4",
+    "typescript": "6.0.3",
+    "vitest": "4.1.9"
+  },
+  "overrides": {
+    "postcss": ">=8.5.10"
+  }
+}
