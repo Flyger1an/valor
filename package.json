@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "worker": "tsx scripts/worker.ts",
-    "scheduler": "node scripts/scheduler.mjs",
+    "scheduler": "tsx scripts/scheduler.ts",
     "verify:dashboard": "node scripts/verify-dashboard.mjs",
     "test": "vitest run",
     "test:watch": "vitest"

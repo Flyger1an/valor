@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { closeDb } from "@/db/client";
+import { GET as statusGet } from "@/app/api/ops/status/route";
 import { POST as refreshPost } from "@/app/api/ops/refresh/route";
 import { POST as killSwitchPost } from "@/app/api/ops/kill-switch/route";
 import { LocalStateStore } from "@/lib/state/local-store";
@@ -19,6 +20,17 @@ afterEach(() => {
 });
 
 describe("ops api routes", () => {
+  it("status route returns live summary", async () => {
+    await refreshPost();
+    const response = await statusGet();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.signalCount).toBeGreaterThan(0);
+    expect(body.riskState).toBeTruthy();
+  });
+
   it("refresh route persists market state", async () => {
     const response = await refreshPost();
     const body = await response.json();

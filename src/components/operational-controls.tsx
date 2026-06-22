@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { AlertOctagon, BellRing, LineChart, RefreshCcw, Send } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 type ActionKey = "refresh" | "backtest" | "paper" | "alert" | "kill";
@@ -49,6 +50,7 @@ const ACTIONS: Array<{
 ];
 
 export function OperationalControls() {
+  const router = useRouter();
   const [busy, setBusy] = useState<ActionKey | null>(null);
   const [result, setResult] = useState<string>("No action run in this browser session.");
 
@@ -69,7 +71,7 @@ export function OperationalControls() {
       });
       const json = await response.json();
       setResult(JSON.stringify(json, null, 2));
-      window.setTimeout(() => window.location.reload(), 500);
+      router.refresh();
     } catch (error) {
       setResult(error instanceof Error ? error.message : "Unknown action error");
     } finally {
