@@ -11,7 +11,8 @@ import {
   evaluateLiveTradeRequest,
   readLiveTradingSettings,
 } from "@/lib/live/live-trading";
-import { llmConfigured, readLlmSettings } from "@/lib/llm/settings";
+import { isDataStale, formatDataAge, dataAgeMs } from "@/lib/data/staleness";
+import { buildLlmRuntimeStatus } from "@/lib/llm/status";
 import { buildDataProvenance } from "@/lib/data/provenance";
 import { computeFromData, refreshAndPersistMarketState } from "@/lib/ops/recompute";
 import { emptyPaperPortfolio, LocalStateStore } from "@/lib/state/local-store";
@@ -21,7 +22,7 @@ export async function buildDashboardState() {
   const store = new LocalStateStore();
   let persisted = store.read();
 
-  if (!persisted.data) {
+  if (!persisted.data || isDataStale(persisted.data.generatedAt)) {
     await refreshAndPersistMarketState();
     persisted = store.read();
   }
@@ -42,7 +43,7 @@ export async function buildDashboardState() {
     killSwitchActive:
       envLiveSettings.killSwitchActive || Boolean(persisted.killSwitch?.active),
   };
-  const llmSettings = readLlmSettings();
+  const llmStatus = buildLlmRuntimeStatus();
   const alertEvents =
     persisted.alertEvents.length > 0
       ? persisted.alertEvents
@@ -105,11 +106,12 @@ export async function buildDashboardState() {
     dataProvenance,
     liveSettings,
     liveEvaluation,
-    llmStatus: {
-      configured: llmConfigured(llmSettings),
-      enabled: llmSettings.enabled,
-      model: llmSettings.model,
-      baseUrl: llmSettings.baseUrl.replace(/\/\/.*@/, "//[REDACTED]@"),
+    llmStatus,
+    dataFreshness: {
+      generatedAt: data.generatedAt,
+      ageMs: dataAgeMs(data.generatedAt),
+      ageLabel: formatDataAge(data.generatedAt),
+      stale: isDataStale(data.generatedAt),
     },
     alertEvents,
     alertRoutingPreview,

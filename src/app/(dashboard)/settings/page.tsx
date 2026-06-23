@@ -19,6 +19,7 @@ export default async function SettingsPage() {
         liveReasons={state.liveEvaluation ? state.liveEvaluation.reasons : []}
         connector={state.connector.label}
         llm={state.llmStatus}
+        dataFreshness={state.dataFreshness}
         killSwitch={state.killSwitch}
       />
     </section>

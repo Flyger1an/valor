@@ -10,6 +10,7 @@ export async function GET() {
     ok: true,
     generatedAt: state.data.generatedAt,
     lastRefreshAt: state.data.generatedAt,
+    dataAgeLabel: state.dataFreshness.ageLabel,
     connector: state.connector.label,
     riskState: state.risk.state,
     riskScore: state.risk.score,
@@ -19,6 +20,9 @@ export async function GET() {
     alertCount: state.risk.activeAlerts.length,
     paperEquityUsd: state.paper.equityUsd,
     killSwitchActive: Boolean(state.killSwitch?.active),
+    liveMarketCount: state.dataProvenance.liveMarketCount,
+    fixtureMarketCount: state.dataProvenance.fixtureMarketCount,
+    llmMode: state.llmStatus.mode,
     timestamp: new Date().toISOString(),
   });
 }

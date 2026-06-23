@@ -11,6 +11,10 @@ interface StatusPayload {
   riskScore: number;
   signalCount: number;
   paperEligible: number;
+  dataAgeLabel?: string;
+  liveMarketCount?: number;
+  fixtureMarketCount?: number;
+  llmMode?: string;
 }
 
 export function LivePulse() {
@@ -68,7 +72,9 @@ export function LivePulse() {
         </span>
         {status ? (
           <span className="live-pulse-time">
-            {status.connector} · {formatTime(status.generatedAt)}
+            {status.connector} · {status.dataAgeLabel ?? formatTime(status.generatedAt)} ·{" "}
+            {status.liveMarketCount ?? 0} live / {status.fixtureMarketCount ?? 0} fixture · LLM{" "}
+            {status.llmMode ?? "offline"}
           </span>
         ) : null}
         {error ? <span className="live-pulse-error">{error}</span> : null}

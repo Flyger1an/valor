@@ -13,10 +13,7 @@ export default async function AnalystPage() {
         title="Analyst"
         subtitle="RAG, structured extraction, and explanation only; deterministic controls remain authoritative"
       />
-      <AnalystCopilot
-        configured={state.llmStatus.configured}
-        model={state.llmStatus.model}
-      />
+      <AnalystCopilot llm={state.llmStatus} />
     </section>
   );
 }

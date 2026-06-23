@@ -2,6 +2,7 @@
 
 import { Bot, SendHorizontal } from "lucide-react";
 import { useState } from "react";
+import type { LlmRuntimeStatus } from "@/lib/llm/status";
 
 interface AnalystResponse {
   mode: "offline" | "llm";
@@ -11,10 +12,7 @@ interface AnalystResponse {
   model?: string;
 }
 
-export function AnalystCopilot(props: {
-  configured: boolean;
-  model: string;
-}) {
+export function AnalystCopilot(props: { llm: LlmRuntimeStatus }) {
   const [question, setQuestion] = useState(
     "What changed in risk state and which signals are paper-review candidates?",
   );
@@ -43,11 +41,12 @@ export function AnalystCopilot(props: {
           Analyst Copilot
         </h3>
         <div className="copilot-status">
-          <span className={props.configured ? "pill ok" : "pill muted-pill"}>
-            {props.configured ? "LLM plugged" : "Offline mode"}
+          <span className={props.llm.configured ? "pill ok" : "pill muted-pill"}>
+            {props.llm.configured ? "Live LLM" : "Offline RAG only"}
           </span>
-          <span className="pill">{props.model}</span>
+          {props.llm.model ? <span className="pill">{props.llm.model}</span> : null}
         </div>
+        <p className="setup-hint">{props.llm.setupHint}</p>
         <textarea
           className="copilot-input"
           value={question}
@@ -56,13 +55,17 @@ export function AnalystCopilot(props: {
         />
         <button className="copilot-button" type="button" onClick={ask} disabled={loading}>
           <SendHorizontal size={15} aria-hidden="true" />
-          {loading ? "Thinking" : "Ask"}
+          {loading ? "Thinking" : props.llm.configured ? "Ask LLM" : "Ask offline analyst"}
         </button>
       </div>
       <div className="panel copilot-output">
         <h3>Answer</h3>
         {response ? (
           <>
+            <p className="copilot-mode">
+              Response mode: <strong>{response.mode}</strong>
+              {response.model ? ` · ${response.model}` : ""}
+            </p>
             <p className="copilot-answer">{response.answer}</p>
             <p className="guardrail-copy">{response.guardrail}</p>
             <div className="citation-list">
@@ -75,8 +78,8 @@ export function AnalystCopilot(props: {
           </>
         ) : (
           <p className="muted">
-            Ask questions over current signals, risk alerts, backtest assumptions,
-            and paper-trading state.
+            Offline mode still searches local signals, risk, backtests, and paper
+            state. Live mode requires LLM_API_ENABLED=true and LLM_API_KEY.
           </p>
         )}
       </div>

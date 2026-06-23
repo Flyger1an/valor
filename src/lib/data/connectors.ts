@@ -21,7 +21,35 @@ export class SampleMarketDataConnector implements MarketDataConnector {
   needsApiKey = false;
 
   async fetchLatest(): Promise<MarketDataBundle> {
-    return sampleMarketData;
+    const generatedAt = new Date().toISOString();
+    return {
+      ...sampleMarketData,
+      generatedAt,
+      markets: sampleMarketData.markets.map((market) => ({
+        ...market,
+        timestamp: generatedAt,
+      })),
+      stablecoins: sampleMarketData.stablecoins.map((row) => ({
+        ...row,
+        timestamp: generatedAt,
+      })),
+      exchangeHealth: sampleMarketData.exchangeHealth.map((row) => ({
+        ...row,
+        updatedAt: generatedAt,
+      })),
+      chainFees: sampleMarketData.chainFees.map((row) => ({
+        ...row,
+        timestamp: generatedAt,
+      })),
+      advisories: sampleMarketData.advisories.map((row) => ({
+        ...row,
+        publishedAt: generatedAt,
+      })),
+      etfProxies: sampleMarketData.etfProxies.map((row) => ({
+        ...row,
+        timestamp: generatedAt,
+      })),
+    };
   }
 }
 

@@ -1,6 +1,7 @@
 import { BookOpenCheck, Bot, KeyRound, LockKeyhole } from "lucide-react";
 import { LimitRow, StatusBoolean } from "@/components/dashboard/ui";
 import type { DashboardState } from "@/lib/dashboard/get-dashboard-state";
+import type { LlmRuntimeStatus } from "@/lib/llm/status";
 import type { LiveTradingSettings, PaperPortfolio } from "@/lib/domain/types";
 import { money } from "@/lib/dashboard/format";
 
@@ -9,7 +10,8 @@ export function SettingsPanel(props: {
   paper: PaperPortfolio;
   liveReasons: string[];
   connector: string;
-  llm: DashboardState["llmStatus"];
+  llm: LlmRuntimeStatus;
+  dataFreshness: DashboardState["dataFreshness"];
   killSwitch: DashboardState["killSwitch"];
 }) {
   const apiStatuses = [
@@ -60,18 +62,32 @@ export function SettingsPanel(props: {
           <LimitRow label="Max Leverage" value={`${props.live.maxLeverage}x`} />
         </div>
       </div>
+      <div className="panel">
+        <h3>
+          <Bot size={15} aria-hidden="true" />
+          Data Freshness
+        </h3>
+        <div className="status-list">
+          <LimitRow label="Generated" value={props.dataFreshness.generatedAt} />
+          <LimitRow label="Age" value={props.dataFreshness.ageLabel} />
+          <StatusBoolean label="Stale" value={props.dataFreshness.stale} safeWhenFalse />
+        </div>
+      </div>
       <div className="panel full-width">
         <h3>
           <Bot size={15} aria-hidden="true" />
           LLM API Plug
         </h3>
         <div className="status-list">
-          <LimitRow label="Env Flag" value="LLM_API_ENABLED" />
-          <LimitRow label="Configured" value={props.llm.configured ? "Yes" : "No"} />
-          <LimitRow label="Model" value={props.llm.model} />
+          <StatusBoolean label="LLM_API_ENABLED" value={props.llm.enabled} />
+          <StatusBoolean label="API key present" value={props.llm.hasApiKey} />
+          <StatusBoolean label="Live calls configured" value={props.llm.configured} />
+          <LimitRow label="Runtime mode" value={props.llm.mode} />
+          <LimitRow label="Model" value={props.llm.model ?? "not configured"} />
           <LimitRow label="Base URL" value={props.llm.baseUrl} />
           <LimitRow label="Authority" value="RAG/extraction/explanation only" />
         </div>
+        <p className="setup-hint">{props.llm.setupHint}</p>
       </div>
       <div className="panel full-width">
         <h3>

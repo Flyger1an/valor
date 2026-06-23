@@ -1064,6 +1064,14 @@ h3 {
   margin-bottom: 16px;
 }
 
+.setup-hint,
+.copilot-mode {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 @media (max-width: 980px) {
   .intel-grid,
   .provenance-strip {
