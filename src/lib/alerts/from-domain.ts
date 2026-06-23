@@ -51,6 +51,44 @@ export function signalToTradeableAlert(signal: RelativeValueSignal): AlertEvent 
   };
 }
 
+export function riskTransitionAlert(input: {
+  previousState: MarketRiskState["state"];
+  next: MarketRiskState;
+}): AlertEvent | null {
+  if (input.previousState === input.next.state) return null;
+
+  const worsened =
+    stateRank(input.next.state) > stateRank(input.previousState);
+  const severity: AlertEvent["severity"] =
+    input.next.state === "Black"
+      ? "BLACK"
+      : input.next.state === "Red"
+        ? "CRITICAL"
+        : worsened
+          ? "WATCH"
+          : "INFO";
+
+  return {
+    id: `alert:risk-transition:${input.next.updatedAt}`,
+    severity,
+    title: `Risk state moved ${input.previousState} → ${input.next.state}`,
+    message: input.next.explanation,
+    source: "risk-state-engine",
+    scope: {},
+    createdAt: input.next.updatedAt,
+    fingerprint: `risk-transition:${input.previousState}:${input.next.state}`,
+    tradingImpact:
+      severity === "BLACK" || severity === "CRITICAL"
+        ? "Tighten exposure and review restrictions immediately."
+        : "Review restrictions and paper book posture.",
+    metadata: {
+      previousState: input.previousState,
+      nextState: input.next.state,
+      riskScore: input.next.score,
+    },
+  };
+}
+
 export function dailyDigestAlert(input: {
   risk: MarketRiskState;
   paper: PaperPortfolio;
@@ -77,6 +115,13 @@ export function dailyDigestAlert(input: {
       paperDailyPnlUsd: input.paper.dailyPnlUsd,
     },
   };
+}
+
+function stateRank(state: MarketRiskState["state"]): number {
+  if (state === "Green") return 0;
+  if (state === "Yellow") return 1;
+  if (state === "Red") return 2;
+  return 3;
 }
 
 function mapRiskAlertSeverity(

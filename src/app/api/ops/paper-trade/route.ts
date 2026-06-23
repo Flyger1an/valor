@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { refreshAndPersistMarketState } from "@/lib/ops/recompute";
-import { simulatePaperPortfolio } from "@/lib/paper/paper-broker";
+import { advancePaperBook } from "@/lib/paper/paper-book";
+import { computeFromData } from "@/lib/ops/recompute";
 import { LocalStateStore } from "@/lib/state/local-store";
 
 export const dynamic = "force-dynamic";
@@ -8,27 +8,41 @@ export const dynamic = "force-dynamic";
 export async function POST() {
   const store = new LocalStateStore();
   let state = store.read();
-  if (!state.signals || !state.risk) {
-    await refreshAndPersistMarketState();
-    state = store.read();
+  if (!state.signals || !state.risk || !state.data) {
+    return NextResponse.json(
+      { ok: false, error: "Market state must be refreshed before paper trading." },
+      { status: 400 },
+    );
   }
 
-  const paper = simulatePaperPortfolio({
-    signals: state.signals!,
-    risk: state.risk!,
+  const computed = computeFromData(state.data, state);
+  const paperBook = advancePaperBook({
+    previous: state.paper,
+    signals: state.signals,
+    risk: state.risk,
+    timestamp: new Date().toISOString(),
+    equityHistory: state.equityHistory,
   });
-  store.update((current) => ({ ...current, paper }));
+
+  store.update((current) => ({
+    ...current,
+    paper: paperBook.portfolio,
+    equityHistory: paperBook.equityHistory,
+    signalJournal: computed.signalJournal.entries,
+  }));
+
   store.appendAction({
     action: "paper.trade",
     status: "ok",
-    message: `Opened ${paper.trades.length} simulated paper trade(s); ${paper.rejectedSignals.length} rejected.`,
+    message: `Paper book advanced: ${paperBook.opened} opened, ${paperBook.closed} closed, ${paperBook.marked} marked.`,
   });
 
   return NextResponse.json({
     ok: true,
-    trades: paper.trades.length,
-    positions: paper.positions.length,
-    rejected: paper.rejectedSignals.length,
-    equityUsd: paper.equityUsd,
+    opened: paperBook.opened,
+    closed: paperBook.closed,
+    marked: paperBook.marked,
+    positions: paperBook.portfolio.positions.length,
+    equityUsd: paperBook.portfolio.equityUsd,
   });
 }

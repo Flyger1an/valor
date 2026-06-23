@@ -12,6 +12,7 @@ import {
   readLiveTradingSettings,
 } from "@/lib/live/live-trading";
 import { llmConfigured, readLlmSettings } from "@/lib/llm/settings";
+import { buildDataProvenance } from "@/lib/data/provenance";
 import { computeFromData, refreshAndPersistMarketState } from "@/lib/ops/recompute";
 import { emptyPaperPortfolio, LocalStateStore } from "@/lib/state/local-store";
 
@@ -26,11 +27,15 @@ export async function buildDashboardState() {
   }
 
   const data = persisted.data!;
-  const computed = computeFromData(data);
+  const computed = computeFromData(data, persisted);
   const signals = persisted.signals ?? computed.signals;
   const risk = persisted.risk ?? computed.risk;
   const backtest = persisted.backtest ?? computed.backtest;
-  const paper = persisted.paper ?? emptyPaperPortfolio();
+  const paper = persisted.paper ?? computed.paper ?? emptyPaperPortfolio();
+  const equityHistory = persisted.equityHistory ?? [];
+  const signalJournal = persisted.signalJournal ?? [];
+  const dataProvenance =
+    persisted.dataProvenance ?? buildDataProvenance(data, connector);
   const envLiveSettings = readLiveTradingSettings();
   const liveSettings = {
     ...envLiveSettings,
@@ -95,6 +100,9 @@ export async function buildDashboardState() {
     risk,
     backtest,
     paper,
+    equityHistory,
+    signalJournal,
+    dataProvenance,
     liveSettings,
     liveEvaluation,
     llmStatus: {

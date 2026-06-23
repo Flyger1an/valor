@@ -20,7 +20,10 @@ import type {
   PaperPortfolio,
   RelativeValueSignal,
 } from "@/lib/domain/types";
+import type { DataProvenance } from "@/lib/data/provenance";
 import type { KillSwitchState } from "@/lib/kill-switch/kill-switch";
+import type { PaperEquityPoint } from "@/lib/paper/paper-book";
+import type { SignalJournalEntry } from "@/lib/signals/signal-journal";
 import type { ValorLocalState } from "@/lib/state/local-store";
 
 type BundleExtras = Omit<MarketDataBundle, "generatedAt" | "markets">;
@@ -92,6 +95,9 @@ export function loadValorStateFromSqlite(): ValorLocalState | null {
     risk,
     backtest: backtestRow ? mapBacktestRow(backtestRow) : undefined,
     paper: readAppState<PaperPortfolio>(db, "paper_portfolio"),
+    equityHistory: readAppState<PaperEquityPoint[]>(db, "equity_history") ?? [],
+    signalJournal: readAppState<SignalJournalEntry[]>(db, "signal_journal") ?? [],
+    dataProvenance: readAppState<DataProvenance>(db, "data_provenance"),
     alertEvents: db
       .select()
       .from(alertEvents)
@@ -326,6 +332,9 @@ export function persistValorStateToSqlite(state: ValorLocalState) {
     }
 
     writeAppState(tx, "paper_portfolio", state.paper ?? null, now);
+    writeAppState(tx, "equity_history", state.equityHistory ?? [], now);
+    writeAppState(tx, "signal_journal", state.signalJournal ?? [], now);
+    writeAppState(tx, "data_provenance", state.dataProvenance ?? null, now);
     writeAppState(tx, "alert_router_state", state.alertRouterState, now);
     writeAppState(tx, "audit_events", state.auditEvents, now);
     writeAppState(tx, "kill_switch", state.killSwitch ?? null, now);

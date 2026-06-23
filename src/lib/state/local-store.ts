@@ -14,6 +14,9 @@ import type {
   RelativeValueSignal,
 } from "@/lib/domain/types";
 import type { KillSwitchState } from "@/lib/kill-switch/kill-switch";
+import type { PaperEquityPoint } from "@/lib/paper/paper-book";
+import type { SignalJournalEntry } from "@/lib/signals/signal-journal";
+import type { DataProvenance } from "@/lib/data/provenance";
 import {
   loadValorStateFromSqlite,
   persistValorStateToSqlite,
@@ -26,6 +29,9 @@ export interface ValorLocalState {
   risk?: MarketRiskState;
   backtest?: BacktestReport;
   paper?: PaperPortfolio;
+  equityHistory?: PaperEquityPoint[];
+  signalJournal?: SignalJournalEntry[];
+  dataProvenance?: DataProvenance;
   alertEvents: AlertEvent[];
   alertDeliveries: AlertDelivery[];
   alertRouterState: AlertRouterState;

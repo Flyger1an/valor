@@ -1,9 +1,11 @@
 import {
   dailyDigestAlert,
   riskAlertToAlertEvent,
+  riskTransitionAlert,
   signalToTradeableAlert,
 } from "@/lib/alerts/from-domain";
 import { runBasisCarryBacktest } from "@/lib/backtest/backtester";
+import { buildDataProvenance } from "@/lib/data/provenance";
 import { getDefaultConnector } from "@/lib/data/connectors";
 import type {
   AlertEvent,
@@ -11,16 +13,19 @@ import type {
   AlertRouterState,
 } from "@/lib/alerts/types";
 import type { MarketDataBundle } from "@/lib/domain/types";
-import { simulatePaperPortfolio } from "@/lib/paper/paper-broker";
+import { advancePaperBook } from "@/lib/paper/paper-book";
 import { evaluateMarketRisk } from "@/lib/risk/risk-engine";
+import { buildSignalJournal } from "@/lib/signals/signal-journal";
 import { generateRelativeValueSignals } from "@/lib/signals/relative-value";
 import { LocalStateStore } from "@/lib/state/local-store";
 
 export async function refreshAndPersistMarketState() {
   const store = new LocalStateStore();
+  const previous = store.read();
   const connector = getDefaultConnector();
   const data = await connector.fetchLatest();
-  const computed = computeFromData(data);
+  const computed = computeFromData(data, previous);
+  const provenance = buildDataProvenance(data, connector);
 
   const next = store.update((state) => ({
     ...state,
@@ -29,34 +34,73 @@ export async function refreshAndPersistMarketState() {
     signals: computed.signals,
     risk: computed.risk,
     backtest: computed.backtest,
-    alertEvents: computed.alertEvents,
+    paper: computed.paper,
+    equityHistory: computed.equityHistory,
+    signalJournal: computed.signalJournal.entries,
+    dataProvenance: provenance,
+    alertEvents: mergeAlerts(state.alertEvents, computed.alertEvents),
   }));
 
   store.appendAction({
     action: "data.refresh",
     status: "ok",
-    message: `Refreshed ${data.markets.length} markets via ${connector.label}.`,
+    message: `Refreshed ${data.markets.length} markets via ${connector.label}; paper ${computed.paperBookSummary.opened} opened / ${computed.paperBookSummary.closed} closed; journal ${computed.signalJournal.persistedSignals} persistent signals.`,
     timestamp: data.generatedAt,
   });
 
-  return { connector, data, computed, state: next };
+  return { connector, data, computed, state: next, provenance };
 }
 
-export function computeFromData(data: MarketDataBundle) {
+export function computeFromData(
+  data: MarketDataBundle,
+  previous?: ReturnType<LocalStateStore["read"]>,
+) {
   const signals = generateRelativeValueSignals(data);
   const risk = evaluateMarketRisk(data);
   const backtest = runBasisCarryBacktest(data.backtestHistory);
-  const paperPreview = simulatePaperPortfolio({ signals, risk });
+  const paperBook = advancePaperBook({
+    previous: previous?.paper,
+    signals,
+    risk,
+    timestamp: data.generatedAt,
+    equityHistory: previous?.equityHistory,
+  });
+  const signalJournal = buildSignalJournal({
+    signals,
+    previous: previous?.signalJournal,
+    timestamp: data.generatedAt,
+  });
+  const transition = previous?.risk
+    ? riskTransitionAlert({ previousState: previous.risk.state, next: risk })
+    : null;
   const alertEvents = [
+    ...(transition ? [transition] : []),
     ...risk.activeAlerts.map(riskAlertToAlertEvent),
     ...signals
       .filter((signal) => signal.eligibleForPaperTrading)
       .slice(0, 4)
       .map(signalToTradeableAlert),
-    dailyDigestAlert({ risk, paper: paperPreview, signalCount: signals.length }),
+    dailyDigestAlert({
+      risk,
+      paper: paperBook.portfolio,
+      signalCount: signals.length,
+    }),
   ];
 
-  return { signals, risk, backtest, paperPreview, alertEvents };
+  return {
+    signals,
+    risk,
+    backtest,
+    paper: paperBook.portfolio,
+    equityHistory: paperBook.equityHistory,
+    signalJournal,
+    paperBookSummary: {
+      opened: paperBook.opened,
+      closed: paperBook.closed,
+      marked: paperBook.marked,
+    },
+    alertEvents,
+  };
 }
 
 export function buildAlertRouterConfig(now = new Date()): AlertRouterConfig {
