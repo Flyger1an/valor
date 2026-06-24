@@ -26,3 +26,6 @@ __pycache__/
 evolver/.*_state.json
 evolver/*_ledger.jsonl
 *.tmp
+
+# stray local clone — never nest the repo inside itself
+/valor/
