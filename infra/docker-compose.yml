@@ -5,7 +5,7 @@
 services:
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    ports: ["127.0.0.1:6379:6379"]   # localhost only — never expose an unauthenticated datastore
     restart: unless-stopped
 
   postgres:
@@ -14,14 +14,14 @@ services:
       POSTGRES_USER: valor
       POSTGRES_PASSWORD: valor
       POSTGRES_DB: evolver
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]   # localhost only
     volumes: ["pg:/var/lib/postgresql/data"]
     restart: unless-stopped
 
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.16.2
     command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:////mlflow/mlflow.db
-    ports: ["5001:5000"]   # 5000 is taken by macOS AirPlay Receiver
+    ports: ["127.0.0.1:5001:5000"]   # localhost only (MLflow has public-RCE history); tunnel to view
     volumes: ["mlflow:/mlflow"]
     restart: unless-stopped
 
@@ -37,7 +37,7 @@ services:
       EVOLVER_KILL: /data/kill.flag
       EVOLVER_STATE: /data/state.json
       EVOLVER_SIGNALS: /data/signals.jsonl
-    ports: ["8000:8000"]
+    ports: ["127.0.0.1:8000:8000"]   # localhost only
     volumes: ["evolver_data:/data"]
     depends_on: [redis, postgres]
     restart: unless-stopped
@@ -88,7 +88,7 @@ services:
     environment:
       EVOLVER_LEDGER: /data/ledger.jsonl
     volumes: ["evolver_data:/data"]
-    ports: ["8501:8501"]
+    ports: ["127.0.0.1:8501:8501"]   # localhost only — view via: ssh -L 8501:localhost:8501 root@droplet
     depends_on: [evolver-api]
     restart: unless-stopped
 
