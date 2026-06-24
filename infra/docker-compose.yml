@@ -129,6 +129,18 @@ services:
     volumes: ["evolver_data:/data"]
     restart: unless-stopped           # first cycle backfills OKX (~2-3min), then refreshes incrementally
 
+  signal-feed:             # LIVE RV signals -> Redis -> evolver-loop (runs the inner analyst loop for real)
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }
+    command: ["python", "scripts/signal_feed.py", "--loop", "1800"]   # emit every 30 min, 26 pairs
+    working_dir: /app/evolver
+    env_file: [../evolver/.env]
+    environment:
+      REDIS_URL: redis://redis:6379
+      EVOLVER_FEED_STATE: /data/signal_feed_state.json
+    volumes: ["evolver_data:/data"]
+    depends_on: [redis, evolver-loop]
+    restart: unless-stopped
+
 volumes:
   pg: {}
   mlflow: {}

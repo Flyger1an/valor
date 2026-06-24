@@ -35,8 +35,9 @@ from evolver.core.sim import PerpPaperSim, TAKER_FEE_BPS, SLIP_BASE_BPS  # noqa:
 from evolver.data.okx import half_life_hours, mean, okx_candles_ohlc, std  # noqa: E402
 
 CAP = DEFAULT_LIMITS.capital
-PAIRS = [("BTC", "ETH"), ("SOL", "ETH"), ("BNB", "ETH"), ("SOL", "BTC"),
-         ("AVAX", "ETH"), ("LINK", "ETH"), ("DOGE", "BTC"), ("LTC", "BTC")]
+PAIRS = ([(a, "ETH") for a in ("SOL", "BNB", "AVAX", "LINK", "DOT", "ARB", "OP", "INJ",
+                               "NEAR", "ATOM", "LTC", "ADA", "DOGE", "XRP")]
+         + [(a, "BTC") for a in ("ETH", "SOL", "BNB", "DOGE", "LTC", "XRP")])
 ASSETS = sorted({a for p in PAIRS for a in p})
 WINDOW, EXIT_Z, COOLDOWN_H = 168, 0.5, 12
 RISK_PARAMS = {"new_pos_pct": 0.08, "new_leverage": 2.0}   # analyst clamps to limits anyway

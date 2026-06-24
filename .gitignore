@@ -23,8 +23,6 @@ __pycache__/
 .pytest_cache/
 # evolver runtime artifacts — market-data caches, paper state, ledgers (NOT source; never commit)
 *.pkl
-evolver/.shadow_state.json
-evolver/.shadow_analyst_state.json
-evolver/.research_state.json
+evolver/.*_state.json
 evolver/*_ledger.jsonl
 *.tmp
