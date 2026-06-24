@@ -116,8 +116,8 @@ services:
 
   research-runner:         # autonomous gated DISCOVERY loop — PROPOSES candidates, promotes NOTHING
     build: { context: .., dockerfile: infra/Dockerfile.evolver }
-    command: ["python", "scripts/research_tick.py", "--loop", "900"]      # every 15 min (CONFIRM gate
-    working_dir: /app/evolver                                              # still requires N-cycle survival)
+    command: ["python", "scripts/research_tick.py", "--loop", "3600"]     # hourly (CONFIRM gate still
+    working_dir: /app/evolver                                              # requires N-cycle survival)
     env_file: [../evolver/.env]   # TELEGRAM_* for candidate alerts; OPENAI_* enables LLM mutation
     environment:
       EVOLVER_RESEARCH: /data/research_state.json          # shared candidate queue (bot reads it)
