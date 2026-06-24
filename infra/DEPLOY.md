@@ -32,7 +32,7 @@ The shadow runner starts papering immediately.
 | Service | Role |
 |---|---|
 | `shadow-runner` | forward PAPER of the liquidation basket on live OKX, hourly. Zero orders. |
-| `research-runner` | autonomous gated discovery, **daily** (`--loop 86400`; `3600`=hourly, safe via cross-cycle confirmation). Proposes only. |
+| `research-runner` | autonomous gated discovery, **every 15 min** (`--loop 900`; `CONFIRM` gate still requires multi-cycle survival). Proposes only. |
 | `evolver-bot` | Telegram ops + observer interface |
 | `evolver-api` / `-loop` | signal bus + inner analyst loop (optional for the trio) |
 | `dashboard` | Streamlit on :8501 |
