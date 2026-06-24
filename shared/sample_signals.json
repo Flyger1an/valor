@@ -1,0 +1,67 @@
+[
+  {
+    "signal_id": "rv_20250623_001",
+    "timestamp": "2026-06-23T11:45:00Z",
+    "type": "cointegration_spread",
+    "assets": ["ETH", "BTC"],
+    "zscore": -2.34,
+    "spread_value": 0.087,
+    "expected_convergence_hours": 4.5,
+    "risk_score": 0.42,
+    "confidence": 0.89,
+    "regime": "low_vol_mean_revert",
+    "metadata": { "vol_7d": 0.021, "funding_diff": 0.0008, "volume_ratio": 1.67 }
+  },
+  {
+    "signal_id": "rv_20250623_002",
+    "timestamp": "2026-06-23T11:47:00Z",
+    "type": "funding_arb",
+    "assets": ["SOL-PERP", "SOL-SPOT"],
+    "zscore": 1.82,
+    "spread_value": 0.0012,
+    "expected_convergence_hours": 2.0,
+    "risk_score": 0.19,
+    "confidence": 0.94,
+    "regime": "contango",
+    "metadata": { "ann_funding": 18.4, "open_interest_ratio": 2.1 }
+  },
+  {
+    "signal_id": "rv_20250623_003",
+    "timestamp": "2026-06-23T11:50:00Z",
+    "type": "basis_trade",
+    "assets": ["BNB", "BNB-USDT"],
+    "zscore": -1.05,
+    "spread_value": -0.0045,
+    "expected_convergence_hours": 12,
+    "risk_score": 0.67,
+    "confidence": 0.71,
+    "regime": "high_vol",
+    "metadata": { "basis_annualized": -7.2, "liq_depth_impact": 0.003 }
+  },
+  {
+    "signal_id": "rv_20250623_004",
+    "timestamp": "2026-06-23T11:52:00Z",
+    "type": "stat_arb_pair",
+    "assets": ["AVAX", "NEAR"],
+    "zscore": 2.67,
+    "spread_value": 0.056,
+    "expected_convergence_hours": 6.8,
+    "risk_score": 0.55,
+    "confidence": 0.82,
+    "regime": "momentum_break",
+    "metadata": { "corr_30d": 0.91, "adf_pvalue": 0.003 }
+  },
+  {
+    "signal_id": "rv_20250623_005",
+    "timestamp": "2026-06-23T11:55:00Z",
+    "type": "triangular",
+    "assets": ["BTC", "ETH", "SOL"],
+    "zscore": -0.89,
+    "spread_value": 0.0123,
+    "expected_convergence_hours": 1.2,
+    "risk_score": 0.31,
+    "confidence": 0.96,
+    "regime": "low_vol",
+    "metadata": { "deviation_bps": 47, "path": "BTC->ETH->SOL" }
+  }
+]

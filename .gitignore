@@ -13,3 +13,18 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .DS_Store
+
+# python / evolver
+__pycache__/
+*.pyc
+.venv/
+.evolver/
+*.egg-info/
+.pytest_cache/
+# evolver runtime artifacts — market-data caches, paper state, ledgers (NOT source; never commit)
+*.pkl
+evolver/.shadow_state.json
+evolver/.shadow_analyst_state.json
+evolver/.research_state.json
+evolver/*_ledger.jsonl
+*.tmp

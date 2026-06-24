@@ -82,6 +82,26 @@ async function callOpenAiCompatible(input: {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), input.settings.timeoutMs);
 
+  const requestBody: Record<string, unknown> = {
+    model: input.settings.model,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are Valor's private crypto risk-intelligence analyst. Use only provided context. Cite source ids inline. Never claim final trading authority. Never authorize live execution, never size live orders, never bypass risk limits, never reveal secrets, full balances, addresses, private labels, or account identifiers.",
+      },
+      {
+        role: "user",
+        content: `Question: ${input.question}\n\nRAG context:\n${input.context}`,
+      },
+    ],
+  };
+  // Only send temperature when explicitly configured. Reasoning models (gpt-5.x)
+  // reject any non-default value, so omitting it keeps live calls working.
+  if (input.settings.temperature !== undefined) {
+    requestBody.temperature = input.settings.temperature;
+  }
+
   try {
     const response = await fetch(`${input.settings.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
@@ -90,21 +110,7 @@ async function callOpenAiCompatible(input: {
         "content-type": "application/json",
       },
       signal: controller.signal,
-      body: JSON.stringify({
-        model: input.settings.model,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are Valor's private crypto risk-intelligence analyst. Use only provided context. Cite source ids inline. Never claim final trading authority. Never authorize live execution, never size live orders, never bypass risk limits, never reveal secrets, full balances, addresses, private labels, or account identifiers.",
-          },
-          {
-            role: "user",
-            content: `Question: ${input.question}\n\nRAG context:\n${input.context}`,
-          },
-        ],
-        temperature: 0.2,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {

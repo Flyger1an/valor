@@ -178,6 +178,9 @@ export function persistValorStateToSqlite(state: ValorLocalState) {
             eligibleForPaperTrading: signal.eligibleForPaperTrading,
             eligibleForLiveTrading: signal.eligibleForLiveTrading,
             timestamp: signal.timestamp,
+            zscore: signal.zscore ?? null,
+            spreadValue: signal.spreadValue ?? null,
+            expectedConvergenceHours: signal.expectedConvergenceHours ?? null,
           })
           .run();
       }
@@ -416,6 +419,9 @@ function mapSignalRow(
     eligibleForPaperTrading: row.eligibleForPaperTrading,
     eligibleForLiveTrading: row.eligibleForLiveTrading,
     timestamp: row.timestamp,
+    zscore: row.zscore ?? undefined,
+    spreadValue: row.spreadValue ?? undefined,
+    expectedConvergenceHours: row.expectedConvergenceHours ?? undefined,
   };
 }
 

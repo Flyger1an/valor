@@ -15,7 +15,8 @@ import { isDataStale, formatDataAge, dataAgeMs } from "@/lib/data/staleness";
 import { buildLlmRuntimeStatus } from "@/lib/llm/status";
 import { buildDataProvenance } from "@/lib/data/provenance";
 import { computeFromData, refreshAndPersistMarketState } from "@/lib/ops/recompute";
-import { emptyPaperPortfolio, LocalStateStore } from "@/lib/state/local-store";
+import { emptyLedgerPortfolio } from "@/lib/paper/paper-book";
+import { LocalStateStore } from "@/lib/state/local-store";
 
 export async function buildDashboardState() {
   const connector = getDefaultConnector();
@@ -32,7 +33,7 @@ export async function buildDashboardState() {
   const signals = persisted.signals ?? computed.signals;
   const risk = persisted.risk ?? computed.risk;
   const backtest = persisted.backtest ?? computed.backtest;
-  const paper = persisted.paper ?? computed.paper ?? emptyPaperPortfolio();
+  const paper = persisted.paper ?? computed.paper ?? emptyLedgerPortfolio();
   const equityHistory = persisted.equityHistory ?? [];
   const signalJournal = persisted.signalJournal ?? [];
   const dataProvenance =

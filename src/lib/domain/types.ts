@@ -132,6 +132,11 @@ export interface MarketDataBundle {
   btcEthRatioHistory: PairSpreadPoint[];
   ethSolSpreadHistory: PairSpreadPoint[];
   backtestHistory: HistoricalPoint[];
+  /**
+   * Lineage of the z-score histories above: "live-klines" when reconstructed
+   * from real exchange candles, "fixture" when seeded from sample data.
+   */
+  relativeValueHistorySource?: "live-klines" | "fixture";
 }
 
 export interface RelativeValueSignal {
@@ -149,6 +154,22 @@ export interface RelativeValueSignal {
   timestamp: string;
   eligibleForPaperTrading: boolean;
   eligibleForLiveTrading: boolean;
+  /**
+   * Standardized dislocation. Real z-score for mean-reversion signals
+   * (btc_eth_ratio, pair_spread_zscore); a per-type normalized dislocation for
+   * carry/cross-venue signals. Optional so pre-enrichment persisted rows load.
+   */
+  zscore?: number;
+  /**
+   * Spread level as a fraction (basis/funding/premium) or fractional dislocation
+   * from mean (ratio/pair signals).
+   */
+  spreadValue?: number;
+  /**
+   * Estimated convergence horizon in hours — mean-reversion half-life where a
+   * spread history exists, per-type default otherwise.
+   */
+  expectedConvergenceHours?: number;
 }
 
 export interface TradingRestriction {
@@ -248,8 +269,14 @@ export interface PaperTrade {
 }
 
 export interface PaperPortfolio {
+  /** Cash ledger: starting cash + realized PnL − fees paid. */
   cashUsd: number;
+  /** Total account value: cash + unrealized mark-to-market of open positions. */
   equityUsd: number;
+  /** Cumulative realized trading PnL from closed positions (gross of fees). */
+  realizedPnlUsd: number;
+  /** Cumulative fees paid across opens and closes. */
+  feesPaidUsd: number;
   dailyPnlUsd: number;
   weeklyPnlUsd: number;
   positions: PaperPosition[];

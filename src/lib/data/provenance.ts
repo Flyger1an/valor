@@ -7,6 +7,7 @@ export interface DataProvenance {
   fixtureMarketCount: number;
   liveSharePct: number;
   hasFallbackAdvisory: boolean;
+  relativeValueHistorySource: "live-klines" | "fixture";
   summary: string;
 }
 
@@ -23,13 +24,19 @@ export function buildDataProvenance(
   const hasFallbackAdvisory = data.advisories.some((advisory) =>
     advisory.title.toLowerCase().includes("fallback"),
   );
+  const relativeValueHistorySource = data.relativeValueHistorySource ?? "fixture";
 
-  const summary =
+  const marketSummary =
     liveMarketCount === 0
       ? "Fixture-only bundle. No live venue prices in this refresh."
       : fixtureMarketCount === 0
         ? `All ${liveMarketCount} markets sourced live via ${connector.label}.`
         : `${liveMarketCount} live / ${fixtureMarketCount} fixture markets (${liveSharePct}% live).`;
+  const historySummary =
+    relativeValueHistorySource === "live-klines"
+      ? " Z-score history from live klines."
+      : " Z-score history seeded from fixtures.";
+  const summary = `${marketSummary}${historySummary}`;
 
   return {
     connectorId: connector.id,
@@ -38,6 +45,7 @@ export function buildDataProvenance(
     fixtureMarketCount,
     liveSharePct,
     hasFallbackAdvisory,
+    relativeValueHistorySource,
     summary,
   };
 }

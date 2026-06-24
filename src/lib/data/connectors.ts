@@ -1,3 +1,5 @@
+import { fetchJson } from "@/lib/data/http";
+import { buildRelativeValueHistory } from "@/lib/data/price-history";
 import { sampleMarketData } from "@/lib/data/sample-market-data";
 import type {
   Asset,
@@ -25,6 +27,7 @@ export class SampleMarketDataConnector implements MarketDataConnector {
     return {
       ...sampleMarketData,
       generatedAt,
+      relativeValueHistorySource: "fixture",
       markets: sampleMarketData.markets.map((market) => ({
         ...market,
         timestamp: generatedAt,
@@ -83,7 +86,7 @@ export class CoinGeckoSpotConnector implements MarketDataConnector {
       mapCoinGeckoSpot("coinbase", "SOL", body.solana, generatedAt),
     ];
 
-    return {
+    return withRelativeValueHistory({
       ...sampleMarketData,
       generatedAt,
       markets: [
@@ -92,7 +95,7 @@ export class CoinGeckoSpotConnector implements MarketDataConnector {
           (market) => market.instrumentType === "perp",
         ),
       ],
-    };
+    });
   }
 }
 
@@ -108,11 +111,11 @@ export class BinanceMarketConnector implements MarketDataConnector {
       fetchBinancePerpMarkets(generatedAt),
     ]);
 
-    return {
+    return withRelativeValueHistory({
       ...sampleMarketData,
       generatedAt,
       markets: [...spotMarkets, ...perpMarkets],
-    };
+    });
   }
 }
 
@@ -137,17 +140,18 @@ export class PublicCryptoMarketConnector implements MarketDataConnector {
         throw new Error("Insufficient live public market data returned.");
       }
 
-      return {
+      return withRelativeValueHistory({
         ...sampleMarketData,
         generatedAt,
         markets,
         stablecoins,
         chainFees,
-      };
+      });
     } catch (error) {
       return {
         ...sampleMarketData,
         generatedAt: new Date().toISOString(),
+        relativeValueHistorySource: "fixture",
         advisories: [
           ...sampleMarketData.advisories,
           {
@@ -166,6 +170,27 @@ export class PublicCryptoMarketConnector implements MarketDataConnector {
       };
     }
   }
+}
+
+/**
+ * Replace a live bundle's z-score histories with ones reconstructed from real
+ * exchange klines (plus a live "current" point). Falls back to the fixture
+ * histories internally and records the lineage on the bundle.
+ */
+async function withRelativeValueHistory(
+  bundle: MarketDataBundle,
+): Promise<MarketDataBundle> {
+  const history = await buildRelativeValueHistory({
+    markets: bundle.markets,
+    generatedAt: bundle.generatedAt,
+    fixture: sampleMarketData,
+  });
+  return {
+    ...bundle,
+    btcEthRatioHistory: history.btcEthRatioHistory,
+    ethSolSpreadHistory: history.ethSolSpreadHistory,
+    relativeValueHistorySource: history.source,
+  };
 }
 
 export function getDefaultConnector(): MarketDataConnector {
@@ -508,24 +533,6 @@ async function fetchChainFees(timestamp: string): Promise<ChainFeeSnapshot[]> {
       timestamp,
     },
   ];
-}
-
-async function fetchJson<T>(url: string): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8_000);
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        accept: "application/json",
-        "user-agent": "Valor-Risk-Intel/0.1",
-      },
-    });
-    if (!response.ok) throw new Error(`${url} returned ${response.status}`);
-    return (await response.json()) as T;
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 interface OkxTicker {

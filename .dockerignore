@@ -1,0 +1,23 @@
+# SECURITY: never bake secrets into image layers (compose injects them via env_file at runtime)
+**/.env
+**/.env*.local
+
+# local research/shadow state + data blobs (mounted via the evolver_data volume at runtime)
+evolver/.x*_cache_*.pkl
+evolver/.okx_*_dataset.pkl
+evolver/.shadow_state.json
+evolver/.research_state.json
+evolver/*_ledger.jsonl
+evolver/.shadow_state.tmp
+
+# build hygiene
+**/__pycache__/
+**/*.pyc
+.git
+.venv
+node_modules
+.next
+out
+dist
+**/.pytest_cache
+**/*.egg-info

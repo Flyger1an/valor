@@ -17,13 +17,19 @@ export const DEFAULT_PAPER_LIMITS: PaperRiskLimits = {
   allowWhenRiskState: ["Green", "Yellow", "Red"],
 };
 
+/** Per-side paper execution fee, in basis points (taker-like). */
+export const FEE_BPS = 8;
+
+/** Starting paper cash for a fresh book. */
+export const STARTING_CASH_USD = 100_000;
+
 export function simulatePaperPortfolio(input: {
   signals: RelativeValueSignal[];
   risk: MarketRiskState;
   startingCashUsd?: number;
   limits?: Partial<PaperRiskLimits>;
 }): PaperPortfolio {
-  const startingCashUsd = input.startingCashUsd ?? 100_000;
+  const startingCashUsd = input.startingCashUsd ?? STARTING_CASH_USD;
   const limits = { ...DEFAULT_PAPER_LIMITS, ...input.limits };
   const positions: PaperPosition[] = [];
   const trades: PaperTrade[] = [];
@@ -58,8 +64,12 @@ export function simulatePaperPortfolio(input: {
         return;
       }
 
-      const feesUsd = notionalUsd * 0.0008;
-      const markPnlUsd = notionalUsd * (signal.expectedEdgeBps / 10_000) * signal.confidence;
+      const feesUsd = round(notionalUsd * (FEE_BPS / 10_000), 2);
+      // Pure unrealized mark-to-market; fees live in the cash ledger, not the mark.
+      const markPnlUsd = round(
+        notionalUsd * (signal.expectedEdgeBps / 10_000) * signal.confidence,
+        2,
+      );
 
       positions.push({
         id: `paper-pos-${signal.id}`,
@@ -69,7 +79,7 @@ export function simulatePaperPortfolio(input: {
         direction: signal.direction,
         notionalUsd: round(notionalUsd, 2),
         entryEdgeBps: signal.expectedEdgeBps,
-        markPnlUsd: round(markPnlUsd - feesUsd, 2),
+        markPnlUsd,
         openedAt: timestamp,
       });
 
@@ -81,7 +91,7 @@ export function simulatePaperPortfolio(input: {
         venue: signal.venue,
         direction: signal.direction,
         notionalUsd: round(notionalUsd, 2),
-        feesUsd: round(feesUsd, 2),
+        feesUsd,
         status: "filled",
         reason: "Signal passed paper-trading risk limits.",
       });
@@ -89,14 +99,18 @@ export function simulatePaperPortfolio(input: {
       usedNotional += notionalUsd;
     });
 
-  const markPnl = positions.reduce((sum, position) => sum + position.markPnlUsd, 0);
-  const totalFees = trades.reduce((sum, trade) => sum + trade.feesUsd, 0);
+  const openMarkPnl = positions.reduce((sum, position) => sum + position.markPnlUsd, 0);
+  const feesPaidUsd = round(trades.reduce((sum, trade) => sum + trade.feesUsd, 0), 2);
+  const cashUsd = round(startingCashUsd - feesPaidUsd, 2);
+  const equityUsd = round(cashUsd + openMarkPnl, 2);
 
   return {
-    cashUsd: round(startingCashUsd - totalFees, 2),
-    equityUsd: round(startingCashUsd + markPnl - totalFees, 2),
-    dailyPnlUsd: round(markPnl - totalFees, 2),
-    weeklyPnlUsd: round((markPnl - totalFees) * 2.4, 2),
+    cashUsd,
+    equityUsd,
+    realizedPnlUsd: 0,
+    feesPaidUsd,
+    dailyPnlUsd: round(equityUsd - startingCashUsd, 2),
+    weeklyPnlUsd: round((equityUsd - startingCashUsd) * 2.4, 2),
     positions,
     trades,
     rejectedSignals,

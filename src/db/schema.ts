@@ -39,6 +39,10 @@ export const relativeValueSignals = sqliteTable("relative_value_signals", {
     mode: "boolean",
   }).notNull(),
   timestamp: text("timestamp").notNull(),
+  // Added 0003 — enriched contract fields (nullable for pre-enrichment rows).
+  zscore: real("zscore"),
+  spreadValue: real("spread_value"),
+  expectedConvergenceHours: real("expected_convergence_hours"),
 });
 
 export const riskAlerts = sqliteTable("risk_alerts", {

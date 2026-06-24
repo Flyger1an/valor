@@ -32,6 +32,35 @@ export function zScore(value: number, sample: number[]): number {
   return (value - mean(sample)) / sd;
 }
 
+/**
+ * Mean-reversion half-life (hours) of a spread series, via an Ornstein-Uhlenbeck
+ * / AR(1) fit: regress Δx_t on (x_{t-1} - mean); φ = 1 + slope; half-life =
+ * -ln(2)/ln(φ) periods. Returns `fallbackHours` when the series is too short or
+ * not mean-reverting (φ ∉ (0,1)). Capped at 14 days.
+ */
+export function meanReversionHalfLifeHours(
+  series: number[],
+  periodHours: number,
+  fallbackHours: number,
+): number {
+  if (series.length < 8) return fallbackHours;
+  const avg = mean(series);
+  let num = 0;
+  let den = 0;
+  for (let t = 1; t < series.length; t++) {
+    const xPrev = series[t - 1] - avg;
+    const dx = series[t] - series[t - 1];
+    num += xPrev * dx;
+    den += xPrev * xPrev;
+  }
+  if (den === 0) return fallbackHours;
+  const phi = 1 + num / den; // AR(1) coefficient
+  if (phi <= 0 || phi >= 1) return fallbackHours;
+  const hours = (-Math.log(2) / Math.log(phi)) * periodHours;
+  if (!Number.isFinite(hours) || hours <= 0) return fallbackHours;
+  return Math.min(hours, 24 * 14);
+}
+
 export function annualizeDailySharpe(dailyReturns: number[]): number {
   const avg = mean(dailyReturns);
   const sd = standardDeviation(dailyReturns);

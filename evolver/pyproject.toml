@@ -1,0 +1,41 @@
+[project]
+name = "valor-evolver"
+version = "0.1.0"
+description = "Perpetual self-optimizing closed-loop engine for the Valor RV+Risk platform."
+# Core (contracts/risk/sim/kpis) runs on 3.9; the full agent stack needs 3.10+.
+requires-python = ">=3.10"
+dependencies = [
+  "langgraph>=0.2.40",
+  "langchain-core>=0.3",
+  "langchain-openai>=0.2",      # fast model (inner) + strong model (outer); swap for Grok/Anthropic
+  "pydantic>=2.7",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "redis>=5.0",                 # signal bus (Streams) + cache
+  "optuna>=3.6",                # Bayesian/TPE walk-forward optimization
+  "python-telegram-bot>=21.0",  # Ops + Observer bot
+  "streamlit>=1.38",
+  "plotly>=5.23",
+  "mlflow>=2.16",               # experiment tracking (self-host on S3+RDS)
+  "psycopg[binary]>=3.2",       # RDS Postgres (ledger + LangGraph checkpoints)
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+# Upgrade paths:
+#   vectorbt        -> fast vectorized A/B for the optimizer
+#   nautilus_trader -> event-driven perp sim with backtest==live fidelity
+#   chromadb        -> dedicated vector store if you outgrow pgvector
+#   langsmith / arize-phoenix -> LLM tracing
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["evolver*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

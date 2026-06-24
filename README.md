@@ -17,8 +17,8 @@ Open `http://localhost:3000`.
 - Local Next.js App Router dashboard with Overview, Signals, Risk Intel, Alerts, Analyst, Backtests, Paper Trading, Settings, and Audit views.
 - Alerts view with INFO/WATCH/TRADEABLE/CRITICAL/BLACK severities and Telegram/SMS routing preview.
 - Analyst copilot view with env-driven LLM API plug, local RAG context, and offline fallback.
-- Sample market-data ingestion with connector interfaces for public or paid adapters.
-- Relative-value signal engine covering spot/perp basis, funding carry, cross-exchange premium, BTC/ETH regime, pair z-scores, stablecoin depeg watchlist, and volatility filters.
+- Live public market-data ingestion by default (OKX primary, Binance/CoinGecko fallback) for spot/perp prices, stablecoin pegs, and chain fees, with deterministic fixture fallback and honest data-lineage reporting.
+- Relative-value signal engine covering spot/perp basis, funding carry, cross-exchange premium, BTC/ETH regime, pair z-scores, stablecoin depeg watchlist, and volatility filters — with edges reported net of estimated execution cost and z-score history reconstructed from real exchange candles.
 - Market risk state engine with Green/Yellow/Red/Black states, alerts, and restrictions.
 - Basis-carry backtester with fees, slippage, funding, sizing, drawdown, Sharpe, Sortino, win rate, exposure, and turnover.
 - Paper broker with signal attribution and risk-limit enforcement.
@@ -29,7 +29,7 @@ Open `http://localhost:3000`.
 
 ## What Is Stubbed
 
-- Exchange, news/RSS, chain, reserve, and ETF data adapters use deterministic sample data by default.
+- Spot/perp prices, stablecoin pegs, chain fees, and z-score price history are fetched live by default; news/RSS, exchange-reserve, ETF, and exchange-health adapters still use deterministic sample data. Set `ENABLE_PUBLIC_MARKET_FETCH=false` to force an all-fixture bundle.
 - Live trading has no exchange executor. The only implemented live path is a guardrail evaluation that blocks by default.
 - SQLite persistence is wired for market snapshots, signals, risk state, backtests, alerts, and runtime metadata. JSON state remains as a secondary mirror.
 - Worker runs periodic refresh/recompute cycles via `npm run worker`. Scheduler remains a placeholder until Redis/BullMQ job consumers are added.

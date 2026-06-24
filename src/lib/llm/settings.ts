@@ -9,6 +9,7 @@ export function readLlmSettings(env: NodeJS.ProcessEnv = process.env): LlmSettin
     model: env.LLM_MODEL ?? "gpt-4.1",
     timeoutMs: numberFromEnv(env.LLM_TIMEOUT_MS, 20_000),
     maxContextChars: numberFromEnv(env.LLM_MAX_CONTEXT_CHARS, 24_000),
+    temperature: optionalNumberFromEnv(env.LLM_TEMPERATURE),
   };
 }
 
@@ -20,4 +21,10 @@ function numberFromEnv(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function optionalNumberFromEnv(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }

@@ -1,0 +1,135 @@
+# Local full stack. Cloud equivalent in infra/terraform/ (Fargate spot + SQS + RDS + S3).
+# evolver-api / -loop / -bot / dashboard share one `evolver_data` volume so the ledger,
+# audit log, and kill-switch flag are visible across all processes (the kill switch MUST
+# be shared, or /kill in the bot won't halt the loop).
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: valor
+      POSTGRES_PASSWORD: valor
+      POSTGRES_DB: evolver
+    ports: ["5432:5432"]
+    volumes: ["pg:/var/lib/postgresql/data"]
+    restart: unless-stopped
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.16.2
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:////mlflow/mlflow.db
+    ports: ["5001:5000"]   # 5000 is taken by macOS AirPlay Receiver
+    volumes: ["mlflow:/mlflow"]
+    restart: unless-stopped
+
+  evolver-api:
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }
+    env_file: [../evolver/.env]
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://valor:valor@postgres:5432/evolver
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      EVOLVER_LEDGER: /data/ledger.jsonl
+      EVOLVER_AUDIT: /data/audit.jsonl
+      EVOLVER_KILL: /data/kill.flag
+      EVOLVER_STATE: /data/state.json
+      EVOLVER_SIGNALS: /data/signals.jsonl
+    ports: ["8000:8000"]
+    volumes: ["evolver_data:/data"]
+    depends_on: [redis, postgres]
+    restart: unless-stopped
+
+  evolver-loop:            # Redis Streams consumer -> inner loop
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }
+    command: ["python", "-m", "evolver.bus.redis_stream"]
+    working_dir: /app/evolver
+    env_file: [../evolver/.env]
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://valor:valor@postgres:5432/evolver
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      EVOLVER_LEDGER: /data/ledger.jsonl
+      EVOLVER_AUDIT: /data/audit.jsonl
+      EVOLVER_KILL: /data/kill.flag
+      EVOLVER_STATE: /data/state.json
+      EVOLVER_SIGNALS: /data/signals.jsonl
+    volumes: ["evolver_data:/data"]
+    depends_on: [redis, postgres]
+    restart: unless-stopped
+
+  evolver-bot:             # Telegram Ops + Observer
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }
+    command: ["python", "-m", "evolver.telegram.bot"]
+    working_dir: /app/evolver
+    env_file: [../evolver/.env]
+    environment:
+      EVOLVER_LEDGER: /data/ledger.jsonl
+      EVOLVER_AUDIT: /data/audit.jsonl
+      EVOLVER_KILL: /data/kill.flag
+      EVOLVER_STATE: /data/state.json
+      EVOLVER_SIGNALS: /data/signals.jsonl
+      EVOLVER_RESEARCH: /data/research_state.json   # /candidates reads the same queue the loop writes
+      EVOLVER_SHADOW: /data/shadow_state.json       # /shadow reads the forward paper book
+      EVOLVER_SHADOW2: /data/shadow_analyst_state.json   # /analyst reads the v2 sim-vs-reality book
+      EVOLVER_RESEARCH_LEDGER: /data/research_ledger.jsonl  # /research shows recent cycle summaries
+    volumes: ["evolver_data:/data"]
+    depends_on: [evolver-api]
+    restart: unless-stopped
+
+  dashboard:
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }
+    # package is at /app/evolver/evolver/... so cwd must be /app/evolver for this rel path
+    command: ["streamlit", "run", "evolver/dashboard/app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false"]
+    working_dir: /app/evolver
+    env_file: [../evolver/.env]
+    environment:
+      EVOLVER_LEDGER: /data/ledger.jsonl
+    volumes: ["evolver_data:/data"]
+    ports: ["8501:8501"]
+    depends_on: [evolver-api]
+    restart: unless-stopped
+
+  shadow-runner:           # forward PAPER validation of the liquidation basket — ZERO orders
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }
+    command: ["python", "scripts/shadow_runner.py", "--loop", "3600"]   # tick hourly
+    working_dir: /app/evolver
+    env_file: [../evolver/.env]   # TELEGRAM_* for alerts; no trading keys needed (paper only)
+    environment:
+      EVOLVER_SHADOW: /data/shadow_state.json          # atomic-write book on the shared volume
+      EVOLVER_SHADOW_LEDGER: /data/shadow_ledger.jsonl
+    volumes: ["evolver_data:/data"]   # state survives container restarts -> no lost positions
+    restart: unless-stopped           # auto-recover on crash AND on host reboot
+
+  shadow-analyst:          # v2 — shadow the ANALYST LOOP's live decisions vs the sim. ZERO orders
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }
+    command: ["python", "scripts/shadow_analyst.py", "--loop", "3600"]   # tick hourly
+    working_dir: /app/evolver
+    env_file: [../evolver/.env]   # OPENAI_* for the gpt-5-mini analyst; TELEGRAM_* for alerts
+    environment:
+      EVOLVER_SHADOW2: /data/shadow_analyst_state.json
+      EVOLVER_SHADOW2_LEDGER: /data/shadow_analyst_ledger.jsonl
+    volumes: ["evolver_data:/data"]
+    restart: unless-stopped
+
+  research-runner:         # autonomous gated DISCOVERY loop — PROPOSES candidates, promotes NOTHING
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }
+    command: ["python", "scripts/research_tick.py", "--loop", "86400"]    # DAILY (3600=hourly; safe
+    working_dir: /app/evolver                                              # via CONFIRM cross-cycle gate)
+    env_file: [../evolver/.env]   # TELEGRAM_* for candidate alerts; OPENAI_* enables LLM mutation
+    environment:
+      EVOLVER_RESEARCH: /data/research_state.json          # shared candidate queue (bot reads it)
+      EVOLVER_RESEARCH_LEDGER: /data/research_ledger.jsonl
+      EVOLVER_RESEARCH_DATA: /data/okx_hourly_dataset.pkl  # liquidation family (rolling 15mo)
+      EVOLVER_RESEARCH_DAILY: /data/okx_daily_dataset.pkl  # trend / cross-sectional (~3yr)
+      EVOLVER_RESEARCH_MONTHS: "15"
+      EVOLVER_RESEARCH_CONFIRM: "2"   # surface only after a region survives N separate cycles
+    volumes: ["evolver_data:/data"]
+    restart: unless-stopped           # first cycle backfills OKX (~2-3min), then refreshes incrementally
+
+volumes:
+  pg: {}
+  mlflow: {}
+  evolver_data: {}

@@ -1,0 +1,14 @@
+# Build context = repo root (so we can copy evolver/ and shared/).
+FROM python:3.11-slim
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+
+# Copy source BEFORE the editable install (it needs the package present).
+COPY evolver /app/evolver
+COPY shared /app/shared
+RUN pip install -e /app/evolver
+
+# Default = API; compose overrides `command` per service (bot, loop, dashboard).
+EXPOSE 8000
+CMD ["uvicorn", "evolver.api:app", "--host", "0.0.0.0", "--port", "8000", "--app-dir", "/app/evolver"]

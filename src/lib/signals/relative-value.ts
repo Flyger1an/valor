@@ -6,7 +6,35 @@ import type {
   SignalDirection,
   StablecoinSnapshot,
 } from "@/lib/domain/types";
-import { clamp, round, zScore } from "@/lib/utils/math";
+import {
+  CROSS_VENUE_TRANSFER_BPS,
+  PAIR_ENTRY_COST_BPS,
+  netBasisEdgeBps,
+  netCrossExchangeEdgeBps,
+  netFundingCarryEdgeBps,
+} from "@/lib/signals/costs";
+import {
+  clamp,
+  mean,
+  meanReversionHalfLifeHours,
+  round,
+  zScore,
+} from "@/lib/utils/math";
+
+// Calibration: ~1σ dislocation per carry/dislocation type (bps). These give a
+// meaningful normalized z-score for signals that have no spread history of their
+// own. Tunable by the optimizer's whitelist later.
+const BASIS_SIGMA_BPS = 40;
+const FUNDING_SIGMA_BPS = 60;
+const XVENUE_SIGMA_BPS = 25;
+const PEG_SIGMA_BPS = 30;
+
+// Default convergence horizons (hours) where no spread history exists to fit a
+// half-life. Carry/dislocation trades; the z-score signals derive theirs.
+const CONVERGENCE_HOURS = { basis: 24, funding: 8, xvenue: 2, peg: 12 } as const;
+
+// History points (btcEth/ethSol) are daily candles + a live point ≈ 24h spacing.
+const HISTORY_PERIOD_HOURS = 24;
 
 export function generateRelativeValueSignals(
   data: MarketDataBundle,
@@ -40,7 +68,8 @@ function basisSignals(markets: MarketSnapshot[]): RelativeValueSignal[] {
       const perpPrice = perp.markPrice ?? perp.price;
       const basisBps = ((perpPrice - spot.price) / spot.price) * 10_000;
       const sevenDayFundingBps = (perp.fundingRate8h ?? 0) * 10_000 * 21;
-      const expectedEdgeBps = basisBps + sevenDayFundingBps;
+      const grossEdgeBps = basisBps + sevenDayFundingBps;
+      const expectedEdgeBps = netBasisEdgeBps(grossEdgeBps);
       const liquidityScore = liquidityScoreFor([spot, perp]);
       const riskScore = riskScoreFor(perp, Math.abs(basisBps));
 
@@ -55,15 +84,21 @@ function basisSignals(markets: MarketSnapshot[]): RelativeValueSignal[] {
         liquidityScore,
         riskScore,
         timestamp: perp.timestamp,
+        zscore: basisBps / BASIS_SIGMA_BPS,
+        spreadValue: basisBps / 10_000,
+        expectedConvergenceHours: CONVERGENCE_HOURS.basis,
         eligibleForPaperTrading:
           expectedEdgeBps > 45 && liquidityScore > 55 && riskScore < 72,
         explanation: `${perp.base} perp trades ${round(
           basisBps,
           1,
-        )} bps over best spot; estimated 7-day funding carry is ${round(
+        )} bps over best spot; 7-day funding carry ≈ ${round(
           sevenDayFundingBps,
           1,
-        )} bps before fees/slippage.`,
+        )} bps. Expected edge ${round(
+          expectedEdgeBps,
+          1,
+        )} bps net of ~${PAIR_ENTRY_COST_BPS} bps taker fees.`,
       });
     })
     .filter(Boolean) as RelativeValueSignal[];
@@ -79,7 +114,9 @@ function fundingCarrySignals(markets: MarketSnapshot[]): RelativeValueSignal[] {
     .map((perp) => {
       const fundingRate = perp.fundingRate8h ?? 0;
       const sevenDayFundingBps = fundingRate * 10_000 * 21;
-      const riskScore = riskScoreFor(perp, Math.abs(sevenDayFundingBps) / 2);
+      const grossFundingBps = Math.abs(sevenDayFundingBps);
+      const expectedEdgeBps = netFundingCarryEdgeBps(grossFundingBps);
+      const riskScore = riskScoreFor(perp, grossFundingBps / 2);
       const liquidityScore = liquidityScoreFor([perp]);
 
       return buildSignal({
@@ -88,20 +125,26 @@ function fundingCarrySignals(markets: MarketSnapshot[]): RelativeValueSignal[] {
         venue: `${perp.venue} perp`,
         direction:
           fundingRate > 0 ? "short_perp_receive_funding" : "watch_only",
-        confidence: clamp(0.5 + Math.abs(sevenDayFundingBps) / 320, 0.42, 0.88),
-        expectedEdgeBps: Math.abs(sevenDayFundingBps),
+        confidence: clamp(0.5 + grossFundingBps / 320, 0.42, 0.88),
+        expectedEdgeBps,
         liquidityScore,
         riskScore,
         timestamp: perp.timestamp,
+        zscore: sevenDayFundingBps / FUNDING_SIGMA_BPS,
+        spreadValue: fundingRate,
+        expectedConvergenceHours: CONVERGENCE_HOURS.funding,
         eligibleForPaperTrading:
-          fundingRate > 0 && Math.abs(sevenDayFundingBps) > 55 && riskScore < 76,
+          fundingRate > 0 && expectedEdgeBps > 45 && riskScore < 76,
         explanation: `${perp.venue.toUpperCase()} ${perp.base} perpetual funding is ${round(
           fundingRate * 100,
           4,
-        )}% per 8h, equivalent to ${round(
+        )}% per 8h (≈ ${round(
           sevenDayFundingBps,
           1,
-        )} bps over seven days if rates persist.`,
+        )} bps/7d); expected edge ${round(
+          expectedEdgeBps,
+          1,
+        )} bps net of ~${PAIR_ENTRY_COST_BPS} bps hedge fees if rates persist.`,
       });
     });
 }
@@ -128,24 +171,32 @@ function crossExchangeSignals(markets: MarketSnapshot[]): RelativeValueSignal[] 
 
     const liquidityScore = liquidityScoreFor([low, high]);
     const riskScore = clamp(28 + premiumBps / 2 + maxSpread([low, high]) * 2, 0, 100);
+    const netEdgeBps = netCrossExchangeEdgeBps(premiumBps);
 
     signals.push(
       buildSignal({
         kind: "cross_exchange_premium",
         assetPair: pair,
         venue: `${low.venue} -> ${high.venue}`,
-        direction: "buy_low_venue_sell_high_venue",
+        direction:
+          netEdgeBps > 0 ? "buy_low_venue_sell_high_venue" : "watch_only",
         confidence: clamp(0.42 + premiumBps / 180, 0.4, 0.78),
-        expectedEdgeBps: premiumBps,
+        expectedEdgeBps: netEdgeBps,
         liquidityScore,
         riskScore,
         timestamp: high.timestamp,
+        zscore: premiumBps / XVENUE_SIGMA_BPS,
+        spreadValue: premiumBps / 10_000,
+        expectedConvergenceHours: CONVERGENCE_HOURS.xvenue,
         eligibleForPaperTrading:
-          premiumBps > 25 && liquidityScore > 45 && riskScore < 70,
+          netEdgeBps > 15 && liquidityScore > 45 && riskScore < 70,
         explanation: `${pair} spot is ${round(
           premiumBps,
           1,
-        )} bps higher on ${high.venue} than ${low.venue}; verify transfer latency and withdrawal health before considering execution.`,
+        )} bps higher on ${high.venue} than ${low.venue} (gross); ≈ ${round(
+          netEdgeBps,
+          1,
+        )} bps net of ~${PAIR_ENTRY_COST_BPS + CROSS_VENUE_TRANSFER_BPS} bps fees + transfer. Verify withdrawal health before execution.`,
       }),
     );
   }
@@ -160,8 +211,12 @@ function btcEthRatioSignals(
   if (ratioHistory.length < 6) return [];
   const ratios = ratioHistory.map((point) => point.firstPrice / point.secondPrice);
   const current = ratios[ratios.length - 1];
-  const score = zScore(current, ratios.slice(0, -1));
+  const sample = ratios.slice(0, -1);
+  const sampleMean = mean(sample);
+  const score = zScore(current, sample);
   const expectedEdgeBps = Math.abs(score) * 32;
+  const spreadValue = sampleMean !== 0 ? (current - sampleMean) / sampleMean : 0;
+  const convergenceHours = meanReversionHalfLifeHours(ratios, HISTORY_PERIOD_HOURS, 24);
   const direction: SignalDirection =
     score > 1.1
       ? "short_first_long_second"
@@ -180,6 +235,9 @@ function btcEthRatioSignals(
       liquidityScore: 86,
       riskScore: clamp(38 + Math.abs(score) * 8, 0, 100),
       timestamp,
+      zscore: score,
+      spreadValue,
+      expectedConvergenceHours: convergenceHours,
       eligibleForPaperTrading: Math.abs(score) > 1.1,
       explanation: `BTC/ETH ratio z-score is ${round(
         score,
@@ -199,7 +257,11 @@ function pairSpreadSignals(
   if (history.length < 6) return [];
   const spreads = history.map((point) => point.firstPrice / point.secondPrice);
   const current = spreads[spreads.length - 1];
-  const score = zScore(current, spreads.slice(0, -1));
+  const sample = spreads.slice(0, -1);
+  const sampleMean = mean(sample);
+  const score = zScore(current, sample);
+  const spreadValue = sampleMean !== 0 ? (current - sampleMean) / sampleMean : 0;
+  const convergenceHours = meanReversionHalfLifeHours(spreads, HISTORY_PERIOD_HOURS, 12);
   const direction: SignalDirection =
     score > 1.25
       ? "short_first_long_second"
@@ -218,6 +280,9 @@ function pairSpreadSignals(
       liquidityScore: 64,
       riskScore: clamp(45 + Math.abs(score) * 9, 0, 100),
       timestamp,
+      zscore: score,
+      spreadValue,
+      expectedConvergenceHours: convergenceHours,
       eligibleForPaperTrading: Math.abs(score) > 1.25,
       explanation: `${pair} normalized spread z-score is ${round(
         score,
@@ -244,6 +309,9 @@ function stablecoinSignals(
         liquidityScore: clamp(coin.liquidityUsd / 1_000_000, 0, 100),
         riskScore,
         timestamp: coin.timestamp,
+        zscore: coin.pegDeviationBps / PEG_SIGMA_BPS,
+        spreadValue: coin.pegDeviationBps / 10_000,
+        expectedConvergenceHours: CONVERGENCE_HOURS.peg,
         eligibleForPaperTrading: false,
         explanation: `${coin.asset} trades at $${coin.priceUsd.toFixed(
           4,
@@ -274,6 +342,9 @@ function volatilityRegimeSignal(
     liquidityScore: 100,
     riskScore: clamp(averageVol * 100, 0, 100),
     timestamp: data.generatedAt,
+    zscore: 0,
+    spreadValue: 0,
+    expectedConvergenceHours: 1,
     eligibleForPaperTrading: false,
     explanation: `Average 30-day realized volatility proxy is ${round(
       averageVol * 100,
@@ -310,6 +381,9 @@ function buildSignal(
     expectedEdgeBps: round(input.expectedEdgeBps, 2),
     riskScore: round(input.riskScore, 1),
     liquidityScore: round(input.liquidityScore, 1),
+    zscore: round(input.zscore ?? 0, 3),
+    spreadValue: round(input.spreadValue ?? 0, 6),
+    expectedConvergenceHours: round(input.expectedConvergenceHours ?? 1, 2),
     opportunityScore: 0,
     eligibleForLiveTrading: false,
   };

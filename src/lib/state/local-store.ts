@@ -109,22 +109,3 @@ export class LocalStateStore {
     writeFileSync(this.path, JSON.stringify(state, null, 2));
   }
 }
-
-export function emptyPaperPortfolio(): PaperPortfolio {
-  return {
-    cashUsd: 100_000,
-    equityUsd: 100_000,
-    dailyPnlUsd: 0,
-    weeklyPnlUsd: 0,
-    positions: [],
-    trades: [],
-    rejectedSignals: [],
-    riskLimits: {
-      maxPositionUsd: 12_500,
-      maxPortfolioNotionalPct: 0.5,
-      maxSignalRiskScore: 70,
-      minLiquidityScore: 45,
-      allowWhenRiskState: ["Green", "Yellow", "Red"],
-    },
-  };
-}

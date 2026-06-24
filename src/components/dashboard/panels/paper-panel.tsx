@@ -35,6 +35,15 @@ export function PaperPanel({ paper }: { paper: PaperPortfolio }) {
         </div>
       </div>
       <div className="panel">
+        <h3>Book Ledger</h3>
+        <div className="limit-list">
+          <LimitRow label="Equity" value={money(paper.equityUsd)} />
+          <LimitRow label="Cash" value={money(paper.cashUsd)} />
+          <LimitRow label="Realized PnL" value={signedMoney(paper.realizedPnlUsd)} />
+          <LimitRow label="Fees Paid" value={money(paper.feesPaidUsd)} />
+        </div>
+      </div>
+      <div className="panel">
         <h3>Risk Enforcement</h3>
         <div className="limit-list">
           <LimitRow label="Max Position" value={money(paper.riskLimits.maxPositionUsd)} />
