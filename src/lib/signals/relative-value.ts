@@ -14,12 +14,16 @@ import {
   netFundingCarryEdgeBps,
 } from "@/lib/signals/costs";
 import {
+  augmentedDickeyFullerTest,
   clamp,
   mean,
   meanReversionHalfLifeHours,
   round,
   zScore,
 } from "@/lib/utils/math";
+
+/** Paper mean-reversion signals require rejecting a unit root at 5%. */
+const STATIONARITY_SIGNIFICANCE = 0.05 as const;
 
 // Calibration: ~1σ dislocation per carry/dislocation type (bps). These give a
 // meaningful normalized z-score for signals that have no spread history of their
@@ -217,12 +221,8 @@ function btcEthRatioSignals(
   const expectedEdgeBps = Math.abs(score) * 32;
   const spreadValue = sampleMean !== 0 ? (current - sampleMean) / sampleMean : 0;
   const convergenceHours = meanReversionHalfLifeHours(ratios, HISTORY_PERIOD_HOURS, 24);
-  const direction: SignalDirection =
-    score > 1.1
-      ? "short_first_long_second"
-      : score < -1.1
-        ? "long_first_short_second"
-        : "watch_only";
+  const stationarity = assessSpreadStationarity(ratios);
+  const direction = meanReversionDirection(score, 1.1, stationarity.stationary);
 
   return [
     buildSignal({
@@ -238,11 +238,11 @@ function btcEthRatioSignals(
       zscore: score,
       spreadValue,
       expectedConvergenceHours: convergenceHours,
-      eligibleForPaperTrading: Math.abs(score) > 1.1,
-      explanation: `BTC/ETH ratio z-score is ${round(
-        score,
-        2,
-      )}; mean-reversion play is ${
+      spreadStationary: stationarity.stationary,
+      adfTestStatistic: stationarity.adf.testStatistic,
+      eligibleForPaperTrading:
+        stationarity.stationary && Math.abs(score) > 1.1,
+      explanation: `BTC/ETH ratio z-score is ${round(score, 2)}. ${stationarity.note} Mean-reversion play is ${
         direction === "watch_only" ? "not active" : "active for paper research"
       }.`,
     }),
@@ -262,12 +262,8 @@ function pairSpreadSignals(
   const score = zScore(current, sample);
   const spreadValue = sampleMean !== 0 ? (current - sampleMean) / sampleMean : 0;
   const convergenceHours = meanReversionHalfLifeHours(spreads, HISTORY_PERIOD_HOURS, 12);
-  const direction: SignalDirection =
-    score > 1.25
-      ? "short_first_long_second"
-      : score < -1.25
-        ? "long_first_short_second"
-        : "watch_only";
+  const stationarity = assessSpreadStationarity(spreads);
+  const direction = meanReversionDirection(score, 1.25, stationarity.stationary);
 
   return [
     buildSignal({
@@ -283,11 +279,15 @@ function pairSpreadSignals(
       zscore: score,
       spreadValue,
       expectedConvergenceHours: convergenceHours,
-      eligibleForPaperTrading: Math.abs(score) > 1.25,
-      explanation: `${pair} normalized spread z-score is ${round(
-        score,
-        2,
-      )}; use reduced size because SOL leg liquidity is thinner than BTC/ETH.`,
+      spreadStationary: stationarity.stationary,
+      adfTestStatistic: stationarity.adf.testStatistic,
+      eligibleForPaperTrading:
+        stationarity.stationary && Math.abs(score) > 1.25,
+      explanation: `${pair} normalized spread z-score is ${round(score, 2)}. ${stationarity.note}${
+        pair === "ETH/SOL"
+          ? " Use reduced size because SOL leg liquidity is thinner than BTC/ETH."
+          : ""
+      }`,
     }),
   ];
 }
@@ -353,6 +353,28 @@ function volatilityRegimeSignal(
   });
 }
 
+function assessSpreadStationarity(series: number[]) {
+  const adf = augmentedDickeyFullerTest(series, STATIONARITY_SIGNIFICANCE);
+  const stationary = adf.isStationary;
+  const note = stationary
+    ? `ADF(5%) t=${round(adf.testStatistic, 2)} rejects unit root (${adf.confidence}).`
+    : series.length < 12
+      ? `Only ${series.length} history points (need ≥12 for ADF); watch-only.`
+      : `ADF(5%) t=${round(adf.testStatistic, 2)} does not reject unit root — mean-reversion thesis unsupported; watch-only.`;
+  return { adf, stationary, note };
+}
+
+function meanReversionDirection(
+  score: number,
+  threshold: number,
+  stationary: boolean,
+): SignalDirection {
+  if (!stationary) return "watch_only";
+  if (score > threshold) return "short_first_long_second";
+  if (score < -threshold) return "long_first_short_second";
+  return "watch_only";
+}
+
 function bestSpotFor(
   perp: MarketSnapshot,
   markets: MarketSnapshot[],
@@ -384,6 +406,11 @@ function buildSignal(
     zscore: round(input.zscore ?? 0, 3),
     spreadValue: round(input.spreadValue ?? 0, 6),
     expectedConvergenceHours: round(input.expectedConvergenceHours ?? 1, 2),
+    spreadStationary: input.spreadStationary,
+    adfTestStatistic:
+      input.adfTestStatistic === undefined
+        ? undefined
+        : round(input.adfTestStatistic, 3),
     opportunityScore: 0,
     eligibleForLiveTrading: false,
   };

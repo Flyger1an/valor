@@ -170,6 +170,13 @@ export interface RelativeValueSignal {
    * spread history exists, per-type default otherwise.
    */
   expectedConvergenceHours?: number;
+  /**
+   * ADF unit-root test on the spread/ratio history. Only set for mean-reversion
+   * signal kinds; paper eligibility requires this to be true when present.
+   */
+  spreadStationary?: boolean;
+  /** ADF t-statistic on the lag level coefficient (more negative ⇒ more stationary). */
+  adfTestStatistic?: number;
 }
 
 export interface TradingRestriction {

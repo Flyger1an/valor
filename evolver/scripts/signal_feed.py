@@ -25,11 +25,15 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
         os.environ.setdefault(_k.strip(), _v.strip())
 
 from evolver.data.okx import half_life_hours, mean, okx_candles_ohlc, std  # noqa: E402
+from evolver.data.stats import augmented_dickey_fuller_test  # noqa: E402
 
 STREAM = os.getenv("SIGNAL_STREAM", "valor.signals")
 EMIT_Z = float(os.getenv("FEED_EMIT_Z", "1.5"))      # emit when |z| >= this; analyst gates ~2.1σ to trade
 COOLDOWN_H = float(os.getenv("FEED_COOLDOWN_H", "3"))
 WINDOW = 168
+REQUIRE_STATIONARY = os.getenv("FEED_REQUIRE_STATIONARY", "true").lower() != "false"
+_adf_sig = os.getenv("FEED_ADF_SIGNIFICANCE", "0.05")
+ADF_SIGNIFICANCE = 0.1 if _adf_sig == "0.1" else 0.01 if _adf_sig == "0.01" else 0.05
 STATE = pathlib.Path(os.getenv("EVOLVER_FEED_STATE", str(ROOT / ".signal_feed_state.json")))
 # wide RV universe: majors vs ETH and vs BTC + a few cross-pairs
 PAIRS = ([(a, "ETH") for a in ("SOL", "BNB", "AVAX", "LINK", "DOT", "ARB", "OP", "INJ",
@@ -56,6 +60,10 @@ def gen(a, b, closes):
     z = (ratio[-1] - m) / sd
     rr = [win[i] / win[i - 1] - 1 for i in range(1, len(win)) if win[i - 1]]
     vol = std(rr)
+    adf = augmented_dickey_fuller_test(win, ADF_SIGNIFICANCE)
+    stationary = adf.is_stationary
+    if REQUIRE_STATIONARY and not stationary:
+        return None
     return {
         "signal_id": f"{a}{b}-{ts[-1]}", "timestamp": _now(), "type": "stat_arb_pair",
         "assets": [a, b], "zscore": round(z, 3), "spread_value": round(ratio[-1] / m - 1, 5),
@@ -63,6 +71,12 @@ def gen(a, b, closes):
         "risk_score": round(min(max(vol * 25, 0.05), 0.95), 3),
         "confidence": round(min(max(abs(z) / 3, 0.1), 0.95), 3),
         "regime": "high_vol" if vol > 0.03 else "low_vol",
+        "metadata": {
+            "spread_stationary": stationary,
+            "adf_test_statistic": adf.test_statistic,
+            "adf_confidence": adf.confidence,
+            "feed_require_stationary": REQUIRE_STATIONARY,
+        },
     }
 
 
@@ -74,10 +88,13 @@ def emit_pass():
         feed = {a: {t: v[3] for t, v in okx_candles_ohlc(a, "1H", 300).items()} for a in ASSETS}
     except Exception as e:
         return f"[{_now()}] feed error: {e}"
-    n = 0
+    n = skipped = 0
     for a, b in PAIRS:
         sig = gen(a, b, feed)
-        if not sig or abs(sig["zscore"]) < EMIT_Z:
+        if not sig:
+            skipped += 1
+            continue
+        if abs(sig["zscore"]) < EMIT_Z:
             continue
         key = f"{a}{b}"
         if time.time() * 1000 - state["last"].get(key, 0) < COOLDOWN_H * 3.6e6:
@@ -89,7 +106,10 @@ def emit_pass():
     tmp = STATE.with_suffix(".tmp")
     tmp.write_text(json.dumps(state))
     os.replace(tmp, STATE)
-    return f"[{_now()}] emitted {n} signals -> {STREAM} (lifetime {state['emitted']})"
+    return (
+        f"[{_now()}] emitted {n} signals -> {STREAM} "
+        f"(skipped {skipped} non-stationary/short; lifetime {state['emitted']})"
+    )
 
 
 def main():

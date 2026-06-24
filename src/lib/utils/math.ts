@@ -61,6 +61,121 @@ export function meanReversionHalfLifeHours(
   return Math.min(hours, 24 * 14);
 }
 
+export type AdfConfidence = "90%" | "95%" | "99%" | "none";
+
+export interface AugmentedDickeyFullerResult {
+  /** t-statistic on the lag level coefficient (more negative ⇒ more stationary). */
+  testStatistic: number;
+  beta: number;
+  n: number;
+  confidence: AdfConfidence;
+  isStationary: boolean;
+}
+
+const ADF_MIN_OBS = 12;
+
+/** MacKinnon-style critical values for ADF with constant, no trend (approximate). */
+const ADF_CRITICAL: Array<[number, number, number, number]> = [
+  [25, -2.66, -3.0, -3.75],
+  [50, -2.59, -2.93, -3.58],
+  [100, -2.57, -2.89, -3.51],
+  [250, -2.57, -2.88, -3.48],
+];
+
+function adfCriticalValue(
+  sampleSize: number,
+  significance: 0.1 | 0.05 | 0.01,
+): number {
+  const col = significance === 0.1 ? 1 : significance === 0.05 ? 2 : 3;
+  const n = Math.max(sampleSize, ADF_MIN_OBS);
+  if (n <= ADF_CRITICAL[0][0]) return ADF_CRITICAL[0][col];
+  if (n >= ADF_CRITICAL[ADF_CRITICAL.length - 1][0]) {
+    return ADF_CRITICAL[ADF_CRITICAL.length - 1][col];
+  }
+  for (let i = 0; i < ADF_CRITICAL.length - 1; i++) {
+    const [n0, , ,] = ADF_CRITICAL[i];
+    const [n1, c10, c5, c1] = ADF_CRITICAL[i + 1];
+    if (n >= n0 && n <= n1) {
+      const t = (n - n0) / (n1 - n0);
+      const cv0 = significance === 0.1 ? c10 : significance === 0.05 ? c5 : c1;
+      const prev = ADF_CRITICAL[i];
+      const cvPrev =
+        significance === 0.1 ? prev[1] : significance === 0.05 ? prev[2] : prev[3];
+      return cvPrev + t * (cv0 - cvPrev);
+    }
+  }
+  return ADF_CRITICAL[1][col];
+}
+
+/**
+ * Augmented Dickey–Fuller test (constant, no trend): Δy_t = α + β·y_{t-1} + ε_t.
+ * H0: unit root (β = 0). Reject when the t-stat on β is below the critical value.
+ */
+export function augmentedDickeyFullerTest(
+  series: number[],
+  significance: 0.1 | 0.05 | 0.01 = 0.05,
+): AugmentedDickeyFullerResult {
+  if (series.length < ADF_MIN_OBS) {
+    return {
+      testStatistic: 0,
+      beta: 0,
+      n: Math.max(0, series.length - 1),
+      confidence: "none",
+      isStationary: false,
+    };
+  }
+
+  const yLag: number[] = [];
+  const dy: number[] = [];
+  for (let t = 1; t < series.length; t++) {
+    yLag.push(series[t - 1]);
+    dy.push(series[t] - series[t - 1]);
+  }
+
+  const n = dy.length;
+  const yMean = mean(yLag);
+  const dyMean = mean(dy);
+  let xVar = 0;
+  let cov = 0;
+  for (let i = 0; i < n; i++) {
+    const x = yLag[i] - yMean;
+    xVar += x * x;
+    cov += x * (dy[i] - dyMean);
+  }
+  if (xVar === 0) {
+    return {
+      testStatistic: 0,
+      beta: 0,
+      n,
+      confidence: "none",
+      isStationary: false,
+    };
+  }
+
+  const beta = cov / xVar;
+  const alpha = dyMean - beta * yMean;
+  let sse = 0;
+  for (let i = 0; i < n; i++) {
+    const residual = dy[i] - alpha - beta * yLag[i];
+    sse += residual * residual;
+  }
+  const mse = sse / Math.max(1, n - 2);
+  const seBeta = Math.sqrt(mse / xVar);
+  const testStatistic =
+    seBeta === 0 ? 0 : round(beta / seBeta, 4);
+  const critical = adfCriticalValue(n, significance);
+  const isStationary = testStatistic < critical;
+  const confidence: AdfConfidence = isStationary
+    ? significance === 0.01
+      ? "99%"
+      : significance === 0.05
+        ? "95%"
+        : "90%"
+    : "none";
+
+  return { testStatistic, beta, n, confidence, isStationary };
+}
+
 export function annualizeDailySharpe(dailyReturns: number[]): number {
   const avg = mean(dailyReturns);
   const sd = standardDeviation(dailyReturns);

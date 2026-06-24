@@ -68,6 +68,8 @@ function toContract(sig: RelativeValueSignal, regime: string) {
       liquidity_score: sig.liquidityScore,
       opportunity_score: sig.opportunityScore,
       eligible_for_paper: sig.eligibleForPaperTrading,
+      spread_stationary: sig.spreadStationary,
+      adf_test_statistic: sig.adfTestStatistic,
       derived_fields: derived,
     },
   };
