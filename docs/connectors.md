@@ -13,8 +13,14 @@ export interface MarketDataConnector {
 
 ## Current Connectors
 
-- `SampleMarketDataConnector`: deterministic local fixture bundle.
-- `CoinGeckoSpotConnector`: public spot price adapter for BTC, ETH, and SOL. It is disabled unless `ENABLE_PUBLIC_MARKET_FETCH=true`.
+`getDefaultConnector()` routes on `ENABLE_PUBLIC_MARKET_FETCH`:
+
+- `PublicCryptoMarketConnector` — **the default** (used when the var is unset or any value other than the three below). Live OKX primary + Binance fallback for spot/perp/funding/open-interest, CoinGecko for stablecoin pegs, mempool.space + Etherscan for chain fees. Falls back to fixtures per-field on error (provenance recorded in the bundle's lineage).
+- `SampleMarketDataConnector` (`=false`): deterministic local fixture bundle, no network.
+- `CoinGeckoSpotConnector` (`=coingecko`): public spot price for BTC, ETH, SOL only. Order-book depth is **synthetic** — bid/ask sizes are hardcoded to 0 and the spread is fabricated.
+- `BinanceMarketConnector` (`=binance`): live Binance spot + perp.
+
+**Always fixtures (no connector fetches them live):** exchange health/withdrawals/reserves, security advisories / news / RSS, and ETF proxies.
 
 ## Adding an Exchange Connector
 

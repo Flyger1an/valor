@@ -20,12 +20,12 @@ npm run test
 npm run dev
 ```
 
-The MVP defaults to sample data. Set `ENABLE_PUBLIC_MARKET_FETCH=true` only when you want the CoinGecko public adapter to replace spot fixtures.
+Live public market data is the **default** (OKX primary, Binance/CoinGecko fallback) — no API key needed. Set `ENABLE_PUBLIC_MARKET_FETCH=false` to force an all-fixture bundle, or `=coingecko` / `=binance` to pin a single live source.
 
 ## Environment Variables
 
 - `DATABASE_URL`: SQLite file path for the planned local store.
-- `ENABLE_PUBLIC_MARKET_FETCH`: Enables public spot price fetches. Defaults to `false`.
+- `ENABLE_PUBLIC_MARKET_FETCH`: Routes the market-data connector. **Defaults to live** — unset or any value falls through to `PublicCryptoMarketConnector` (OKX + Binance/CoinGecko fallback). `false` → fixtures only; `coingecko` → CoinGecko spot only; `binance` → Binance spot+perp.
 - `ENABLE_LIVE_TRADING`: Must be `true` before any future executor can even be evaluated.
 - `REQUIRE_MANUAL_LIVE_CONFIRMATION`: Defaults to `true`.
 - `LIVE_TRADING_DRY_RUN`: Defaults to `true`.
