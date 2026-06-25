@@ -25,6 +25,7 @@ if _envf.exists():
             _k, _v = _l.split("=", 1)
             os.environ.setdefault(_k.strip(), _v.strip())
 
+from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
 from evolver.config import DEFAULT_LIMITS  # noqa: E402
 from evolver.data import binance_dumps as bd  # noqa: E402
 from evolver.evolve.engine import evolve  # noqa: E402
@@ -110,11 +111,8 @@ def main():
     to_check = r.promoted or r.elites[:2]
     rng = random.Random(7)
 
-    def boot_p(x):
-        if len(x) < 2:
-            return 1.0
-        b = [_sh([rng.choice(x) for _ in x]) for _ in range(2000)]
-        return sum(1 for s in b if s <= 0) / len(b)
+    def boot_p(x):   # stationary block bootstrap -> preserves autocorrelation
+        return block_bootstrap_pvalue(x, n_boot=2000)
 
     survivors = []
     split = allts[int(len(allts) * 0.7)]

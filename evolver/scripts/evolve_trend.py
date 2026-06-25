@@ -17,6 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
 from evolver.config import DEFAULT_LIMITS  # noqa: E402
 from evolver.evolve.engine import evolve  # noqa: E402
 from evolver.optimize.trend_following import run_trend  # noqa: E402
@@ -76,11 +77,8 @@ def main():
 
     rng = random.Random(11)
 
-    def boot_p(x):
-        if len(x) < 2:
-            return 1.0
-        b = [_sh([rng.choice(x) for _ in x]) for _ in range(3000)]
-        return sum(1 for s in b if s <= 0) / len(b)
+    def boot_p(x):   # stationary block bootstrap -> preserves autocorrelation
+        return block_bootstrap_pvalue(x, n_boot=3000)
 
     best = r.elites[0]
     print(f"\nLOCK fitness-selected genome -> test on NEVER-SEEN holdout + neighborhood stability:")

@@ -20,22 +20,47 @@ def sharpe(rets: list[float]) -> float:
     return (sum(rets) / len(rets)) / sd if sd > 0 else 0.0
 
 
-def deflated_sharpe(rets: list[float], n_trials: int) -> float:
-    """Haircut the Sharpe for multiple-testing/overfitting (more trials => bigger penalty)."""
-    if len(rets) < 2:
+def penalized_sharpe(rets: list[float], n_trials: int) -> float:
+    """Selection score: Sharpe haircut by the expected MAX Sharpe of `n_trials` zero-edge configs,
+    in the Sharpe's own standard-error units. E[max of N standard normals] ≈ √(2·ln N); the Sharpe's
+    SE ≈ √((1 + SR²/2)/T) (Lo 2002). So subtract √(2·ln N)·SE(SR) — a statistically-scaled penalty,
+    not the old ad-hoc `0.5·ln(N)/√T`.
+
+    NOTE: this is a complexity-penalized Sharpe NUMBER for RANKING grid configs — it is NOT the
+    Bailey/López de Prado probability Deflated Sharpe Ratio (that lives in `evolve.fitness.
+    deflated_sharpe` and returns P(true Sharpe > 0)). Named honestly so the two are never confused.
+    """
+    if len(rets) < 3:
         return -1e9
-    return sharpe(rets) - 0.5 * math.log(max(n_trials, 1)) / math.sqrt(len(rets))
+    sr = sharpe(rets)
+    se = math.sqrt((1 + 0.5 * sr * sr) / len(rets))
+    e_max = math.sqrt(2 * math.log(max(n_trials, 2)))
+    return sr - e_max * se
 
 
 def bootstrap_pvalue(chal: list[float], base: list[float], iters: int = 2000, seed: int = 7) -> float:
-    """P(challenger NOT better than incumbent) via paired bootstrap of Sharpe diff."""
-    if len(chal) < 2 or len(base) < 2:
+    """P(challenger NOT better than incumbent) via a PAIRED stationary-block bootstrap of the Sharpe
+    difference. Paired (the SAME resampled index set is applied to both legs, since they trade the
+    same OOS window) and block (geometric-length blocks preserve autocorrelation). The old version
+    was neither — independent IID draws — which broke the pairing AND ignored serial dependence.
+    """
+    n = min(len(chal), len(base))
+    if n < 4:
         return 1.0
+    chal, base = chal[:n], base[:n]
+    p_geom = 1.0 / max(2.0, n ** (1.0 / 3.0))
     rng = random.Random(seed)
     not_better = 0
     for _ in range(iters):
-        cs = sharpe([rng.choice(chal) for _ in chal])
-        bs = sharpe([rng.choice(base) for _ in base])
+        idx = []
+        while len(idx) < n:
+            k = rng.randrange(n)
+            idx.append(k)
+            while len(idx) < n and rng.random() > p_geom:
+                k = (k + 1) % n
+                idx.append(k)
+        cs = sharpe([chal[i] for i in idx])
+        bs = sharpe([base[i] for i in idx])      # SAME indices -> genuinely paired
         if cs - bs <= 0:
             not_better += 1
     return not_better / iters

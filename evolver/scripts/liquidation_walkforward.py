@@ -17,6 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
 from evolver.config import DEFAULT_LIMITS  # noqa: E402
 from evolver.evolve.engine import evolve  # noqa: E402
 from evolver.optimize.liquidation_reversion import run_liquidation_reversion as RLR  # noqa: E402
@@ -55,11 +56,8 @@ def main():
 
     rng = random.Random(11)
 
-    def boot_p(x):
-        if len(x) < 2:
-            return 1.0
-        b = [_sh([rng.choice(x) for _ in x]) for _ in range(3000)]
-        return sum(1 for s in b if s <= 0) / len(b)
+    def boot_p(x):   # stationary block bootstrap -> preserves autocorrelation
+        return block_bootstrap_pvalue(x, n_boot=3000)
 
     print("\nlock each top TRAIN genome -> evaluate on the NEVER-SEEN holdout:")
     print(f"  {'wickATR':>7} {'hold':>4} {'atrW':>4} | {'trainSR':>7} {'trDSR':>5} || "

@@ -34,12 +34,17 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
 
 from evolver.config import DEFAULT_LIMITS  # noqa: E402
 from evolver.data.okx import okx_candles_ohlc, okx_intraday_closes, okx_intraday_ohlc  # noqa: E402
+from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
+from evolver.evolve import fitness as F  # noqa: E402
 from evolver.evolve.engine import evolve  # noqa: E402
 from evolver.optimize.cross_sectional import run_cross_sectional as RXS  # noqa: E402
 from evolver.optimize.liquidation_reversion import run_liquidation_reversion as RLR  # noqa: E402
 from evolver.optimize.trend_following import run_trend as RT  # noqa: E402
 from evolver.research import queue as Q  # noqa: E402
 
+# CAVEAT (survivorship): currently-listed symbols only -> biased UP (coins that delisted or blew up
+# inside the window are absent). Most inflates the cross-sectional factor results; least affects the
+# pooled liquidation event study. A point-in-time universe is the real fix (data effort, not done).
 UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "DOGE", "AVAX", "LINK", "DOT", "LTC", "ADA",
             "NEAR", "ARB", "OP", "INJ", "SUI", "APT", "SEI", "ATOM", "FIL"]
 MONTHS = int(os.getenv("EVOLVER_RESEARCH_MONTHS", "15"))
@@ -178,11 +183,10 @@ def cycle(fam, data):
                use_llm=False, log=lambda *_: None)
     g = r.elites[0].params
 
+    # stationary block bootstrap -> preserves autocorrelation. IID per-trade resampling understates
+    # the p-value on serially-correlated trade streams (overlapping holds), inflating significance.
     def boot_p(x):
-        if len(x) < 2:
-            return 1.0
-        b = [_sh([rng.choice(x) for _ in x]) for _ in range(3000)]
-        return sum(1 for s in b if s <= 0) / len(b)
+        return block_bootstrap_pvalue(x, n_boot=3000)
 
     ho = run(g, lo=split)
     ho2 = [v for _, v in fam["bt"](data, {**g, "fee_bps": 2 * fam["fee"]}, DEFAULT_LIMITS, lo=split)]
@@ -190,14 +194,24 @@ def cycle(fam, data):
     nb_sr = [_sh(run(q, lo=split)) for q in nb]
     npos = sum(1 for s in nb_sr if s > 0)
     osr, on, op, o2 = _sh(ho), len(ho), boot_p(ho), _sh(ho2)
-    passed = osr > 0.05 and op < 0.05 and on >= 20 and o2 > 0 and (npos >= 0.75 * len(nb) if nb else False)
-    summ = (f"{fam['name']}: OOS {osr:+.2f} (p {op:.3f}, n {on}) | 2x-cost {o2:+.2f} | "
-            f"stable {npos}/{len(nb)} | {'PASS' if passed else 'below bar'}")
+    # Trials-aware Deflated Sharpe on the HOLDOUT: the multiple-testing correction the gate was
+    # missing. The bootstrap p asks "is THIS series' Sharpe > 0"; DSR asks "...given we picked the
+    # BEST of r.n_trials genomes" — using the search's true trial count + Sharpe spread. PBO (now
+    # actually computed, not a vacuous None) adds the population overfitting check.
+    sk, ku = F._moments(ho)
+    dho = F.deflated_sharpe(osr, on, r.n_trials, r.var_trials_sr, sk, ku)
+    passed = (osr > 0.05 and op < 0.05 and on >= 20 and o2 > 0 and dho > 0.95
+              and (npos >= 0.75 * len(nb) if nb else False)
+              and (r.pbo is None or r.pbo < 0.5))
+    summ = (f"{fam['name']}: OOS {osr:+.2f} (p {op:.3f}, DSR {dho:.2f}, n {on}) | 2x-cost {o2:+.2f} | "
+            f"stable {npos}/{len(nb)} | pbo {'-' if r.pbo is None else round(r.pbo, 2)} | "
+            f"{'PASS' if passed else 'below bar'}")
     cand = None
     if passed:
         cand = {"id": f"{fam['name']}-{int(time.time())}", "family": fam["name"], "genome": g,
-                "oos_sharpe": round(osr, 3), "oos_p": round(op, 3), "oos_n": on,
-                "twox_cost_sharpe": round(o2, 3), "stable": f"{npos}/{len(nb)}", "found": _now()}
+                "oos_sharpe": round(osr, 3), "oos_p": round(op, 3), "oos_n": on, "dsr": round(dho, 3),
+                "twox_cost_sharpe": round(o2, 3), "stable": f"{npos}/{len(nb)}",
+                "pbo": (None if r.pbo is None else round(r.pbo, 3)), "found": _now()}
     return summ, cand
 
 

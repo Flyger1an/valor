@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from evolver.config import RiskLimits
 from evolver.optimize.backtest import run_strategy
-from evolver.optimize.promotion import deflated_sharpe, promotion_decision
+from evolver.optimize.promotion import penalized_sharpe, promotion_decision
 
 MIN_HISTORY = 60          # need enough signals for a meaningful split
 SEARCH = {                # (low, high) — the ONLY tunable surface
@@ -42,7 +42,7 @@ def run_optimization(signals: list[dict], active: dict, limits: RiskLimits,
 
     def objective(trial):
         params = {**active, **{k: trial.suggest_float(k, *rng) for k, rng in SEARCH.items()}}
-        return deflated_sharpe(run_strategy(train, params, limits)["returns"], n_trials)
+        return penalized_sharpe(run_strategy(train, params, limits)["returns"], n_trials)
 
     study = optuna.create_study(direction="maximize")
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)

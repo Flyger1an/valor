@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 from evolver.config import DEFAULT_LIMITS  # noqa: E402
 from evolver.data import sources  # noqa: E402
 from evolver.optimize.funding_backtest import run_funding_backtest  # noqa: E402
-from evolver.optimize.promotion import deflated_sharpe, sharpe  # noqa: E402
+from evolver.optimize.promotion import penalized_sharpe, sharpe  # noqa: E402
 
 BASES = ["BTC", "ETH", "SOL"]
 LOOKBACK = 730  # ~24 months — reach back into the 2024 high-funding bull
@@ -66,7 +66,7 @@ def main():
             tr = run_funding_backtest(data, {**g, **exe}, DEFAULT_LIMITS, hi=split)
             if len(tr["returns"]) < 10:
                 continue
-            s = deflated_sharpe(tr["returns"], len(grid))
+            s = penalized_sharpe(tr["returns"], len(grid))
             if b is None or s > b[0]:
                 b = (s, {**g, **exe}, tr)
         if not b:
@@ -96,7 +96,7 @@ def main():
             tr = run_funding_backtest(fit, {**g, **maker}, DEFAULT_LIMITS)
             if len(tr["returns"]) < 10:
                 continue
-            s = deflated_sharpe(tr["returns"], len(grid))
+            s = penalized_sharpe(tr["returns"], len(grid))
             if b is None or s > b[0]:
                 b = (s, {**g, **maker}, tr)
         if not b:

@@ -59,8 +59,12 @@ def evolve(backtest, space, family_desc, generations=8, pop=8, seed=7,
             f"best fitness {best.fitness:+.3f} (oos {best.oos_sharpe:+.2f}, recent {best.recent_sharpe:+.2f})")
 
     # authoritative deflation + PBO across the whole search
-    n_trials = len([c for c in all_cards if c.n_trades >= 3])
-    var_tr = _var(full_srs) if len(full_srs) > 1 else 0.25
+    n_trials = len(all_cards)                              # every evaluated genome IS a trial
+    med_n = F._median([c.n_trades for c in all_cards if c.n_trades >= 3]) or 30
+    # Floor trial-Sharpe variance at a single Sharpe's sampling variance (~1/T). A CONVERGED search
+    # clusters its elites and would otherwise report ~0 spread -> under-deflate (a free pass); the
+    # floor stops the optimizer from deflating away its own multiple-testing penalty.
+    var_tr = max(_var(full_srs), 1.0 / max(med_n, 5))
     for c in arch.elites():
         rets = [r for _, r in c.trades]
         sk, ku = F._moments(rets)
@@ -84,15 +88,22 @@ def _var(xs):
 
 
 def _population_pbo(cards):
+    """PBO across the population. Buckets trades into equal-width TIME bins (not calendar months) so
+    it actually RUNS on the few-month holdouts the loop sees. The old 10-calendar-month floor made it
+    silently return None — a vacuous gate pass — in exactly the short-sample regime where overfitting
+    is worst."""
     usable = [c for c in cards if c.n_trades >= 10]
     if len(usable) < 4:
         return None
-    months = sorted({t // (30 * 86_400_000) for c in usable for t, _ in c.trades})
-    if len(months) < 10:
+    tmin = min(t for c in usable for t, _ in c.trades)
+    tmax = max(t for c in usable for t, _ in c.trades)
+    if tmax <= tmin:
         return None
-    matrix = [[0.0] * len(usable) for _ in months]
+    n_bins = 10                                            # == s_blocks below (one block per bin)
+    width = (tmax - tmin + 1) / n_bins
+    matrix = [[0.0] * len(usable) for _ in range(n_bins)]
     for j, c in enumerate(usable):
-        vec = F.monthly_vector(c.trades, months)
-        for i, v in enumerate(vec):
-            matrix[i][j] = v
-    return F.cscv_pbo(matrix, s_blocks=10)
+        for t, r in c.trades:
+            b = min(n_bins - 1, int((t - tmin) / width))
+            matrix[b][j] += r
+    return F.cscv_pbo(matrix, s_blocks=n_bins)

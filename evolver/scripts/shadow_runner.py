@@ -44,6 +44,9 @@ FEE_BPS = 8.0                       # taker fee per side
 SLIP_BPS = float(os.getenv("SHADOW_SLIP_BPS", "12"))           # spread/2 + market impact, per side
 FUNDING_BPS_PER_8H = float(os.getenv("SHADOW_FUNDING_BPS_8H", "1.5"))  # pure DRAG over the hold
 #   (modeled as always-a-cost, never a credit -> conservative; real per-coin funding is a refinement)
+# CAVEAT (survivorship): currently-listed symbols only — coins delisted in-window are absent. The
+# liquidation fade is a pooled event study so it's the least survivorship-sensitive family, but the
+# bias is UP. Forward paper from here on is immune (it only ever sees live, currently-traded names).
 UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "DOGE", "AVAX", "LINK", "DOT", "LTC", "ADA",
             "NEAR", "ARB", "OP", "INJ", "SUI", "APT", "SEI", "ATOM", "FIL"]
 BASKET = [{"wick_atr": w, "hold_hours": h, "body_max": 0.55, "cooldown_h": 5, "atr_window": a}

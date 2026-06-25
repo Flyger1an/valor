@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 from evolver.config import DEFAULT_LIMITS  # noqa: E402
 from evolver.data.okx import okx_daily_closes  # noqa: E402
 from evolver.optimize.forward_backtest import run_forward_backtest  # noqa: E402
-from evolver.optimize.promotion import deflated_sharpe, sharpe  # noqa: E402
+from evolver.optimize.promotion import penalized_sharpe, sharpe  # noqa: E402
 
 PAIRS = [
     ("ETH", "BTC", "cointegration_spread"),
@@ -50,7 +50,7 @@ def main() -> None:
         tr = run_forward_backtest(closes, PAIRS, p, DEFAULT_LIMITS, hi=split)
         if len(tr["returns"]) < 15:  # need enough train trades to mean anything
             continue
-        score = deflated_sharpe(tr["returns"], len(combos))
+        score = penalized_sharpe(tr["returns"], len(combos))
         if best is None or score > best[0]:
             best = (score, p, tr)
 

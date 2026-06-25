@@ -42,6 +42,8 @@ def okx_intraday_closes(base: str, bar: str = "1H", bars: int = 720, inst: str |
         if body.get("code") != "0" or not data:
             break
         for r in data:
+            if len(r) >= 9 and r[8] != "1":   # drop the still-forming (unconfirmed) trailing bar
+                continue
             out[int(r[0])] = float(r[4])
         after = min(int(r[0]) for r in data)  # page older
         if len(data) < 100:
@@ -62,6 +64,8 @@ def okx_intraday_ohlc(base: str, bar: str = "1H", bars: int = 11_000, inst: str 
         if body.get("code") != "0" or not data:
             break
         for r in data:
+            if len(r) >= 9 and r[8] != "1":   # drop the still-forming (unconfirmed) trailing bar
+                continue
             out[int(r[0])] = (float(r[1]), float(r[2]), float(r[3]), float(r[4]))
         after = min(int(r[0]) for r in data)
         if len(data) < 100:

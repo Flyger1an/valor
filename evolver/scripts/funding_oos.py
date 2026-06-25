@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from evolver.config import DEFAULT_LIMITS  # noqa: E402
 from evolver.optimize.funding_backtest import load, run_funding_backtest  # noqa: E402
-from evolver.optimize.promotion import deflated_sharpe, sharpe  # noqa: E402
+from evolver.optimize.promotion import penalized_sharpe, sharpe  # noqa: E402
 
 BASES = ["BTC", "ETH", "SOL"]
 GRID = {
@@ -39,7 +39,7 @@ def main() -> None:
         n = len(tr["returns"])
         if n < 8:
             continue
-        score = deflated_sharpe(tr["returns"], len(combos))
+        score = penalized_sharpe(tr["returns"], len(combos))
         if best is None or score > best[0]:
             best = (score, p, tr)
 
