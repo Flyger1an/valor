@@ -61,10 +61,12 @@ def evolve(backtest, space, family_desc, generations=8, pop=8, seed=7,
     # authoritative deflation + PBO across the whole search
     n_trials = len(all_cards)                              # every evaluated genome IS a trial
     med_n = F._median([c.n_trades for c in all_cards if c.n_trades >= 3]) or 30
-    # Floor trial-Sharpe variance at a single Sharpe's sampling variance (~1/T). A CONVERGED search
-    # clusters its elites and would otherwise report ~0 spread -> under-deflate (a free pass); the
-    # floor stops the optimizer from deflating away its own multiple-testing penalty.
-    var_tr = max(_var(full_srs), 1.0 / max(med_n, 5))
+    # var_trials_sr must be the NULL sampling variance of a per-trade Sharpe (~1/T) — NOT the empirical
+    # spread of the trials' realized Sharpes. When the edge is param-localized (e.g. ONE funding phase),
+    # good+bad genomes inflate that spread, which inflates sr0 and REJECTS genuine edges (a +1.2 Sharpe
+    # got killed). 1/T makes the DSR the clean false-strategy test: observed t-stat (SR*sqrt T) vs the
+    # expected max-of-N t-stat (~sqrt(2 ln N)). Noise's best-of-N stays below it; a real edge clears it.
+    var_tr = 1.0 / max(med_n, 5)
     for c in arch.elites():
         rets = [r for _, r in c.trades]
         sk, ku = F._moments(rets)

@@ -40,6 +40,7 @@ from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
 from evolver.evolve import fitness as F  # noqa: E402
 from evolver.evolve.engine import evolve  # noqa: E402
 from evolver.optimize.cross_sectional import run_cross_sectional as RXS  # noqa: E402
+from evolver.optimize.funding_session import run_funding_session as RFS  # noqa: E402
 from evolver.optimize.liquidation_reversion import (LIQ_SLIP_BPS,  # noqa: E402
                                                     run_liquidation_reversion as RLR)
 from evolver.optimize.trend_following import run_trend as RT  # noqa: E402
@@ -170,6 +171,28 @@ def refresh_daily():
     return cache
 
 
+def refresh_xs_hourly():
+    """Hourly CLOSES for the short-term cross-sectional reversal family. Reuses the base hourly OHLC
+    dataset (no extra OKX fetch) when present; cold-starts with a direct closes fetch otherwise."""
+    for src in (HOURLY, HOURLY_FUND):
+        if src.exists():
+            cache = pickle.loads(src.read_bytes())
+            return {c: {t: v[3] for t, v in s.items()} for c, s in cache.items()}   # v[3]=close (4/5-tuple)
+    out = {}
+
+    def one(c):
+        try:
+            return c, okx_intraday_closes(c, "1H", MONTHS * 30 * 24)
+        except Exception:
+            return c, {}
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        for c, d in ex.map(one, UNIVERSE):
+            if d:
+                out[c] = d
+    return out
+
+
 SPACE_LIQ = {"wick_atr": (2.5, 4.5, float), "hold_hours": (3.0, 18.0, int), "body_max": (0.35, 0.7, float),
              "cooldown_h": (2.0, 18.0, int), "atr_window": (36.0, 96.0, int)}
 # funding-conditioned variant: funding_min=0 recovers base liquidation, so the search can only match-
@@ -180,6 +203,14 @@ SPACE_TREND = {"lookback": (20.0, 200.0, int), "holding": (5.0, 40.0, int), "ski
 SPACE_XS = {"w_mom": (-2.0, 2.0, float), "w_rev": (-2.0, 2.0, float), "w_vol": (-2.0, 2.0, float),
             "lookback": (5.0, 90.0, int), "holding": (2.0, 30.0, int), "quantile": (0.1, 0.4, float),
             "skip": (0.0, 5.0, int)}
+# SHORT-horizon (hourly) cross-sectional reversal: same engine, short lookback/holding (in BARS=hours),
+# free weights so the search finds reversal (long the losers, short the winners) if it's there.
+SPACE_XS_HR = {"w_mom": (-2.0, 2.0, float), "w_rev": (-2.0, 2.0, float), "w_vol": (-1.0, 1.0, float),
+               "lookback": (4.0, 48.0, int), "holding": (1.0, 12.0, int), "quantile": (0.1, 0.35, float),
+               "skip": (0.0, 3.0, int)}
+# funding-settlement seasonality: which phase-hour of the 8h cycle, how long, with/against funding sign
+SPACE_FSESS = {"entry_phase": (0.0, 7.0, int), "hold_hours": (1.0, 8.0, int),
+               "trade_dir": (-1.0, 1.0, float), "funding_min": (0.0, 0.003, float)}
 
 # the roster — add a family = add a row. Each: data refresh, backtest, space, fee, stability keys.
 FAMILIES = [
@@ -187,10 +218,16 @@ FAMILIES = [
      "stab": ("wick_atr", "hold_hours", "atr_window"), "min_cov": 24 * 60},
     {"name": "liquidation_funding", "refresh": refresh_hourly_funding, "bt": RLR, "space": SPACE_LIQ_FUND,
      "fee": 8.0, "stab": ("wick_atr", "hold_hours", "funding_min"), "min_cov": 24 * 60},
+    # stability tests only CONTINUOUS params — entry_phase is a categorical selector (a seasonality
+    # edge legitimately lives at one phase), so perturbing it would wrongly fail the robustness check.
+    {"name": "funding_session", "refresh": refresh_hourly_funding, "bt": RFS, "space": SPACE_FSESS,
+     "fee": 6.0, "stab": ("hold_hours", "funding_min"), "min_cov": 24 * 30},
     {"name": "trend", "refresh": refresh_daily, "bt": RT, "space": SPACE_TREND, "fee": 5.0,
      "stab": ("lookback", "holding", "vol_window"), "min_cov": 150},
     {"name": "cross_sectional", "refresh": refresh_daily, "bt": RXS, "space": SPACE_XS, "fee": 4.0,
      "stab": ("lookback", "holding", "quantile"), "min_cov": 150},
+    {"name": "xs_reversal", "refresh": refresh_xs_hourly, "bt": RXS, "space": SPACE_XS_HR, "fee": 5.0,
+     "stab": ("lookback", "holding", "w_rev"), "min_cov": 24 * 30},
 ]
 
 
