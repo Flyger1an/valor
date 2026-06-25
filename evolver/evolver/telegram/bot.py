@@ -220,4 +220,6 @@ def build_bot() -> Application:
 
 
 if __name__ == "__main__":
-    build_bot().run_polling()
+    # Clear any webhook + stale update queue so polling is the sole receiver.
+    # Two pollers on the same token causes Conflict errors and multi-minute delays.
+    build_bot().run_polling(drop_pending_updates=True)
