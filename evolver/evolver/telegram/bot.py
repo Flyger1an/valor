@@ -219,7 +219,22 @@ def build_bot() -> Application:
     return app
 
 
+def _clear_webhook() -> None:
+    """Polling and an active webhook fight over the same token — commands arrive late."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        return
+    import urllib.request
+    try:
+        urllib.request.urlopen(
+            f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=true",
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
-    # Clear any webhook + stale update queue so polling is the sole receiver.
+    _clear_webhook()
     # Two pollers on the same token causes Conflict errors and multi-minute delays.
     build_bot().run_polling(drop_pending_updates=True)
