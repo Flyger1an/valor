@@ -124,6 +124,7 @@ def tick():
     s = load()
     s["ticks"] += 1
     s.setdefault("pending", [])        # migrate older state files
+    journal = []                       # buffer ledger writes -> flush AFTER save(s) (no crash double-write)
     try:
         raw = {a: okx_candles_ohlc(a, "1H", 300) for a in ASSETS}   # ts -> (o,h,l,c)
     except Exception as e:
@@ -149,8 +150,7 @@ def tick():
                "exit_ts": int(entry_ts + p["max_hold"] * 3.6e6), "entry_z": p["entry_z"],
                "sim_pnl_pct": p["sim_pnl_pct"], "rationale": p["rationale"]}
         s["open"].append(pos)
-        with LEDGER.open("a") as f:
-            f.write(json.dumps({"event": "fill", **pos}) + "\n")
+        journal.append({"event": "fill", **pos})
         filled += 1
     s["pending"] = still_pending
 
@@ -175,8 +175,7 @@ def tick():
                "divergence": round(p["notional"] * net / CAP - p["sim_pnl_pct"], 5),
                "converged": converged, "closed": _now()}
         s["closed"].append(rec)
-        with LEDGER.open("a") as f:
-            f.write(json.dumps({"event": "close", **rec}) + "\n")
+        journal.append({"event": "close", **rec})
         closed_n += 1
     s["open"] = still
 
@@ -212,8 +211,7 @@ def tick():
                 "sim_pnl_pct": round(sim_fill.pnl_pct, 5), "rationale": dec.get("rationale", "")[:120]}
         s["pending"].append(pend)                          # fills at next bar's open, next tick
         s["last_entry"][key] = int(time.time() * 1000)
-        with LEDGER.open("a") as f:
-            f.write(json.dumps({"event": "intent", **pend}) + "\n")
+        journal.append({"event": "intent", **pend})
         opened += 1
 
     nowep = time.time()
@@ -228,6 +226,9 @@ def tick():
         s["hb_day"] = today
     _ping2()
     save(s)
+    with LEDGER.open("a") as f:        # commit ledger only AFTER state -> the two stay consistent on a crash
+        for r in journal:
+            f.write(json.dumps(r) + "\n")
     msg = (f"[{_now()}] tick {s['ticks']}: +{opened} intents, {filled} filled, {closed_n} closed | "
            f"open {len(s['open'])} pending {len(s['pending'])} | "
            f"shadow ${s['equity']:,.0f} vs sim ${s['sim_equity']:,.0f} (div ${div:+,.0f})")

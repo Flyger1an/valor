@@ -8,12 +8,28 @@ phone and CLI act on one queue.
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import json
 import os
 import pathlib
 
 STATE = pathlib.Path(os.getenv("EVOLVER_RESEARCH",
                                str(pathlib.Path(__file__).resolve().parents[2] / ".research_state.json")))
+
+
+def update(mutate):
+    """Atomic read-modify-write under an exclusive file lock. `mutate(s)` edits the state in place and
+    may return a value (returned by update). This serializes the research loop's commit against the
+    bot's /approve and /reject — without it, the loop's seconds-long load→cycle→save window lets a
+    stale save() clobber a human Promote/Reject (resurrecting a rejected candidate or losing one)."""
+    lock = STATE.with_suffix(".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        s = load()
+        out = mutate(s)
+        save(s)
+        return out
 
 
 def _now():
@@ -41,13 +57,13 @@ def _sig(c):
 
 def add_candidate(c) -> bool:
     """Append a candidate unless a near-identical one is already pending/approved. Returns added?"""
-    s = load()
-    known = {_sig(p) for p in s["pending"] + s["approved"]}
-    if _sig(c) in known:
-        return False
-    s["pending"].append(c)
-    save(s)
-    return True
+    def mut(s):
+        known = {_sig(p) for p in s["pending"] + s["approved"]}
+        if _sig(c) in known:
+            return False
+        s["pending"].append(c)
+        return True
+    return update(mut)
 
 
 def list_pending():
@@ -55,22 +71,22 @@ def list_pending():
 
 
 def approve(cid, actor="cli"):
-    s = load()
-    hit = next((c for c in s["pending"] if c["id"] == cid), None)
-    if not hit:
-        return None
-    s["pending"] = [c for c in s["pending"] if c["id"] != cid]
-    hit.update(approved_at=_now(), approved_by=actor)
-    s["approved"].append(hit)
-    save(s)
-    return hit
+    def mut(s):
+        hit = next((c for c in s["pending"] if c["id"] == cid), None)
+        if not hit:
+            return None
+        s["pending"] = [c for c in s["pending"] if c["id"] != cid]
+        hit.update(approved_at=_now(), approved_by=actor)
+        s["approved"].append(hit)
+        return hit
+    return update(mut)
 
 
 def reject(cid, actor="cli"):
-    s = load()
-    hit = next((c for c in s["pending"] if c["id"] == cid), None)
-    if not hit:
-        return None
-    s["pending"] = [c for c in s["pending"] if c["id"] != cid]
-    save(s)
-    return hit
+    def mut(s):
+        hit = next((c for c in s["pending"] if c["id"] == cid), None)
+        if not hit:
+            return None
+        s["pending"] = [c for c in s["pending"] if c["id"] != cid]
+        return hit
+    return update(mut)

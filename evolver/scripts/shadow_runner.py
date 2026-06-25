@@ -138,7 +138,8 @@ def tick():
     s = load_state()
     s["ticks"] += 1
     s.setdefault("pending", [])        # migrate older state files
-    feed = {}
+    journal = []                       # buffer ledger writes -> flush AFTER save_state, so a crash
+    feed = {}                          # mid-tick can't double-write the audit log on the re-run
     for c in UNIVERSE:
         try:
             o = okx_candles_ohlc(c, "1H", 300)
@@ -170,7 +171,7 @@ def tick():
                "entry_px": nb[1], "exit_ts": nb[0] + cfg["hold_hours"] * 3_600_000,
                "side": p["side"], "weight": WEIGHT}
         s["open"].append(pos)
-        log({"event": "open", **pos})
+        journal.append({"event": "open", **pos})
         filled += 1
     s["pending"] = still_pending
 
@@ -192,7 +193,7 @@ def tick():
         s["equity"] += pnl
         rec = {**pos, "exit_px": mark, "ret": round(ret, 5), "pnl_usd": round(pnl, 2), "closed": _now()}
         s["closed"].append(rec)
-        log({"event": "close", **rec})
+        journal.append({"event": "close", **rec})
         closed_now += 1
     s["open"] = still_open
 
@@ -235,7 +236,7 @@ def tick():
                            "exit_ts": ets + cfg["hold_hours"] * 3_600_000, "side": side,
                            "weight": WEIGHT}
                     s["open"].append(pos)
-                    log({"event": "open", **pos})
+                    journal.append({"event": "open", **pos})
                     opened += 1
                 else:                          # wick on the latest bar -> defer to next tick's open
                     s["pending"].append({"id": eid, "cfg": ci, "coin": c,
@@ -249,6 +250,8 @@ def tick():
            f"({(s['equity']/CAPITAL-1)*100:+.2f}%) | {len(s['closed'])} closed trades")
     _watchdog(s, msg)        # heartbeat / catch-up / external ping (only on a healthy data tick)
     save_state(s)
+    for r in journal:        # commit the ledger only AFTER state -> the two stay consistent on a crash
+        log(r)
     if opened or closed_now:
         notify(msg)
     return msg

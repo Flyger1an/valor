@@ -230,52 +230,58 @@ def cycle(fam, data):
 
 
 def tick():
-    s = Q.load()
-    fam = FAMILIES[s.get("rotation", 0) % len(FAMILIES)]
+    s0 = Q.load()                                  # read-only snapshot to pick the family + cycle no.
+    fam = FAMILIES[s0.get("rotation", 0) % len(FAMILIES)]
     data = fam["refresh"]()
     cov = min((len(v) for v in data.values()), default=0)
     if len(data) < 10 or cov < fam["min_cov"]:
-        s["rotation"] = s.get("rotation", 0) + 1
-        Q.save(s)
+        Q.update(lambda s: s.update(rotation=s.get("rotation", 0) + 1))   # atomic rotate
         return f"[{_now()}] {fam['name']}: data thin ({len(data)} coins, min {cov} bars) — skip + rotate"
-    s["cycles"] = s.get("cycles", 0) + 1
-    summ, cand = cycle(fam, data)
-    with LEDGER.open("a") as f:
-        f.write(json.dumps({"cycle": s["cycles"], "family": fam["name"], "ts": _now(),
-                            "summary": summ, "surfaced": bool(cand)}) + "\n")
-    known = {Q._sig(p) for p in s["pending"] + s["approved"]}
-    if cand:
-        rk = _region(fam, cand["genome"])
-        data_end = max((max(v) for v in data.values()), default=0)
-        st = s.setdefault("streaks", {})
-        rec = st.get(rk)
-        if not isinstance(rec, dict):                  # migrate the old monotonic-int streak format
+    summ, cand = cycle(fam, data)                  # the long part runs OUTSIDE the lock
+    data_end = max((max(v) for v in data.values()), default=0)
+    out = {}
+
+    def commit(s):
+        """Fast, UNDER the queue lock: re-reads the LATEST state, so any /approve or /reject the human
+        did during the (seconds-long) cycle is preserved instead of being clobbered by a stale save."""
+        s["cycles"] = s.get("cycles", 0) + 1
+        out["cyc"] = s["cycles"]
+        with LEDGER.open("a") as f:
+            f.write(json.dumps({"cycle": s["cycles"], "family": fam["name"], "ts": _now(),
+                                "summary": summ, "surfaced": bool(cand)}) + "\n")
+        if not cand:
+            s["rotation"] = s.get("rotation", 0) + 1
+            return
+        known = {Q._sig(p) for p in s["pending"] + s["approved"]}
+        rec = s.setdefault("streaks", {}).get(rk := _region(fam, cand["genome"]))
+        if not isinstance(rec, dict):              # migrate the old monotonic-int streak format
             rec = {"n": 0, "last_end": 0}
-            st[rk] = rec
-        # Count a confirmation ONLY if the data window has moved forward by CONFIRM_GAP since the last
-        # one. Two passes on ~99%-identical rolling data are correlated re-tests, not independent
-        # evidence; the old code incremented every pass and never reset, so a region that cleared once
-        # by luck surfaced almost immediately. Now CONFIRM means "survived on genuinely fresh data".
+            s["streaks"][rk] = rec
+        # count a confirmation ONLY if the data window advanced by CONFIRM_GAP since the last one — two
+        # passes on ~99%-identical rolling data are correlated re-tests, not independent evidence
         if data_end - rec["last_end"] >= CONFIRM_GAP_MS:
             rec["n"] += 1
             rec["last_end"] = data_end
-        nconf = rec["n"]
-        if nconf >= CONFIRM and Q._sig(cand) not in known:
-            cand["confirmations"] = nconf
+        out["nconf"] = rec["n"]
+        if rec["n"] >= CONFIRM and Q._sig(cand) not in known:
+            cand["confirmations"] = rec["n"]
             s["pending"].append(cand)
-            notify(f"🔬 RESEARCH CANDIDATE (survived {nconf} independent windows) [{cand['id']}]\n"
-                   f"{cand['genome']}\n{summ}\nApprove on phone: /candidates  (or CLI --approve {cand['id']})")
-            msg = f"[{_now()}] cycle {s['cycles']}: SURFACED {fam['name']} (confirmed {nconf}x) — {summ}"
-        else:
-            msg = (f"[{_now()}] cycle {s['cycles']}: {fam['name']} cleared gate "
-                   f"({nconf}/{CONFIRM} independent confirmations, holding) — {summ}")
-    else:
-        msg = f"[{_now()}] cycle {s['cycles']}: nothing cleared the bar — {summ}"
-        if s["cycles"] % 6 == 0:
-            notify(f"🔬 research heartbeat — cycle {s['cycles']} ({fam['name']}), 0 candidates. {summ}")
-    s["rotation"] = s.get("rotation", 0) + 1
-    Q.save(s)
-    return msg
+            out["surfaced"] = True
+        s["rotation"] = s.get("rotation", 0) + 1
+
+    Q.update(commit)
+
+    cyc = out["cyc"]
+    if out.get("surfaced"):
+        notify(f"🔬 RESEARCH CANDIDATE (survived {out['nconf']} independent windows) [{cand['id']}]\n"
+               f"{cand['genome']}\n{summ}\nApprove on phone: /candidates  (or CLI --approve {cand['id']})")
+        return f"[{_now()}] cycle {cyc}: SURFACED {fam['name']} (confirmed {out['nconf']}x) — {summ}"
+    if cand:
+        return (f"[{_now()}] cycle {cyc}: {fam['name']} cleared gate "
+                f"({out['nconf']}/{CONFIRM} independent confirmations, holding) — {summ}")
+    if cyc % 6 == 0:
+        notify(f"🔬 research heartbeat — cycle {cyc} ({fam['name']}), 0 candidates. {summ}")
+    return f"[{_now()}] cycle {cyc}: nothing cleared the bar — {summ}"
 
 
 def main():

@@ -54,6 +54,67 @@ def gen_noise(n_coins: int, n_bars: int, seed: int, ohlc: bool, hourly: bool):
     return data
 
 
+def gen_edge(n_coins: int, n_bars: int, seed: int, edge: float, hold_edge: int = 8,
+             vol: float = 0.010, spike: float = 0.12):
+    """Like gen_noise but with a REAL liquidation-reversion edge injected: after a big wick, the next
+    `hold_edge` bars drift in the FADE direction (down-wick -> up-drift) summing to `edge` gross. The
+    wick still defines the signal; now fading it genuinely pays. Tests the OPPOSITE failure mode of
+    gen_noise: can a true edge clear the (now strict + honest-cost) gate, or is it a false-negative trap?"""
+    base, step = 1_600_000_000_000, 3_600_000
+    rng = random.Random(seed)
+    data = {}
+    for ci in range(n_coins):
+        rets = [rng.gauss(0, vol) for _ in range(n_bars)]
+        wick = {}
+        for i in range(120, n_bars - hold_edge - 2):
+            if rng.random() < spike:
+                d = 1 if rng.random() < 0.5 else -1          # +1 = down-wick (fade long), -1 = up-wick
+                wick[i] = d
+                for k in range(1, hold_edge + 1):
+                    rets[i + k] += d * (edge / hold_edge)    # reversion the fade captures
+        p = 100.0 * math.exp(rng.gauss(0, 0.5))
+        px = []
+        for i in range(n_bars):
+            nx = p * math.exp(rets[i]); px.append((p, nx)); p = nx
+        series = {}
+        for i in range(n_bars):
+            o, c = px[i]; d = wick.get(i, 0); sm = abs(rng.gauss(0, 0.006))
+            if d == 1:
+                big = rng.uniform(0.04, 0.11); l, h = min(o, c) * (1 - big), max(o, c) * (1 + sm)
+            elif d == -1:
+                big = rng.uniform(0.04, 0.11); h, l = max(o, c) * (1 + big), min(o, c) * (1 - sm)
+            else:
+                w = abs(rng.gauss(0, vol))
+                if rng.random() < 0.5:
+                    l, h = min(o, c) * (1 - w), max(o, c) * (1 + sm)
+                else:
+                    h, l = max(o, c) * (1 + w), min(o, c) * (1 - sm)
+            series[base + i * step] = (o, h, l, c)
+        data[f"E{ci}"] = series
+    return data
+
+
+def power_test(n_cycles: int, edge: float):
+    fam = next(f for f in rt.FAMILIES if f["name"] == "liquidation")
+    passed = 0
+    osrs, dhos = [], []
+    print(f"power test: {n_cycles} cycles, REAL edge ~{edge*1e4:.0f}bps gross/event "
+          f"(~{edge*1e4-41:.0f}bps net after the honest ~41bps cost)\n")
+    for t in range(n_cycles):
+        data = gen_edge(20, 1800, seed=5000 + t, edge=edge)
+        summ, cand = rt.cycle(fam, data)
+        passed += cand is not None
+        m = _RX.search(summ)
+        if m:
+            osrs.append(float(m.group(1))); dhos.append(float(m.group(3)))
+        print(f"  [{t+1:>2}] {summ}{'  <-- PASSED' if cand else ''}")
+    print("\n" + "=" * 70)
+    print(f"GATE PASSED A REAL EDGE: {passed}/{n_cycles}  ({passed/n_cycles:.0%})")
+    if osrs:
+        print(f"holdout OOS Sharpe: mean {sum(osrs)/len(osrs):+.2f} | DSR mean {sum(dhos)/len(dhos):.2f}")
+    print("If this is ~0, the gate is TOO strict (rejects real edges) — a false-negative trap.")
+
+
 _RX = re.compile(r"OOS ([+\-][\d.]+) \(p ([\d.]+), DSR ([\-\d.]+), n (\d+)\).*?pbo (\S+)")
 
 
@@ -126,6 +187,10 @@ def rolling_test(n_cycles: int):
 def main():
     if sys.argv[1:2] == ["rolling"]:
         rolling_test(int(sys.argv[2]) if len(sys.argv) > 2 else 80)
+        return
+    if sys.argv[1:2] == ["power"]:
+        power_test(int(sys.argv[2]) if len(sys.argv) > 2 else 20,
+                   float(sys.argv[3]) if len(sys.argv) > 3 else 0.012)
         return
     fam_name = sys.argv[1] if len(sys.argv) > 1 else "liquidation"
     n = int(sys.argv[2]) if len(sys.argv) > 2 else 40
