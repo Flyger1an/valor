@@ -6,6 +6,10 @@ prices forward, and — crucially — record what the heuristic paper sim ESTIMA
 decision. Track shadow P&L (reality) vs sim P&L (the fantasy) and their DIVERGENCE: "the real
 edge after the sim's lies." Places nothing.
 
+EXECUTION FIDELITY: the order is DEFERRED and filled at the next bar's OPEN on both legs (the
+decision is only known after the signal bar closes), and pays realistic spread/impact + a funding
+drag — not the sim's optimistic 2bps. Still a paper mark; true fills need evolver.execution.
+
     python3 scripts/shadow_analyst.py            # one tick (cron)
     python3 scripts/shadow_analyst.py --loop 3600
     python3 scripts/shadow_analyst.py --status
@@ -31,7 +35,7 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
 from evolver.agents.analyst import build_fast_llm, decide, llm_decide  # noqa: E402
 from evolver.config import DEFAULT_LIMITS, DEFAULT_STRATEGY  # noqa: E402
 from evolver.core.signal import Signal  # noqa: E402
-from evolver.core.sim import PerpPaperSim, TAKER_FEE_BPS, SLIP_BASE_BPS  # noqa: E402
+from evolver.core.sim import PerpPaperSim, TAKER_FEE_BPS  # noqa: E402
 from evolver.data.okx import half_life_hours, mean, okx_candles_ohlc, std  # noqa: E402
 
 CAP = DEFAULT_LIMITS.capital
@@ -41,7 +45,11 @@ PAIRS = ([(a, "ETH") for a in ("SOL", "BNB", "AVAX", "LINK", "DOT", "ARB", "OP",
 ASSETS = sorted({a for p in PAIRS for a in p})
 WINDOW, EXIT_Z, COOLDOWN_H = 168, 0.5, 12
 RISK_PARAMS = {"new_pos_pct": 0.08, "new_leverage": 2.0}   # analyst clamps to limits anyway
-RT_COST = (4 * TAKER_FEE_BPS + 2 * SLIP_BASE_BPS) / 1e4     # 2 legs, open+close
+# Honest frictions: realistic spread/impact (the sim's 2bps was optimistic) + a net perp-funding
+# drag over the hold. Pairs are liquid majors so tighter than the liquidation basket, but not free.
+SHADOW2_SLIP_BPS = float(os.getenv("SHADOW2_SLIP_BPS", "6"))            # spread/2 + impact, per leg/side
+FUNDING_BPS_PER_8H = float(os.getenv("SHADOW2_FUNDING_BPS_8H", "1.5"))  # net funding drag (pure cost)
+FEE_SLIP_RT = 4 * (TAKER_FEE_BPS + SHADOW2_SLIP_BPS) / 1e4              # 2 legs x (open + close)
 STATE = pathlib.Path(os.getenv("EVOLVER_SHADOW2", str(ROOT / ".shadow_analyst_state.json")))
 LEDGER = pathlib.Path(os.getenv("EVOLVER_SHADOW2_LEDGER", str(ROOT / "shadow_analyst_ledger.jsonl")))
 HEARTBEAT_URL = os.getenv("EVOLVER_HEARTBEAT2_URL")
@@ -56,8 +64,8 @@ def _now():
 def load():
     if STATE.exists():
         return json.loads(STATE.read_text())
-    return {"open": [], "closed": [], "equity": CAP, "sim_equity": CAP, "last_entry": {},
-            "started": _now(), "ticks": 0, "last_tick_epoch": None}
+    return {"open": [], "pending": [], "closed": [], "equity": CAP, "sim_equity": CAP,
+            "last_entry": {}, "started": _now(), "ticks": 0, "last_tick_epoch": None}
 
 
 def save(s):
@@ -75,6 +83,16 @@ def notify(msg):
                                data=urllib.parse.urlencode({"chat_id": chat, "text": msg}).encode(), timeout=10)
     except Exception:
         pass
+
+
+def _ping2():
+    """Liveness ping to the external dead-man's-switch — EVERY tick (process alive), independent of
+    whether OKX returned data, so an OKX blip can't masquerade as a dead box."""
+    if HEARTBEAT_URL:
+        try:
+            urllib.request.urlopen(HEARTBEAT_URL, timeout=10)
+        except Exception:
+            pass
 
 
 def _signal(a, b, closes):
@@ -105,18 +123,42 @@ def tick():
     global _LLM
     s = load()
     s["ticks"] += 1
+    s.setdefault("pending", [])        # migrate older state files
     try:
-        feed = {a: {t: v[3] for t, v in okx_candles_ohlc(a, "1H", 300).items()} for a in ASSETS}
+        raw = {a: okx_candles_ohlc(a, "1H", 300) for a in ASSETS}   # ts -> (o,h,l,c)
     except Exception as e:
+        _ping2()                       # process is alive; an OKX blip must not look like a dead box
         save(s)
         return f"[{_now()}] tick {s['ticks']}: live feed error ({e})"
-    px = {a: (sorted(feed[a]) and feed[a][sorted(feed[a])[-1]]) for a in ASSETS}
+    closes = {a: {t: raw[a][t][3] for t in raw[a]} for a in ASSETS}
+    px = {a: (sorted(closes[a]) and closes[a][sorted(closes[a])[-1]]) for a in ASSETS}
+
+    # 0) FILL deferred entries at the NEXT bar's OPEN for BOTH legs. The decision is known only once
+    #    the signal bar CLOSES, so the realistic fill is the next open — not the signal-bar close.
+    filled, still_pending = 0, []
+    for p in s["pending"]:
+        a, b = p["a"], p["b"]
+        na = next((t for t in sorted(raw.get(a, {})) if t > p["signal_ts"]), None)
+        nb = next((t for t in sorted(raw.get(b, {})) if t > p["signal_ts"]), None)
+        if na is None or nb is None:
+            still_pending.append(p)
+            continue
+        entry_ts = max(na, nb)
+        pos = {"a": a, "b": b, "dir": p["dir"], "notional": p["notional"],
+               "a_entry": raw[a][na][0], "b_entry": raw[b][nb][0], "entry_ts": entry_ts,
+               "exit_ts": int(entry_ts + p["max_hold"] * 3.6e6), "entry_z": p["entry_z"],
+               "sim_pnl_pct": p["sim_pnl_pct"], "rationale": p["rationale"]}
+        s["open"].append(pos)
+        with LEDGER.open("a") as f:
+            f.write(json.dumps({"event": "fill", **pos}) + "\n")
+        filled += 1
+    s["pending"] = still_pending
 
     # 1) manage open shadow positions — exit on convergence or max-hold, mark vs LIVE prices
     still, closed_n = [], 0
     for p in s["open"]:
         a, b = p["a"], p["b"]
-        _, z = _signal(a, b, feed)
+        _, z = _signal(a, b, closes)
         converged = z is not None and abs(z) < EXIT_Z
         due = time.time() * 1000 >= p["exit_ts"]
         if not (converged or due) or not px[a] or not px[b]:
@@ -124,7 +166,8 @@ def tick():
             continue
         a_ret, b_ret = px[a] / p["a_entry"] - 1, px[b] / p["b_entry"] - 1
         gross = p["dir"] * (a_ret - b_ret)
-        net = gross - RT_COST
+        hold_h = max(0.0, (time.time() * 1000 - p["entry_ts"]) / 3.6e6)
+        net = gross - FEE_SLIP_RT - FUNDING_BPS_PER_8H * (hold_h / 8.0) / 1e4
         pnl = p["notional"] * net
         s["equity"] += pnl
         s["sim_equity"] += p["sim_pnl_pct"] * CAP
@@ -140,13 +183,14 @@ def tick():
     # 2) for each pair: live signal -> SAME analyst -> shadow the order it WOULD place
     if _LLM is None:
         _LLM = build_fast_llm() or False
-    open_pairs = {f"{p['a']}{p['b']}" for p in s["open"]}
+    busy = ({f"{p['a']}{p['b']}" for p in s["open"]}
+            | {f"{p['a']}{p['b']}" for p in s["pending"]})
     opened = 0
     for a, b in PAIRS:
         key = f"{a}{b}"
-        if key in open_pairs or time.time() * 1000 - s["last_entry"].get(key, 0) < COOLDOWN_H * 3.6e6:
+        if key in busy or time.time() * 1000 - s["last_entry"].get(key, 0) < COOLDOWN_H * 3.6e6:
             continue
-        sig, z = _signal(a, b, feed)
+        sig, z = _signal(a, b, closes)
         if sig is None or abs(z) < DEFAULT_STRATEGY.get("min_abs_zscore", 1.0):
             continue   # Valor only emits meaningful signals; pre-gate before spending an LLM call
         dec = (llm_decide(sig, {"regime": sig.regime}, RISK_PARAMS, DEFAULT_LIMITS, _LLM, DEFAULT_STRATEGY)
@@ -160,15 +204,16 @@ def tick():
         sim_fill = SIM.execute(sig, dec)                        # the heuristic ESTIMATE (fantasy side)
         # LLM exit object is free-form (may omit max_hold_hours) — fall back to the convergence horizon
         max_hold = float((dec.get("exit") or {}).get("max_hold_hours") or sig.expected_convergence_hours * 1.5)
-        pos = {"a": a, "b": b, "dir": direction, "notional": round(notional, 2),
-               "a_entry": px[a], "b_entry": px[b], "entry_ts": int(time.time() * 1000),
-               "exit_ts": int(time.time() * 1000 + max_hold * 3.6e6),
-               "entry_z": round(z, 3), "sim_pnl_pct": round(sim_fill.pnl_pct, 5),
-               "rationale": dec.get("rationale", "")[:120]}
-        s["open"].append(pos)
+        common = sorted(set(raw.get(a, {})) & set(raw.get(b, {})))
+        if not common:
+            continue
+        pend = {"a": a, "b": b, "dir": direction, "notional": round(notional, 2),
+                "signal_ts": common[-1], "max_hold": max_hold, "entry_z": round(z, 3),
+                "sim_pnl_pct": round(sim_fill.pnl_pct, 5), "rationale": dec.get("rationale", "")[:120]}
+        s["pending"].append(pend)                          # fills at next bar's open, next tick
         s["last_entry"][key] = int(time.time() * 1000)
         with LEDGER.open("a") as f:
-            f.write(json.dumps({"event": "intent", **pos}) + "\n")
+            f.write(json.dumps({"event": "intent", **pend}) + "\n")
         opened += 1
 
     nowep = time.time()
@@ -181,13 +226,10 @@ def tick():
         notify(f"💓 shadow-analyst {today} — shadow ${s['equity']:,.0f} vs sim ${s['sim_equity']:,.0f} "
                f"(divergence ${div:+,.0f}) | open {len(s['open'])} | closed {len(s['closed'])}")
         s["hb_day"] = today
-    if HEARTBEAT_URL:
-        try:
-            urllib.request.urlopen(HEARTBEAT_URL, timeout=10)
-        except Exception:
-            pass
+    _ping2()
     save(s)
-    msg = (f"[{_now()}] tick {s['ticks']}: +{opened} intents, {closed_n} closed | open {len(s['open'])} | "
+    msg = (f"[{_now()}] tick {s['ticks']}: +{opened} intents, {filled} filled, {closed_n} closed | "
+           f"open {len(s['open'])} pending {len(s['pending'])} | "
            f"shadow ${s['equity']:,.0f} vs sim ${s['sim_equity']:,.0f} (div ${div:+,.0f})")
     if opened or closed_n:
         notify(msg)

@@ -183,6 +183,10 @@ Goal: prove the sim ≈ reality before risking a cent.
 - ✅ **Divergence tracking BUILT (v2):** records the heuristic `PerpPaperSim` estimate alongside the
   live-marked reality per decision → shadow-vs-sim equity + per-trade divergence ("the real edge
   after the sim's lies"). Surfaced in `/analyst`.
+- ✅ **Execution-fidelity hardening (red-team fix, 2026-06-25):** both shadows now fill at the **next
+  bar's OPEN** (a signal is only known once its bar closes — marking at that close is the cardinal
+  lie) and charge taker fee + spread/impact on both legs + a conservative funding drag. The forward
+  marks are now a sober upper bound, not an optimistic one. (True fills still require Phase 4.)
 - ⬜ Fire-drill: trip the drawdown circuit breaker + `/kill`; confirm the loop halts
 - ⬜ **Accrue ≥2–4 weeks of forward data** (the clock — now running): liquidation basket forward
   track record + analyst-loop sim-vs-reality divergence.
@@ -193,9 +197,13 @@ weeks of live market — the integrity of the gate, not a delay to rush.
 
 ## Phase 4 — Execution layer on TESTNET  ·  ~1–2 weeks
 Goal: a real executor, proven where mistakes are free. (OKX — Binance is geo-blocked.)
-- ⬜ OKX **demo/testnet** signed client: place/cancel, idempotent client order IDs, partial
-  fills, reconnect, position **reconciliation against the ledger**
-- ⬜ Kill switch → cancel-all + flatten; restart resumes cleanly from checkpoints
+- ✅ OKX **demo** signed client BUILT — `evolver/execution/okx_executor.py`: place/cancel, idempotent
+  client order IDs, positions/balance/orders, `reconcile()` vs the ledger, **demo-locked**
+  (`x-simulated-trading:1` hard-wired — there is *no* live code path). Offline-tested (signing,
+  guards, id legality); `--selftest` proves the full signed round-trip (place resting limit → fetch
+  → cancel) the moment demo keys are on the box.
+- ✅ Kill switch → `flatten()` = cancel every resting order + market-close every position (idempotent).
+- ⬜ Prove on REAL demo fills: partial fills, reconnect, checkpoint-resume of an executor loop
 - ⬜ Replay Phase-3 shadow decisions on testnet; fills reconcile exactly with the ledger
 **GATE 4:** testnet open→close round-trips reconcile to the cent; kill flattens; resume works.
 
@@ -219,7 +227,9 @@ consider a second trade, larger size, or any move toward autonomy.
 ---
 
 ## Standing safety rails (all phases)
-- Paper-only until Gate 5; **no real-money code path exists before Phase 4 testnet**.
+- Paper-only until Gate 5; **no real-money code path exists** — the Phase-4 executor is demo-locked
+  (`x-simulated-trading` hard-wired, refuses if tampered); live trading is a separate module written
+  only under Gate 5.
 - Withdrawals permanently disabled on trading keys.
 - Optimizer may change only whitelisted params — never reward function or hard limits.
 - Kill switch + drawdown circuit breaker tested before every promotion to a riskier rung.

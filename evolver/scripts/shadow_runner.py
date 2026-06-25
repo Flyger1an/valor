@@ -1,10 +1,15 @@
 """Shadow runner — forward PAPER validation of the liquidation-reversion basket. ZERO orders.
 
-Each tick is self-contained and idempotent: load state -> pull live OKX 1h OHLC -> close any
-positions whose hold elapsed -> scan newly-closed bars for liquidation wicks -> open paper
-fades -> persist. Because state lives in a file (atomic write) and every tick re-derives from
-it, the process can crash or restart between any two ticks and lose nothing. Run it hourly via
-cron, or as a long-loop container — see the 24/7 notes in the response.
+Each tick is self-contained and idempotent: load state -> pull live OKX 1h OHLC -> fill deferred
+entries -> close any positions whose hold elapsed -> scan newly-closed bars for liquidation wicks
+-> defer paper fades -> persist. Because state lives in a file (atomic write) and every tick
+re-derives from it, the process can crash or restart between any two ticks and lose nothing.
+
+EXECUTION FIDELITY (so the forward book isn't a fantasy): a wick signal is only known once its bar
+CLOSES, so entries fill at the NEXT bar's OPEN (never the signal bar's close — that's the price that
+defines the edge), and every trade pays taker fee + spread/impact on both legs plus a conservative
+funding drag. This is still a paper mark, not a real fill — true fidelity needs the OKX-demo
+executor (evolver.execution.okx_executor) — but it kills the biggest optimism the backtest carried.
 
     python3 scripts/shadow_runner.py            # one tick (for cron)
     python3 scripts/shadow_runner.py --loop 3600 # long-running: tick every hour
@@ -32,7 +37,13 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
 from evolver.data.okx import okx_candles_ohlc  # noqa: E402
 
 CAPITAL = 100_000.0
-FEE_BPS = 8.0
+FEE_BPS = 8.0                       # taker fee per side
+# Execution frictions the BACKTEST omits — added here so the forward book is honest, not optimistic.
+# A liquidation fade is a TAKER hitting a thin, fast, post-cascade book; spread+impact is the real
+# cost, and it is largest exactly when this strategy fires. Tune via env once we see testnet fills.
+SLIP_BPS = float(os.getenv("SHADOW_SLIP_BPS", "12"))           # spread/2 + market impact, per side
+FUNDING_BPS_PER_8H = float(os.getenv("SHADOW_FUNDING_BPS_8H", "1.5"))  # pure DRAG over the hold
+#   (modeled as always-a-cost, never a credit -> conservative; real per-coin funding is a refinement)
 UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "DOGE", "AVAX", "LINK", "DOT", "LTC", "ADA",
             "NEAR", "ARB", "OP", "INJ", "SUI", "APT", "SEI", "ATOM", "FIL"]
 BASKET = [{"wick_atr": w, "hold_hours": h, "body_max": 0.55, "cooldown_h": 5, "atr_window": a}
@@ -53,8 +64,8 @@ def _now():
 def load_state():
     if STATE.exists():
         return json.loads(STATE.read_text())
-    return {"open": [], "closed": [], "equity": CAPITAL, "last_bar": {}, "last_entry": {},
-            "started": _now(), "ticks": 0}
+    return {"open": [], "pending": [], "closed": [], "equity": CAPITAL, "last_bar": {},
+            "last_entry": {}, "started": _now(), "ticks": 0}
 
 
 def save_state(s):
@@ -112,10 +123,18 @@ def _atr(bars, i, w):
     return s / max(1, min(w, i - 1))
 
 
+def _round_trip_cost(hold_hours):
+    """Round-trip friction the backtest leaves out, as a return-fraction: taker fee + spread/impact
+    on BOTH legs, plus a conservative funding drag over the hold (always a cost). This is what turns
+    an optimistic 'mark at close' into something closer to what you'd actually net."""
+    side = (FEE_BPS + SLIP_BPS) / 1e4
+    return 2 * side + FUNDING_BPS_PER_8H * (hold_hours / 8.0) / 1e4
+
+
 def tick():
     s = load_state()
     s["ticks"] += 1
-    fee = 2 * FEE_BPS / 1e4
+    s.setdefault("pending", [])        # migrate older state files
     feed = {}
     for c in UNIVERSE:
         try:
@@ -133,6 +152,25 @@ def tick():
         return f"no live data (fail streak {s['data_fail']})"
     s["data_fail"] = 0            # OKX healthy again
 
+    # 0) FILL deferred entries at the NEXT bar's OPEN. A wick signal is only known once its bar
+    #    CLOSES, so the earliest realistic fill is the next bar's open — never the signal bar's own
+    #    close (that price is what DEFINES the edge; assuming you trade at it is the cardinal lie).
+    filled, still_pending = 0, []
+    for p in s["pending"]:
+        bars = feed.get(p["coin"])
+        nb = next((b for b in bars if b[0] > p["signal_ts"]), None) if bars else None
+        if nb is None:
+            still_pending.append(p)
+            continue
+        cfg = BASKET[p["cfg"]]
+        pos = {"id": p["id"], "cfg": p["cfg"], "coin": p["coin"], "entry_ts": nb[0],
+               "entry_px": nb[1], "exit_ts": nb[0] + cfg["hold_hours"] * 3_600_000,
+               "side": p["side"], "weight": WEIGHT}
+        s["open"].append(pos)
+        log({"event": "open", **pos})
+        filled += 1
+    s["pending"] = still_pending
+
     # 1) CLOSE positions whose hold elapsed (mark at first bar >= planned exit)
     still_open, closed_now = [], 0
     for pos in s["open"]:
@@ -146,7 +184,7 @@ def tick():
         if mark is None:
             still_open.append(pos)
             continue
-        ret = pos["side"] * (mark / pos["entry_px"] - 1) - fee
+        ret = pos["side"] * (mark / pos["entry_px"] - 1) - _round_trip_cost(BASKET[pos["cfg"]]["hold_hours"])
         pnl = pos["weight"] * CAPITAL * ret
         s["equity"] += pnl
         rec = {**pos, "exit_px": mark, "ret": round(ret, 5), "pnl_usd": round(pnl, 2), "closed": _now()}
@@ -184,18 +222,24 @@ def tick():
                 key = f"{ci}:{c}"
                 if ts - s["last_entry"].get(key, 0) < cfg["cooldown_h"] * 3_600_000:
                     continue
-                pos = {"id": f"{ts}-{ci}-{c}", "cfg": ci, "coin": c, "entry_ts": ts,
-                       "entry_px": cl, "exit_ts": ts + cfg["hold_hours"] * 3_600_000,
-                       "side": side, "weight": WEIGHT}
-                s["open"].append(pos)
+                eid = f"{ts}-{ci}-{c}"
+                if i + 1 < n:                  # next bar already here -> fill at ITS open now
+                    ets, eo = bars[i + 1][0], bars[i + 1][1]
+                    pos = {"id": eid, "cfg": ci, "coin": c, "entry_ts": ets, "entry_px": eo,
+                           "exit_ts": ets + cfg["hold_hours"] * 3_600_000, "side": side,
+                           "weight": WEIGHT}
+                    s["open"].append(pos)
+                    log({"event": "open", **pos})
+                    opened += 1
+                else:                          # wick on the latest bar -> defer to next tick's open
+                    s["pending"].append({"id": eid, "cfg": ci, "coin": c,
+                                         "signal_ts": ts, "side": side})
                 s["last_entry"][key] = ts
-                log({"event": "open", **pos})
-                opened += 1
         if bars:
             s["last_bar"][c] = bars[-1][0]
 
-    msg = (f"[{_now()}] tick {s['ticks']}: +{opened} opened, {closed_now} closed | "
-           f"open {len(s['open'])} | equity ${s['equity']:,.0f} "
+    msg = (f"[{_now()}] tick {s['ticks']}: +{opened + filled} opened, {closed_now} closed | "
+           f"open {len(s['open'])} pending {len(s['pending'])} | equity ${s['equity']:,.0f} "
            f"({(s['equity']/CAPITAL-1)*100:+.2f}%) | {len(s['closed'])} closed trades")
     _watchdog(s, msg)        # heartbeat / catch-up / external ping (only on a healthy data tick)
     save_state(s)

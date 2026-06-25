@@ -70,7 +70,11 @@ State (shadow book, research queue, datasets) lives on the `evolver_data` volume
 keep the forward track record across migrations.
 
 ## Safety (load-bearing)
-- **Paper only.** No trading keys exist in this stack; the shadow runner has zero order capability.
+- **Paper only.** No trading keys exist in the running stack; the shadow runners have zero order
+  capability and now mark at next-bar open + realistic costs (no optimistic close fills).
+- **Demo executor is demo-locked.** `evolver/execution/okx_executor.py` *can* place orders — but
+  ONLY against OKX demo (`x-simulated-trading` hard-wired; refuses if tampered). It is **not** wired
+  into any service, isn't running, and needs demo keys you create. There is no live-money code path.
 - **Human-gated promotion.** The loop can wake you with "I found something" — it cannot act on it.
 - **Kill switch** is a shared file; `/kill` halts the inner loop from any process.
 - Per `ROADMAP.md`: stop at the human-authorization gate before any real key or capital — not close.
