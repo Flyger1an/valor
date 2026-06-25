@@ -39,10 +39,12 @@ def penalized_sharpe(rets: list[float], n_trials: int) -> float:
 
 
 def bootstrap_pvalue(chal: list[float], base: list[float], iters: int = 2000, seed: int = 7) -> float:
-    """P(challenger NOT better than incumbent) via a PAIRED stationary-block bootstrap of the Sharpe
-    difference. Paired (the SAME resampled index set is applied to both legs, since they trade the
-    same OOS window) and block (geometric-length blocks preserve autocorrelation). The old version
-    was neither — independent IID draws — which broke the pairing AND ignored serial dependence.
+    """P(challenger NOT better than incumbent) via a stationary-block bootstrap of the Sharpe diff.
+    Blocks preserve autocorrelation (the old version used independent IID draws). CAVEAT: true pairing
+    needs the two legs time-aligned per signal; here they are compacted non-neutral fill lists that can
+    differ in length, so applying a common index set only APPROXIMATES pairing and degrades toward two
+    independent one-sample tests when the legs trade different signals. For a genuinely paired test,
+    align returns by signal_id (gated signals -> 0.0 return) before calling this.
     """
     n = min(len(chal), len(base))
     if n < 4:

@@ -38,7 +38,8 @@ from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
 from evolver.evolve import fitness as F  # noqa: E402
 from evolver.evolve.engine import evolve  # noqa: E402
 from evolver.optimize.cross_sectional import run_cross_sectional as RXS  # noqa: E402
-from evolver.optimize.liquidation_reversion import run_liquidation_reversion as RLR  # noqa: E402
+from evolver.optimize.liquidation_reversion import (LIQ_SLIP_BPS,  # noqa: E402
+                                                    run_liquidation_reversion as RLR)
 from evolver.optimize.trend_following import run_trend as RT  # noqa: E402
 from evolver.research import queue as Q  # noqa: E402
 
@@ -51,6 +52,9 @@ MONTHS = int(os.getenv("EVOLVER_RESEARCH_MONTHS", "15"))
 # only surface a candidate after its REGION clears the bar this many separate cycles — makes any
 # cadence (weekly/daily/hourly) safe: a single lucky search can't surface, repeated survival can.
 CONFIRM = int(os.getenv("EVOLVER_RESEARCH_CONFIRM", "2"))
+# a confirmation only counts if the data window advanced this many days since the last one — so the
+# CONFIRM passes are on materially DIFFERENT data, not correlated re-tests of one lucky window.
+CONFIRM_GAP_MS = int(float(os.getenv("EVOLVER_CONFIRM_GAP_DAYS", "7")) * 86_400_000)
 HOURLY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA", str(ROOT / ".okx_hourly_dataset.pkl")))
 DAILY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DAILY", str(ROOT / ".okx_daily_dataset.pkl")))
 LEDGER = pathlib.Path(os.getenv("EVOLVER_RESEARCH_LEDGER", str(ROOT / "research_ledger.jsonl")))
@@ -189,7 +193,10 @@ def cycle(fam, data):
         return block_bootstrap_pvalue(x, n_boot=3000)
 
     ho = run(g, lo=split)
-    ho2 = [v for _, v in fam["bt"](data, {**g, "fee_bps": 2 * fam["fee"]}, DEFAULT_LIMITS, lo=split)]
+    # 2x-cost stress must exceed the LIVE shadow baseline, so double slippage too (not just fee) —
+    # otherwise "survives 2x cost" was still cheaper than what the paper book actually charges.
+    ho2 = [v for _, v in fam["bt"](data, {**g, "fee_bps": 2 * fam["fee"], "slip_bps": 2 * LIQ_SLIP_BPS},
+                                   DEFAULT_LIMITS, lo=split)]
     nb = _neighbors(g, fam["space"], fam["stab"])
     nb_sr = [_sh(run(q, lo=split)) for q in nb]
     npos = sum(1 for s in nb_sr if s > 0)
@@ -198,8 +205,15 @@ def cycle(fam, data):
     # missing. The bootstrap p asks "is THIS series' Sharpe > 0"; DSR asks "...given we picked the
     # BEST of r.n_trials genomes" — using the search's true trial count + Sharpe spread. PBO (now
     # actually computed, not a vacuous None) adds the population overfitting check.
-    sk, ku = F._moments(ho)
-    dho = F.deflated_sharpe(osr, on, r.n_trials, r.var_trials_sr, sk, ku)
+    # Deflated Sharpe belongs on the IN-SAMPLE best, where the selection happened — deflating the
+    # clean OOS holdout Sharpe double-counts the selection penalty. So DSR answers "was the best of
+    # (n_trials x families) genomes luck?"; the OOS holdout (osr/op) then confirms it GENERALIZES.
+    # Multiplicity = within-search trials x families (a real cross-family false-discovery axis); the
+    # TEMPORAL axis (re-mining each cycle) is handled by the non-overlapping CONFIRM rule in tick().
+    elite = r.elites[0]
+    tr_sk, tr_ku = F._moments([v for _, v in elite.trades])
+    dho = F.deflated_sharpe(elite.full_sharpe, elite.n_trades, r.n_trials * len(FAMILIES),
+                            r.var_trials_sr, tr_sk, tr_ku)
     passed = (osr > 0.05 and op < 0.05 and on >= 20 and o2 > 0 and dho > 0.95
               and (npos >= 0.75 * len(nb) if nb else False)
               and (r.pbo is None or r.pbo < 0.5))
@@ -232,18 +246,29 @@ def tick():
     known = {Q._sig(p) for p in s["pending"] + s["approved"]}
     if cand:
         rk = _region(fam, cand["genome"])
-        s.setdefault("streaks", {})
-        s["streaks"][rk] = s["streaks"].get(rk, 0) + 1
-        nconf = s["streaks"][rk]
+        data_end = max((max(v) for v in data.values()), default=0)
+        st = s.setdefault("streaks", {})
+        rec = st.get(rk)
+        if not isinstance(rec, dict):                  # migrate the old monotonic-int streak format
+            rec = {"n": 0, "last_end": 0}
+            st[rk] = rec
+        # Count a confirmation ONLY if the data window has moved forward by CONFIRM_GAP since the last
+        # one. Two passes on ~99%-identical rolling data are correlated re-tests, not independent
+        # evidence; the old code incremented every pass and never reset, so a region that cleared once
+        # by luck surfaced almost immediately. Now CONFIRM means "survived on genuinely fresh data".
+        if data_end - rec["last_end"] >= CONFIRM_GAP_MS:
+            rec["n"] += 1
+            rec["last_end"] = data_end
+        nconf = rec["n"]
         if nconf >= CONFIRM and Q._sig(cand) not in known:
             cand["confirmations"] = nconf
             s["pending"].append(cand)
-            notify(f"🔬 RESEARCH CANDIDATE (survived {nconf} separate cycles) [{cand['id']}]\n"
+            notify(f"🔬 RESEARCH CANDIDATE (survived {nconf} independent windows) [{cand['id']}]\n"
                    f"{cand['genome']}\n{summ}\nApprove on phone: /candidates  (or CLI --approve {cand['id']})")
             msg = f"[{_now()}] cycle {s['cycles']}: SURFACED {fam['name']} (confirmed {nconf}x) — {summ}"
         else:
             msg = (f"[{_now()}] cycle {s['cycles']}: {fam['name']} cleared gate "
-                   f"({nconf}/{CONFIRM} confirmations, holding) — {summ}")
+                   f"({nconf}/{CONFIRM} independent confirmations, holding) — {summ}")
     else:
         msg = f"[{_now()}] cycle {s['cycles']}: nothing cleared the bar — {summ}"
         if s["cycles"] % 6 == 0:

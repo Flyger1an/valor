@@ -112,6 +112,8 @@ def cscv_pbo(matrix, s_blocks=10):
         te_rows = [r for b in test for r in blocks[b]]
         is_sr = [sharpe([matrix[r][c] for r in tr_rows]) for c in range(cols)]
         oos_sr = [sharpe([matrix[r][c] for r in te_rows]) for c in range(cols)]
+        if max(is_sr) - min(is_sr) < 1e-12:      # no IS dispersion -> 'best' is an arbitrary tie;
+            continue                             # counting it would bias PBO toward 1.0 (skip it)
         best = max(range(cols), key=lambda c: is_sr[c])
         rank = sorted(range(cols), key=lambda c: oos_sr[c]).index(best)  # 0 = worst OOS
         w = (rank + 1) / (cols + 1)

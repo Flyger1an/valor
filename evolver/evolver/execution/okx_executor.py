@@ -12,7 +12,9 @@ SAFETY (load-bearing — read before touching)
       live-money order. Going live is a separate module written under the Phase-5 human-auth gate.
     * Refuses to construct without demo API credentials (OKX_API_KEY / _SECRET / _PASSPHRASE). No
       creds on the box  ->  no trading. Safe default.
-    * Idempotent client order IDs (clOrdId) so a retry after a dropped response can't double-fill.
+    * Idempotency is AVAILABLE, not automatic: pass an explicit `cl_ord_id` derived from your intent
+      and a retry reuses it, so OKX rejects the duplicate. The convenience default is time-based and
+      is NOT idempotent — the Phase-5 live path MUST pass a stable id (do not rely on the default).
     * `flatten()` is the kill action: cancel all resting orders, then market-close all positions.
     * Every order/cancel/close is appended to an exec ledger for reconciliation (Gate 4).
 
@@ -186,7 +188,10 @@ class OKXDemoExecutor:
             body["reduceOnly"] = True
         self._log("place.intent", body)
         d = self._request("POST", "/api/v5/trade/order", body=body)
-        res = d[0] if d else {}
+        if not d:                                  # code 0 but no order echo -> state UNKNOWN, don't
+            self._log("place.no_ack", {"clOrdId": clid})   # fabricate a success; force a reconcile
+            raise OKXError(f"order not acknowledged (empty data) for clOrdId {clid} — reconcile by id")
+        res = d[0]
         if str(res.get("sCode", "0")) not in ("0", ""):
             self._log("place.reject", {"clOrdId": clid, **res})
             raise OKXError(f"order rejected sCode {res.get('sCode')}: {res.get('sMsg')}")

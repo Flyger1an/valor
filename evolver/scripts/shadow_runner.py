@@ -35,6 +35,7 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
         os.environ.setdefault(_k.strip(), _v.strip())
 
 from evolver.data.okx import okx_candles_ohlc  # noqa: E402
+from evolver.optimize.liquidation_reversion import round_trip_cost as _lib_round_trip_cost  # noqa: E402
 
 CAPITAL = 100_000.0
 FEE_BPS = 8.0                       # taker fee per side
@@ -127,11 +128,10 @@ def _atr(bars, i, w):
 
 
 def _round_trip_cost(hold_hours):
-    """Round-trip friction the backtest leaves out, as a return-fraction: taker fee + spread/impact
-    on BOTH legs, plus a conservative funding drag over the hold (always a cost). This is what turns
-    an optimistic 'mark at close' into something closer to what you'd actually net."""
-    side = (FEE_BPS + SLIP_BPS) / 1e4
-    return 2 * side + FUNDING_BPS_PER_8H * (hold_hours / 8.0) / 1e4
+    """Round-trip friction as a return-fraction. Delegates to the SAME cost model the gate backtest
+    uses (evolver.optimize.liquidation_reversion.round_trip_cost) so the paper book and the gate can
+    never disagree — only the env-tunable per-side constants live here."""
+    return _lib_round_trip_cost(FEE_BPS, hold_hours, SLIP_BPS, FUNDING_BPS_PER_8H)
 
 
 def tick():
@@ -199,7 +199,10 @@ def tick():
     # 2) DETECT new entries on bars newer than last processed (idempotent)
     opened = 0
     for c, bars in feed.items():
-        last = s["last_bar"].get(c, 0)
+        if c not in s["last_bar"]:        # FIRST sight of this coin: seed the cursor and trade NOTHING.
+            s["last_bar"][c] = bars[-1][0]    # the ~300-bar history is NOT forward paper — booking it
+            continue                          # would fabricate look-ahead trades into the forward book
+        last = s["last_bar"][c]
         n = len(bars)
         for i in range(1, n):
             ts, o, h, l, cl = bars[i]
