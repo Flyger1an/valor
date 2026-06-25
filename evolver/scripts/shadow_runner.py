@@ -79,6 +79,17 @@ def notify(msg):
         pass
 
 
+def _ping_alive():
+    """Liveness ping to the external dead-man's-switch — fires EVERY tick because the PROCESS is
+    alive, independent of whether OKX returned data. A transient OKX outage must NOT look like a
+    dead box; if the process is genuinely dead it can't ping, so healthchecks still catches that."""
+    if HEARTBEAT_URL:
+        try:
+            urllib.request.urlopen(HEARTBEAT_URL, timeout=10)
+        except Exception:
+            pass
+
+
 def _watchdog(s, summary):
     """Liveness layer: catch-up alert on downtime, daily heartbeat, external ping."""
     nowep = time.time()
@@ -90,11 +101,7 @@ def _watchdog(s, summary):
     if s.get("last_heartbeat_day") != today:                    # once-a-day "still alive"
         notify(f"💓 shadow heartbeat {today} — {summary}")
         s["last_heartbeat_day"] = today
-    if HEARTBEAT_URL:                                            # external dead-man's-switch
-        try:
-            urllib.request.urlopen(HEARTBEAT_URL, timeout=10)
-        except Exception:
-            pass
+    _ping_alive()                                               # external dead-man's-switch
 
 
 def _atr(bars, i, w):
@@ -117,8 +124,14 @@ def tick():
         except Exception:
             pass
     if not feed:
+        s["data_fail"] = s.get("data_fail", 0) + 1
+        if s["data_fail"] in (3, 12, 48):     # ~3/12/48h of no OKX data — SOFT warn (not a dead box)
+            notify(f"⚠️ shadow-runner: no OKX data {s['data_fail']} ticks (likely OKX rate limit). "
+                   f"Process alive; will recover.")
+        _ping_alive()             # process is alive -> keep the dead-man's-switch GREEN through OKX blips
         save_state(s)
-        return "no live data"
+        return f"no live data (fail streak {s['data_fail']})"
+    s["data_fail"] = 0            # OKX healthy again
 
     # 1) CLOSE positions whose hold elapsed (mark at first bar >= planned exit)
     still_open, closed_now = [], 0
