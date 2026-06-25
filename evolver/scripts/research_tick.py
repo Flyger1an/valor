@@ -13,6 +13,7 @@ approval. Promotes NOTHING by itself. Adding a family = one registry entry.
 """
 from __future__ import annotations
 
+import bisect
 import datetime as dt
 import json
 import os
@@ -33,7 +34,8 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
         os.environ.setdefault(_k.strip(), _v.strip())
 
 from evolver.config import DEFAULT_LIMITS  # noqa: E402
-from evolver.data.okx import okx_candles_ohlc, okx_intraday_closes, okx_intraday_ohlc  # noqa: E402
+from evolver.data.okx import (okx_candles_ohlc, okx_funding_history,  # noqa: E402
+                              okx_intraday_closes, okx_intraday_ohlc)
 from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
 from evolver.evolve import fitness as F  # noqa: E402
 from evolver.evolve.engine import evolve  # noqa: E402
@@ -56,6 +58,8 @@ CONFIRM = int(os.getenv("EVOLVER_RESEARCH_CONFIRM", "2"))
 # CONFIRM passes are on materially DIFFERENT data, not correlated re-tests of one lucky window.
 CONFIRM_GAP_MS = int(float(os.getenv("EVOLVER_CONFIRM_GAP_DAYS", "7")) * 86_400_000)
 HOURLY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA", str(ROOT / ".okx_hourly_dataset.pkl")))
+HOURLY_FUND = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA_FUND",
+                                     str(ROOT / ".okx_hourly_fund_dataset.pkl")))
 DAILY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DAILY", str(ROOT / ".okx_daily_dataset.pkl")))
 LEDGER = pathlib.Path(os.getenv("EVOLVER_RESEARCH_LEDGER", str(ROOT / "research_ledger.jsonl")))
 
@@ -114,6 +118,40 @@ def refresh_hourly():
     return cache
 
 
+def refresh_hourly_funding():
+    """Rolling OKX hourly OHLC + the prevailing 8h funding rate per bar, for the funding-conditioned
+    liquidation family. {coin: {ts: (o,h,l,c, funding)}} — the 5th element rides on each bar so the
+    backtest can require the FLUSHED side to have been the crowded one (funding extreme, matching sign)."""
+    cache = pickle.loads(HOURLY_FUND.read_bytes()) if HOURLY_FUND.exists() else {}
+    target = MONTHS * 30 * 24
+
+    def one(c):
+        ex = cache.get(c, {})
+        try:
+            ohlc = (okx_intraday_ohlc(c, "1H", target) if len(ex) < target * 0.8
+                    else okx_candles_ohlc(c, "1H", 300))
+            fund = okx_funding_history(f"{c}-USDT-SWAP", days=MONTHS * 30 + 5)
+        except Exception:
+            return c, ex
+        stamps = sorted(fund)
+        rates = [fund[s] for s in stamps]
+        merged = dict(ex)
+        for ts, b in ohlc.items():
+            j = bisect.bisect_right(stamps, ts) - 1     # most recent funding stamp at/_before_ this bar
+            merged[ts] = (b[0], b[1], b[2], b[3], rates[j] if j >= 0 else 0.0)
+        if merged:
+            cut = max(merged) - target * 3_600_000
+            merged = {t: v for t, v in merged.items() if t >= cut}
+        return c, merged
+
+    with ThreadPoolExecutor(max_workers=2) as ex:   # 2 calls/coin (ohlc+funding) — go gentle on limits
+        for c, d in ex.map(one, UNIVERSE):
+            if d:
+                cache[c] = d
+    _save(HOURLY_FUND, cache)
+    return cache
+
+
 def refresh_daily():
     """LIVE OKX daily closes for trend / cross-sectional families. {coin:{ts:close}}."""
     cache = pickle.loads(DAILY.read_bytes()) if DAILY.exists() else {}
@@ -134,6 +172,9 @@ def refresh_daily():
 
 SPACE_LIQ = {"wick_atr": (2.5, 4.5, float), "hold_hours": (3.0, 18.0, int), "body_max": (0.35, 0.7, float),
              "cooldown_h": (2.0, 18.0, int), "atr_window": (36.0, 96.0, int)}
+# funding-conditioned variant: funding_min=0 recovers base liquidation, so the search can only match-
+# or-beat it in-sample; the OOS gate + DSR (the extra DOF costs a trial) judge if conditioning earns it.
+SPACE_LIQ_FUND = {**SPACE_LIQ, "funding_min": (0.0, 0.003, float)}
 SPACE_TREND = {"lookback": (20.0, 200.0, int), "holding": (5.0, 40.0, int), "skip": (0.0, 5.0, int),
                "thr": (0.0, 0.10, float), "vol_window": (10.0, 60.0, int)}
 SPACE_XS = {"w_mom": (-2.0, 2.0, float), "w_rev": (-2.0, 2.0, float), "w_vol": (-2.0, 2.0, float),
@@ -144,6 +185,8 @@ SPACE_XS = {"w_mom": (-2.0, 2.0, float), "w_rev": (-2.0, 2.0, float), "w_vol": (
 FAMILIES = [
     {"name": "liquidation", "refresh": refresh_hourly, "bt": RLR, "space": SPACE_LIQ, "fee": 8.0,
      "stab": ("wick_atr", "hold_hours", "atr_window"), "min_cov": 24 * 60},
+    {"name": "liquidation_funding", "refresh": refresh_hourly_funding, "bt": RLR, "space": SPACE_LIQ_FUND,
+     "fee": 8.0, "stab": ("wick_atr", "hold_hours", "funding_min"), "min_cov": 24 * 60},
     {"name": "trend", "refresh": refresh_daily, "bt": RT, "space": SPACE_TREND, "fee": 5.0,
      "stab": ("lookback", "holding", "vol_window"), "min_cov": 150},
     {"name": "cross_sectional", "refresh": refresh_daily, "bt": RXS, "space": SPACE_XS, "fee": 4.0,

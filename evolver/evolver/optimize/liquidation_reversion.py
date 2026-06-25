@@ -21,7 +21,8 @@ LIQ_FUNDING_BPS_PER_8H = 1.5  # conservative funding drag over the hold (always 
 
 DEFAULT_PARAMS = {"wick_atr": 3.0, "hold_hours": 6, "body_max": 0.5, "cooldown_h": 12,
                   "atr_window": 48, "fee_bps": 8.0,
-                  "slip_bps": LIQ_SLIP_BPS, "funding_bps_8h": LIQ_FUNDING_BPS_PER_8H}
+                  "slip_bps": LIQ_SLIP_BPS, "funding_bps_8h": LIQ_FUNDING_BPS_PER_8H,
+                  "funding_min": 0.0}   # 0 = no filter; >0 requires the flushed side to be the crowded one
 
 
 def round_trip_cost(fee_bps, hold_hours, slip_bps=LIQ_SLIP_BPS, funding_bps_8h=LIQ_FUNDING_BPS_PER_8H):
@@ -35,6 +36,7 @@ def run_liquidation_reversion(universe, params=None, limits: RiskLimits = DEFAUL
     p = {**DEFAULT_PARAMS, **(params or {})}
     wick, hold, bodymax = p["wick_atr"], int(p["hold_hours"]), p["body_max"]
     cd, aw = int(p["cooldown_h"]), int(p["atr_window"])
+    fmin = p["funding_min"]            # >0: only fade when the liquidated side was the CROWDED one
     cost = round_trip_cost(p["fee_bps"], hold, p["slip_bps"], p["funding_bps_8h"])  # honest round-trip
     out = []
     for coin in universe:
@@ -60,7 +62,7 @@ def run_liquidation_reversion(universe, params=None, limits: RiskLimits = DEFAUL
             if i - last < cd:
                 i += 1
                 continue
-            o, h, l, c = bars[i]
+            o, h, l, c = bars[i][0], bars[i][1], bars[i][2], bars[i][3]   # 4- or 5-tuple (5th=funding)
             atr = (pref[i] - pref[i - aw]) / aw
             if atr <= 0 or c <= 0:
                 i += 1
@@ -72,6 +74,10 @@ def run_liquidation_reversion(universe, params=None, limits: RiskLimits = DEFAUL
                     sig = 1            # liquidation dump -> fade long
                 elif (h - max(o, c)) / atr >= wick:
                     sig = -1           # liquidation squeeze -> fade short
+            if sig and fmin > 0 and len(bars[i]) > 4:
+                fnd = bars[i][4]       # the FLUSHED side must have been the crowded one: a long-
+                if (sig == 1 and fnd < fmin) or (sig == -1 and fnd > -fmin):   # liquidation dump needs
+                    sig = 0            # funding that was positive (longs paying); a squeeze, negative
             if sig:
                 entry = bars[i + 1][0]                           # fill at NEXT bar's OPEN — the signal
                 if entry <= 0:                                    # is only known at bar i's close, and c
