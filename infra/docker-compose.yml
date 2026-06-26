@@ -142,6 +142,7 @@ services:
       EVOLVER_RESEARCH_LEDGER: /data/fx_research_ledger.jsonl
       EVOLVER_FX_HOURLY: /data/fx_hourly_dataset.pkl
       EVOLVER_FX_DAILY: /data/fx_daily_dataset.pkl
+      FX_RATES_PKL: /data/fx_rates.pkl   # FRED real-rates cache for fx_carry (FRED_API_KEY via .env)
       EVOLVER_RESEARCH_MONTHS: "15"
       EVOLVER_RESEARCH_CONFIRM: "2"
     volumes: ["evolver_data:/data"]

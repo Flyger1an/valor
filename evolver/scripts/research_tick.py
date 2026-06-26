@@ -245,6 +245,19 @@ def refresh_fx_hourly():
     return cache
 
 
+def refresh_fx_carry():
+    """Refresh REAL rates from FRED -> the rates cache for fx_carry, then return FX daily closes. Any
+    currency FRED doesn't cover falls back to fx_carry's embedded table. No-op without FRED_API_KEY."""
+    try:
+        from evolver.data import fred
+        import evolver.optimize.fx_carry as fc
+        fred.refresh_to_pkl()       # writes FX_RATES_PKL (the same path fx_carry reads)
+        fc.reload_rates()           # pick up the freshly-fetched rates
+    except Exception:
+        pass
+    return refresh_fx_daily()
+
+
 SPACE_LIQ = {"wick_atr": (2.5, 4.5, float), "hold_hours": (3.0, 18.0, int), "body_max": (0.35, 0.7, float),
              "cooldown_h": (2.0, 18.0, int), "atr_window": (36.0, 96.0, int)}
 # funding-conditioned variant: funding_min=0 recovers base liquidation, so the search can only match-
@@ -303,7 +316,7 @@ FX_FAMILIES = [
      "stab": ("lookback", "holding", "quantile"), "min_cov": 150, "min_osr": 0.0, "min_n": 12},
     {"name": "fx_session", "refresh": refresh_fx_hourly, "bt": RFXS, "space": SPACE_FX_SESSION, "fee": 0.5,
      "slip": 1.0, "stab": ("hold_hours", "lookback"), "min_cov": 24 * 30, "min_osr": 0.0},
-    {"name": "fx_carry", "refresh": refresh_fx_daily, "bt": RFC, "space": SPACE_FX_CARRY, "fee": 1.0,
+    {"name": "fx_carry", "refresh": refresh_fx_carry, "bt": RFC, "space": SPACE_FX_CARRY, "fee": 1.0,
      "stab": ("holding", "quantile"), "min_cov": 150, "min_osr": 0.0, "min_n": 12},
 ]
 

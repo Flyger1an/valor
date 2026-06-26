@@ -17,6 +17,9 @@ universe: {pair: {day_ms: close}} daily (OANDA form, e.g. "EUR_USD").
 from __future__ import annotations
 
 import datetime as dt
+import os
+import pathlib
+import pickle
 
 from evolver.config import RiskLimits, DEFAULT_LIMITS
 
@@ -47,9 +50,32 @@ def _ms(ym):
 
 _RATE_MS = {c: sorted((_ms(d), r) for d, r in tbl) for c, tbl in RATES.items()}
 
+# REAL rates from the FRED cache (evolver/data/fred.py refresh_to_pkl), loaded lazily. Preferred over
+# the embedded table per-currency; reload_rates() drops the cache so a refresh is picked up.
+_REAL = None
+
+
+def reload_rates():
+    global _REAL
+    _REAL = None
+
+
+def _real_table(ccy):
+    global _REAL
+    if _REAL is None:
+        _REAL = {}
+        p = os.getenv("FX_RATES_PKL", "")
+        if p and pathlib.Path(p).exists():
+            try:
+                raw = pickle.loads(pathlib.Path(p).read_bytes())   # {ccy: {ts_ms: rate}}
+                _REAL = {c: sorted(d.items()) for c, d in raw.items()}
+            except Exception:
+                _REAL = {}
+    return _REAL.get(ccy)
+
 
 def _rate(ccy, ts):
-    tbl = _RATE_MS.get(ccy)
+    tbl = _real_table(ccy) or _RATE_MS.get(ccy)   # prefer REAL FRED rates; fall back to embedded table
     if not tbl:
         return None
     r = tbl[0][1]
