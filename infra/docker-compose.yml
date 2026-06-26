@@ -73,6 +73,7 @@ services:
       EVOLVER_SIGNALS: /data/signals.jsonl
       EVOLVER_RESEARCH: /data/research_state.json   # /candidates reads the same queue the loop writes
       EVOLVER_FX_RESEARCH: /data/fx_research_state.json   # /fxcandidates reads the FX hunt's queue
+      EVOLVER_FX_SHADOW: /data/fx_shadow_state.json       # /fxshadow reads the FX forward track
       EVOLVER_SHADOW: /data/shadow_state.json       # /shadow reads the forward paper book
       EVOLVER_SHADOW2: /data/shadow_analyst_state.json   # /analyst reads the v2 sim-vs-reality book
       EVOLVER_RESEARCH_LEDGER: /data/research_ledger.jsonl  # /research shows recent cycle summaries
@@ -147,6 +148,18 @@ services:
       EVOLVER_RESEARCH_CONFIRM: "2"
     volumes: ["evolver_data:/data"]
     restart: unless-stopped           # first cycle backfills OANDA history, then refreshes incrementally
+
+  fx-shadow-runner:        # forward track record of PROMOTED FX candidates — ZERO orders
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }
+    command: ["python", "scripts/fx_shadow.py", "--loop", "3600"]
+    working_dir: /app/evolver
+    env_file: [../evolver/.env]   # OANDA_API_KEY for FX data; TELEGRAM_* for alerts; no trading keys
+    environment:
+      EVOLVER_FX_RESEARCH: /data/fx_research_state.json   # reads the approved FX candidates
+      EVOLVER_FX_SHADOW: /data/fx_shadow_state.json
+      FX_RATES_PKL: /data/fx_rates.pkl                    # fx_carry rates (shared with fx-research-runner)
+    volumes: ["evolver_data:/data"]
+    restart: unless-stopped
 
   signal-feed:             # LIVE RV signals -> Redis -> evolver-loop (runs the inner analyst loop for real)
     build: { context: .., dockerfile: infra/Dockerfile.evolver }

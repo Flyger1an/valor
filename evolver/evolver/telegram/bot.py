@@ -163,6 +163,24 @@ async def fxcandidates(u: Update, c: ContextTypes.DEFAULT_TYPE) -> None:
             f"2x-cost {cand['twox_cost_sharpe']} | stable {cand['stable']}", reply_markup=kb)
 
 
+async def fxshadow(u: Update, c: ContextTypes.DEFAULT_TYPE) -> None:
+    """/fxshadow — forward track record of PROMOTED FX candidates (zero orders)."""
+    if not is_observer(u.effective_chat.id):
+        return
+    import json
+    p = os.getenv("EVOLVER_FX_SHADOW", "/data/fx_shadow_state.json")
+    if not os.path.exists(p):
+        return await u.message.reply_text("💱 fx-shadow hasn't ticked yet")
+    s = json.load(open(p))
+    snap = s.get("snapshot", [])
+    if not snap:
+        return await u.message.reply_text("💱 fx-shadow: no promoted FX candidates yet — /fxcandidates to Promote")
+    body = "\n".join(f"  {x['id']} {x['family']}: fwd n {x['fwd_n']} | sharpe {x['fwd_sharpe']:+.2f} | "
+                     f"ret {x['fwd_ret']:+.3f}" for x in snap)
+    await u.message.reply_text(
+        f"💱 FX shadow — forward-only track (zero orders), {s.get('ticks', 0)} ticks\n{body}")
+
+
 async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE) -> None:
     q = u.callback_query
     await q.answer()
@@ -244,7 +262,7 @@ def build_bot() -> Application:
     app = ApplicationBuilder().token(os.environ["TELEGRAM_BOT_TOKEN"]).build()
     for cmd, fn in [("status", status), ("kpis", kpis), ("shadow", shadow), ("analyst", analyst),
                     ("research", research), ("approve", approve), ("candidates", candidates),
-                    ("fxcandidates", fxcandidates),
+                    ("fxcandidates", fxcandidates), ("fxshadow", fxshadow),
                     ("tweak", tweak), ("feedback", feedback), ("kill", kill), ("reset", reset)]:
         app.add_handler(CommandHandler(cmd, fn))
     app.add_handler(CallbackQueryHandler(on_button))
