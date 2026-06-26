@@ -29,6 +29,7 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
         os.environ.setdefault(_k.strip(), _v.strip())
 
 from evolver.data.fx import fx_candles_history, fx_closes_history  # noqa: E402
+from evolver.evolve import candidate_shadow as CS  # noqa: E402
 from evolver.optimize.cross_sectional import run_cross_sectional as RXS  # noqa: E402
 from evolver.optimize.fx_carry import run_fx_carry as RFC  # noqa: E402
 from evolver.optimize.fx_session import run_fx_session as RFXS  # noqa: E402
@@ -47,21 +48,6 @@ HEARTBEAT_URL = os.getenv("EVOLVER_FX_HEARTBEAT_URL") or os.getenv("EVOLVER_HEAR
 
 def _now():
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M")
-
-
-def _sh(r):
-    if len(r) < 2:
-        return 0.0
-    m = sum(r) / len(r)
-    sd = (sum((x - m) ** 2 for x in r) / (len(r) - 1)) ** 0.5
-    return m / sd if sd > 0 else 0.0
-
-
-def _ms(s):
-    try:
-        return int(dt.datetime.strptime(s, "%Y-%m-%d %H:%M").replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
-    except Exception:
-        return 0
 
 
 def load_state():
@@ -109,18 +95,7 @@ def tick():
     daily = {p: fx_closes_history(p, "D", 900) for p in FX_PAIRS} if "daily" in need else {}
     hourly = {p: fx_candles_history(p, "H1", 3000) for p in FX_PAIRS} if "hourly" in need else {}
 
-    snap = []
-    for c in approved:
-        kind, bt, fee = FAM[c["family"]]
-        data = daily if kind == "daily" else hourly
-        since = _ms(c.get("approved_at") or c.get("found") or "")
-        try:
-            trades = bt(data, {**c["genome"], "fee_bps": fee})
-        except Exception:
-            continue
-        fwd = [r for ts, r in trades if ts >= since]          # forward-only: dated AFTER promotion
-        snap.append({"id": c["id"], "family": c["family"], "since": c.get("approved_at"),
-                     "fwd_n": len(fwd), "fwd_sharpe": round(_sh(fwd), 3), "fwd_ret": round(sum(fwd), 4)})
+    snap = CS.compute_forward(approved, FAM, {"daily": daily, "hourly": hourly})
     s["snapshot"] = snap
     today = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
     if s.get("hb_day") != today:                              # once-a-day alive ping

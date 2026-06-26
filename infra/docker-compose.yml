@@ -127,10 +127,25 @@ services:
       EVOLVER_RESEARCH_DATA: /data/okx_hourly_dataset.pkl  # liquidation family (rolling 15mo)
       EVOLVER_RESEARCH_DATA_FUND: /data/okx_hourly_fund_dataset.pkl  # liquidation_funding (OHLC+funding)
       EVOLVER_RESEARCH_DAILY: /data/okx_daily_dataset.pkl  # trend / cross-sectional (~3yr)
+      EVOLVER_FWD_SNAPSHOT: /data/crypto_shadow_state.json   # forward-feedback: learn the gate's real decay
       EVOLVER_RESEARCH_MONTHS: "15"
       EVOLVER_RESEARCH_CONFIRM: "2"   # surface only after a region survives N separate cycles
     volumes: ["evolver_data:/data"]
     restart: unless-stopped           # first cycle backfills OKX (~2-3min), then refreshes incrementally
+
+  crypto-shadow-runner:    # forward track record of PROMOTED crypto candidates — ZERO orders
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }
+    command: ["python", "scripts/crypto_shadow.py", "--loop", "3600"]
+    working_dir: /app/evolver
+    env_file: [../evolver/.env]   # TELEGRAM_* for alerts; no trading keys (reuses research datasets)
+    environment:
+      EVOLVER_RESEARCH: /data/research_state.json          # reads the approved crypto candidates
+      EVOLVER_RESEARCH_DATA: /data/okx_hourly_dataset.pkl  # reuses the research-runner's cached data
+      EVOLVER_RESEARCH_DATA_FUND: /data/okx_hourly_fund_dataset.pkl
+      EVOLVER_RESEARCH_DAILY: /data/okx_daily_dataset.pkl
+      EVOLVER_CRYPTO_SHADOW: /data/crypto_shadow_state.json
+    volumes: ["evolver_data:/data"]
+    restart: unless-stopped
 
   fx-research-runner:      # FX hunt — SAME engine + gate, separate registry/state so its cross-family
     build: { context: .., dockerfile: infra/Dockerfile.evolver }   # multiplicity is counted on its own
