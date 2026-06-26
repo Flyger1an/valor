@@ -36,9 +36,9 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
 
 from evolver.config import DEFAULT_LIMITS  # noqa: E402
 from evolver.data.fx import fx_candles_history, fx_closes_history, oanda_candles  # noqa: E402
-from evolver.data.okx import (daily_funding, okx_candles_ohlc,  # noqa: E402
-                              okx_funding_history, okx_intraday_closes,
-                              okx_intraday_ohlc, okx_liquidations, okx_oi_history)
+from evolver.data.okx import (okx_candles_ohlc, okx_funding_history,  # noqa: E402
+                              okx_intraday_closes, okx_intraday_ohlc,
+                              okx_liquidations, okx_oi_history)
 from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
 from evolver.evolve import allocate as AL  # noqa: E402
 from evolver.evolve import feedback as FB  # noqa: E402
@@ -206,9 +206,12 @@ def refresh_oi():
             oi = okx_oi_history(c, "1D")
         except Exception:
             return c, cache.get(c, {})
+        oi_day = {}                             # OKX stamps the 1D OI bar at 16:00 UTC, NOT midnight —
+        for t, v in oi.items():                 # snap to the UTC day or it never aligns with the closes
+            oi_day[(t // 86_400_000) * 86_400_000] = v
         merged = dict(cache.get(c, {}))
-        for ts in set(cl) & set(oi):            # keep only days where BOTH price and OI exist
-            merged[ts] = (cl[ts], oi[ts])
+        for ts in set(cl) & set(oi_day):        # align by UTC day (price ∩ open interest)
+            merged[ts] = (cl[ts], oi_day[ts])
         return c, merged
 
     with ThreadPoolExecutor(max_workers=2) as ex:
@@ -220,19 +223,20 @@ def refresh_oi():
 
 
 def refresh_funding_carry():
-    """Daily (close, summed 8h funding) for cross-sectional funding carry. {coin:{day:(close,funding)}}.
-    Funding history paginates ~15mo, so this has real depth immediately (no accumulation needed)."""
+    """8h-grid (close, 8h funding) for cross-sectional funding carry. {coin:{funding_ts:(close, rate)}}.
+    Rebalancing on funding's NATURAL 8h cadence (3x the points of daily) is what makes OKX's ~95 days
+    of funding ENOUGH to clear min_n — daily was n-starved (n=2 on 95d, 6 on 150d). Accumulates more."""
     cache = pickle.loads(FUND_CARRY.read_bytes()) if FUND_CARRY.exists() else {}
 
     def one(c):
         try:
-            cl = okx_intraday_closes(c, "1Dutc", 500, inst=f"{c}-USDT-SWAP")
-            fd = daily_funding(okx_funding_history(f"{c}-USDT-SWAP", days=MONTHS * 30))
+            rate = okx_funding_history(f"{c}-USDT-SWAP", days=MONTHS * 30)   # {funding_ts: 8h rate}
+            cl = okx_intraday_closes(c, "1H", 2400)
         except Exception:
             return c, cache.get(c, {})
         merged = dict(cache.get(c, {}))
-        for ts in set(cl) & set(fd):            # UTC-day-aligned closes ∩ daily-summed funding
-            merged[ts] = (cl[ts], fd[ts])
+        for ft in set(rate) & set(cl):          # funding settles on the hour -> match the hourly close
+            merged[ft] = (cl[ft], rate[ft])
         return c, merged
 
     with ThreadPoolExecutor(max_workers=2) as ex:
@@ -252,7 +256,7 @@ def refresh_liq_print():
     def one(c):
         try:
             cl = okx_intraday_closes(c, "1H", 2000)
-            lq = okx_liquidations(f"{c}-USDT-SWAP")
+            lq = okx_liquidations(f"{c}-USDT")          # instFamily, not the -SWAP instId
         except Exception:
             return c, cache.get(c, {})
         prev, merged = cache.get(c, {}), {}
@@ -378,10 +382,10 @@ SPACE_XS_HR = {"w_mom": (-2.0, 2.0, float), "w_rev": (-2.0, 2.0, float), "w_vol"
 # keep picking clean-but-untestable genomes. Capping keeps enough holdout events to actually validate.
 SPACE_OI = {"lookback": (2.0, 20.0, int), "holding": (2.0, 8.0, int), "oi_thresh": (0.03, 0.20, float),
             "ret_thresh": (0.02, 0.10, float), "trade_dir": (-1.0, 1.0, float)}
-# cross-sectional funding carry: rank by trailing funding, long lowest / short highest. holding capped
-# at 8 (NOT 15): carry is collected continuously so a short hold loses no edge, and it keeps enough
-# non-overlapping holdout rebalances (~15mo/8d) to clear min_n — a long hold would starve the holdout.
-SPACE_FUND_CARRY = {"lookback": (3.0, 30.0, int), "holding": (3.0, 8.0, int),
+# cross-sectional funding carry on the 8h funding grid: rank by trailing funding, long lowest / short
+# highest. lookback/holding are in 8H PERIODS (holding 3-6 = 1-2 days); the short cap forces enough
+# holdout rebalances on OKX's ~95 days (285 8h-bars) to clear min_n=12 (carry tolerates frequent rebal).
+SPACE_FUND_CARRY = {"lookback": (3.0, 30.0, int), "holding": (3.0, 6.0, int),
                     "quantile": (0.2, 0.4, float), "skip": (0.0, 3.0, int)}
 # liquidation-PRINT reversion: fade an actual liquidation cascade (notional spike >= liq_mult x the
 # trailing baseline) in the direction the forced flow overshot. trade_dir flips for the robustness check.
@@ -416,16 +420,21 @@ CRYPTO_FAMILIES = [
      "stab": ("lookback", "holding", "quantile"), "min_cov": 150, "min_n": 12},
     {"name": "xs_reversal", "refresh": refresh_xs_hourly, "bt": RXS, "space": SPACE_XS_HR, "fee": 5.0,
      "stab": ("lookback", "holding", "w_rev"), "min_cov": 24 * 30},
-    # OI-reversion: open interest is NEW data (positioning/flow), not a price pattern. min_cov=60 (~2
-    # months) since OKX's OI feed is short + the cache accrues it; min_n=12 (daily, low-frequency).
+    # OI-reversion: open interest is NEW data (positioning/flow), not a price pattern. OKX's 1D OI feed
+    # returns ~180 days (verified live) so this validates NOW; OI is stamped 16:00 UTC -> snapped to the
+    # day in refresh_oi (else it never aligns with the closes). min_cov=60, min_n=12 (daily).
     {"name": "oi_reversion", "refresh": refresh_oi, "bt": ROI, "space": SPACE_OI, "fee": 5.0, "slip": 5.0,
      "stab": ("lookback", "holding", "oi_thresh"), "min_cov": 60, "min_n": 12},
-    # funding carry: a cross-sectional RISK PREMIUM (funding is credited as P&L). Full funding history
-    # is available now, so min_cov=150 like the other daily factors; min_n=12 (daily, low-frequency).
+    # funding carry: a cross-sectional RISK PREMIUM (funding credited as P&L), on the 8h funding grid.
+    # OKX funding history is ~95 days = 285 8h-bars (verified live); min_cov=150 (8h bars ~50d), accrues.
+    # LOW-SHARPE/dollar-neutral, so the PBO test keeps it conservative (its flat optimum + price noise
+    # read ~0.5): it surfaces only STRONG-carry regimes over repeated cycles (correct for a crash-prone
+    # premium), never on noise.
     {"name": "funding_carry", "refresh": refresh_funding_carry, "bt": RFCY, "space": SPACE_FUND_CARRY,
      "fee": 5.0, "slip": 5.0, "stab": ("lookback", "holding", "quantile"), "min_cov": 150, "min_n": 12},
-    # liquidation PRINTS: real forced-flow data (not wick proxies), with the liquidation SIDE. Hourly;
-    # accumulates the short liq feed -> honestly data-thin until it accrues (or a vendor feed is wired).
+    # liquidation PRINTS: real forced-flow data (not wick proxies), with the liquidation SIDE. OKX's liq
+    # feed works via instFamily (verified live) but is recent-only, so refresh_liq_print ACCUMULATES it
+    # across cycles -> honestly data-thin until ~30 days of hourly liq accrue. Hourly.
     {"name": "liquidation_print", "refresh": refresh_liq_print, "bt": RLP, "space": SPACE_LIQ_PRINT,
      "fee": 8.0, "slip": LIQ_SLIP_BPS, "stab": ("liq_mult", "hold_hours", "lookback"), "min_cov": 24 * 30},
 ]

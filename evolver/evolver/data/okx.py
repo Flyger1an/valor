@@ -120,15 +120,16 @@ def okx_oi_history(ccy: str, period: str = "1D") -> dict:
     return out
 
 
-def okx_liquidations(inst: str, pages: int = 6) -> dict:
+def okx_liquidations(inst_family: str, pages: int = 6) -> dict:
     """{hour_ms: (long_liq_notional, short_liq_notional)} from the OKX liquidation-orders feed. A long
     liq = a long position force-SOLD (side='sell'); a short liq = a short force-BOUGHT (side='buy') —
-    the actual forced flow, not a wick proxy. NOTE: this public feed is RECENT-only (and OKX has
-    changed it over time), so the research cache ACCUMULATES it across cycles; if it stays empty the
-    family just stays data-thin (a vendor feed is the real-history fix). Best-effort: {} on error."""
+    the actual forced flow, not a wick proxy. inst_family is the FAMILY (e.g. 'BTC-USDT', not the
+    '-SWAP' instId — OKX's liq feed 400s on instId and needs instFamily). RECENT-only, so the research
+    cache ACCUMULATES it across cycles. Best-effort: {} on error."""
     agg, after = {}, None
     for _ in range(pages):
-        url = f"https://www.okx.com/api/v5/public/liquidation-orders?instType=SWAP&instId={inst}&state=filled&limit=100"
+        url = (f"https://www.okx.com/api/v5/public/liquidation-orders?instType=SWAP"
+               f"&instFamily={inst_family}&state=filled&limit=100")
         if after:
             url += f"&after={after}"
         try:
