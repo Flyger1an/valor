@@ -162,6 +162,41 @@ def okx_liquidations(inst_family: str, pages: int = 6) -> dict:
     return agg
 
 
+# --- semantic venue interface (consumed via evolver.data.venue; gate.py mirrors these) ---
+# Exact wrappers over the raw fetchers above, so routing the research refreshes through `venue` leaves
+# the OKX hunt byte-identical. A second venue = a module exposing these same names (see gate.py).
+UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "DOGE", "AVAX", "LINK", "DOT", "LTC", "ADA",
+            "NEAR", "ARB", "OP", "INJ", "SUI", "APT", "SEI", "ATOM", "FIL"]
+
+
+def hourly_ohlc(coin, n=2000):
+    return okx_intraday_ohlc(coin, "1H", n)
+
+
+def recent_ohlc(coin, n=300):
+    return okx_candles_ohlc(coin, "1H", n)
+
+
+def hourly_closes(coin, n=2000):
+    return okx_intraday_closes(coin, "1H", n)                         # spot (matches prior usage)
+
+
+def daily_closes(coin, n=1000):
+    return okx_intraday_closes(coin, "1Dutc", n, inst=f"{coin}-USDT-SWAP")   # perp daily
+
+
+def funding(coin, days=300):
+    return okx_funding_history(f"{coin}-USDT-SWAP", days)
+
+
+def oi_daily(coin, period="1D"):
+    return okx_oi_history(coin, period)
+
+
+def liquidations(coin):
+    return okx_liquidations(f"{coin}-USDT")
+
+
 def daily_funding(funding_by_ts: dict) -> dict:
     """Aggregate 8h funding into {utc_day_ms: summed_daily_rate}."""
     daily = {}

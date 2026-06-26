@@ -43,6 +43,11 @@ def hourly_ohlc(coin, n=2000):
             for r in _candles(coin, "1h", n)}
 
 
+def recent_ohlc(coin, n=300):
+    """Recent hourly OHLC (incremental refresh) — Gate has no separate live endpoint, just a short pull."""
+    return hourly_ohlc(coin, n)
+
+
 def hourly_closes(coin, n=2000):
     return {int(r["t"]) * 1000: float(r["c"]) for r in _candles(coin, "1h", n)}
 

@@ -36,9 +36,7 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
 
 from evolver.config import DEFAULT_LIMITS  # noqa: E402
 from evolver.data.fx import fx_candles_history, fx_closes_history, oanda_candles  # noqa: E402
-from evolver.data.okx import (okx_candles_ohlc, okx_funding_history,  # noqa: E402
-                              okx_intraday_closes, okx_intraday_ohlc,
-                              okx_liquidations, okx_oi_history)
+from evolver.data import venue as V  # noqa: E402  (crypto connector: EVOLVER_VENUE=okx|gate)
 from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
 from evolver.evolve import allocate as AL  # noqa: E402
 from evolver.evolve import feedback as FB  # noqa: E402
@@ -59,8 +57,7 @@ from evolver.research import queue as Q  # noqa: E402
 # CAVEAT (survivorship): currently-listed symbols only -> biased UP (coins that delisted or blew up
 # inside the window are absent). Most inflates the cross-sectional factor results; least affects the
 # pooled liquidation event study. A point-in-time universe is the real fix (data effort, not done).
-UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "DOGE", "AVAX", "LINK", "DOT", "LTC", "ADA",
-            "NEAR", "ARB", "OP", "INJ", "SUI", "APT", "SEI", "ATOM", "FIL"]
+UNIVERSE = V.UNIVERSE   # the crypto coin list comes from the selected venue (okx/gate)
 # FX majors + crosses (OANDA instrument form). No survivorship issue — permanent pairs.
 FX_PAIRS = ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD", "USD_CHF", "NZD_USD",
             "EUR_JPY", "GBP_JPY", "EUR_GBP", "AUD_JPY", "EUR_AUD"]
@@ -124,7 +121,7 @@ def refresh_hourly():
     def one(c):
         ex = cache.get(c, {})
         try:
-            new = okx_intraday_ohlc(c, "1H", target) if len(ex) < target * 0.8 else okx_candles_ohlc(c, "1H", 300)
+            new = V.hourly_ohlc(c, target) if len(ex) < target * 0.8 else V.recent_ohlc(c, 300)
         except Exception:
             return c, ex
         merged = {**ex, **new}
@@ -151,9 +148,9 @@ def refresh_hourly_funding():
     def one(c):
         ex = cache.get(c, {})
         try:
-            ohlc = (okx_intraday_ohlc(c, "1H", target) if len(ex) < target * 0.8
-                    else okx_candles_ohlc(c, "1H", 300))
-            fund = okx_funding_history(f"{c}-USDT-SWAP", days=MONTHS * 30 + 5)
+            ohlc = (V.hourly_ohlc(c, target) if len(ex) < target * 0.8
+                    else V.recent_ohlc(c, 300))
+            fund = V.funding(c, days=MONTHS * 30 + 5)
         except Exception:
             return c, ex
         stamps = sorted(fund)
@@ -181,7 +178,7 @@ def refresh_daily():
 
     def one(c):
         try:   # paginate ~3yr of daily closes so trend/x-sectional have a real holdout
-            return c, {**cache.get(c, {}), **okx_intraday_closes(c, "1Dutc", 1000, inst=f"{c}-USDT-SWAP")}
+            return c, {**cache.get(c, {}), **V.daily_closes(c, 1000)}
         except Exception:
             return c, cache.get(c, {})
 
@@ -202,8 +199,8 @@ def refresh_oi():
 
     def one(c):
         try:
-            cl = okx_intraday_closes(c, "1Dutc", 400, inst=f"{c}-USDT-SWAP")
-            oi = okx_oi_history(c, "1D")
+            cl = V.daily_closes(c, 400)
+            oi = V.oi_daily(c)
         except Exception:
             return c, cache.get(c, {})
         oi_day = {}                             # OKX stamps the 1D OI bar at 16:00 UTC, NOT midnight —
@@ -230,8 +227,8 @@ def refresh_funding_carry():
 
     def one(c):
         try:
-            rate = okx_funding_history(f"{c}-USDT-SWAP", days=MONTHS * 30)   # {funding_ts: 8h rate}
-            cl = okx_intraday_closes(c, "1H", 2400)
+            rate = V.funding(c, days=MONTHS * 30)        # {funding_ts: 8h rate}
+            cl = V.hourly_closes(c, 2400)
         except Exception:
             return c, cache.get(c, {})
         merged = dict(cache.get(c, {}))
@@ -255,8 +252,8 @@ def refresh_liq_print():
 
     def one(c):
         try:
-            cl = okx_intraday_closes(c, "1H", 2000)
-            lq = okx_liquidations(f"{c}-USDT")          # instFamily, not the -SWAP instId
+            cl = V.hourly_closes(c, 2000)
+            lq = V.liquidations(c)                       # contract_stats by-side (gate) / instFamily (okx)
         except Exception:
             return c, cache.get(c, {})
         prev, merged = cache.get(c, {}), {}
@@ -289,7 +286,7 @@ def refresh_xs_hourly():
 
     def one(c):
         try:
-            return c, okx_intraday_closes(c, "1H", MONTHS * 30 * 24)
+            return c, V.hourly_closes(c, MONTHS * 30 * 24)
         except Exception:
             return c, {}
 

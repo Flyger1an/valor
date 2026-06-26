@@ -154,6 +154,45 @@ services:
     volumes: ["evolver_data:/data"]
     restart: unless-stopped
 
+  gate-research-runner:    # SECOND crypto venue (Gate.io) — SAME engine + crypto families, separate
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }   # state/queue/multiplicity (cross-venue)
+    command: ["python", "scripts/research_tick.py", "--loop", "3600"]
+    working_dir: /app/evolver
+    env_file: [../evolver/.env]   # no trading keys; Gate public market data needs no auth
+    environment:
+      EVOLVER_VENUE: gate                                  # crypto refreshes hit Gate, not OKX
+      EVOLVER_RESEARCH: /data/gate_research_state.json      # SEPARATE queue from OKX
+      EVOLVER_RESEARCH_LEDGER: /data/gate_research_ledger.jsonl
+      EVOLVER_RESEARCH_DATA: /data/gate_hourly_dataset.pkl
+      EVOLVER_RESEARCH_DATA_FUND: /data/gate_hourly_fund_dataset.pkl
+      EVOLVER_RESEARCH_DAILY: /data/gate_daily_dataset.pkl
+      EVOLVER_RESEARCH_OI: /data/gate_oi_dataset.pkl
+      EVOLVER_RESEARCH_FUND_CARRY: /data/gate_fund_carry_dataset.pkl
+      EVOLVER_RESEARCH_LIQ_PRINT: /data/gate_liq_print_dataset.pkl   # Gate has 83d hourly liq history
+      EVOLVER_FWD_SNAPSHOT: /data/gate_shadow_state.json   # forward-feedback for the Gate hunt
+      EVOLVER_RESEARCH_MONTHS: "15"
+      EVOLVER_RESEARCH_CONFIRM: "2"
+      STRONG_MODEL: gpt-5-mini
+    volumes: ["evolver_data:/data"]
+    restart: unless-stopped
+
+  gate-shadow-runner:      # forward track of PROMOTED Gate candidates — ZERO orders
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }
+    command: ["python", "scripts/crypto_shadow.py", "--loop", "3600"]
+    working_dir: /app/evolver
+    env_file: [../evolver/.env]
+    environment:
+      EVOLVER_RESEARCH: /data/gate_research_state.json     # reads the approved Gate candidates
+      EVOLVER_RESEARCH_DATA: /data/gate_hourly_dataset.pkl
+      EVOLVER_RESEARCH_DATA_FUND: /data/gate_hourly_fund_dataset.pkl
+      EVOLVER_RESEARCH_DAILY: /data/gate_daily_dataset.pkl
+      EVOLVER_RESEARCH_OI: /data/gate_oi_dataset.pkl
+      EVOLVER_RESEARCH_FUND_CARRY: /data/gate_fund_carry_dataset.pkl
+      EVOLVER_RESEARCH_LIQ_PRINT: /data/gate_liq_print_dataset.pkl
+      EVOLVER_CRYPTO_SHADOW: /data/gate_shadow_state.json
+    volumes: ["evolver_data:/data"]
+    restart: unless-stopped
+
   fx-research-runner:      # FX hunt — SAME engine + gate, separate registry/state so its cross-family
     build: { context: .., dockerfile: infra/Dockerfile.evolver }   # multiplicity is counted on its own
     command: ["python", "scripts/research_tick.py", "--loop", "3600"]
