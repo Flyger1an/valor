@@ -20,6 +20,7 @@ import os
 import pathlib
 import pickle
 import random
+import re
 import sys
 import time
 import urllib.parse
@@ -38,6 +39,7 @@ from evolver.data.fx import fx_candles_history, fx_closes_history, oanda_candles
 from evolver.data.okx import (okx_candles_ohlc, okx_funding_history,  # noqa: E402
                               okx_intraday_closes, okx_intraday_ohlc)
 from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
+from evolver.evolve import allocate as AL  # noqa: E402
 from evolver.evolve import feedback as FB  # noqa: E402
 from evolver.evolve import fitness as F  # noqa: E402
 from evolver.evolve.engine import evolve  # noqa: E402
@@ -65,6 +67,7 @@ CONFIRM = int(os.getenv("EVOLVER_RESEARCH_CONFIRM", "2"))
 # a confirmation only counts if the data window advanced this many days since the last one — so the
 # CONFIRM passes are on materially DIFFERENT data, not correlated re-tests of one lucky window.
 CONFIRM_GAP_MS = int(float(os.getenv("EVOLVER_CONFIRM_GAP_DAYS", "7")) * 86_400_000)
+ALLOCATE = os.getenv("EVOLVER_ALLOCATE", "1") != "0"   # bandit family selection (vs round-robin)
 HOURLY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA", str(ROOT / ".okx_hourly_dataset.pkl")))
 HOURLY_FUND = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA_FUND",
                                      str(ROOT / ".okx_hourly_fund_dataset.pkl")))
@@ -420,12 +423,19 @@ def cycle(fam, data, fwd_decay=1.0):
 
 def tick():
     s0 = Q.load()                                  # read-only snapshot to pick the family + cycle no.
-    fam = FAMILIES[s0.get("rotation", 0) % len(FAMILIES)]
+    names = [f["name"] for f in FAMILIES]
+    if ALLOCATE and len(FAMILIES) > 1:             # bandit: spend search where there's promise
+        idx = AL.pick(len(FAMILIES), s0, s0.get("regime", "mid"), names,
+                      random.Random(int(time.time() * 1000) % (2 ** 31)))
+    else:
+        idx = s0.get("rotation", 0) % len(FAMILIES)
+    fam = FAMILIES[idx]
     data = fam["refresh"]()
     cov = min((len(v) for v in data.values()), default=0)
     if len(data) < 10 or cov < fam["min_cov"]:
         Q.update(lambda s: s.update(rotation=s.get("rotation", 0) + 1))   # atomic rotate
         return f"[{_now()}] {fam['name']}: data thin ({len(data)} coins, min {cov} bars) — skip + rotate"
+    rgm, vol_ref = AL.regime(AL.universe_vol(data), s0.get("vol_ref"))    # self-calibrated vol regime
     fwd_decay = 1.0                                 # forward-feedback: this family's learned decay
     if FWD_SNAPSHOT and FWD_SNAPSHOT.exists():
         try:
@@ -434,6 +444,8 @@ def tick():
         except Exception:
             fwd_decay = 1.0
     summ, cand = cycle(fam, data, fwd_decay=fwd_decay)   # the long part runs OUTSIDE the lock
+    m = re.search(r"OOS ([+\-][\d.]+)", summ)            # this cycle's best holdout Sharpe (for promise)
+    osr = float(m.group(1)) if m else 0.0
     data_end = max((max(v) for v in data.values()), default=0)
     out = {}
 
@@ -442,6 +454,8 @@ def tick():
         did during the (seconds-long) cycle is preserved instead of being clobbered by a stale save."""
         s["cycles"] = s.get("cycles", 0) + 1
         out["cyc"] = s["cycles"]
+        s["regime"], s["vol_ref"] = rgm, vol_ref         # store regime + self-calibrating vol ref
+        AL.update(s, fam["name"], rgm, osr)              # learn this family's promise in this regime
         with LEDGER.open("a") as f:
             f.write(json.dumps({"cycle": s["cycles"], "family": fam["name"], "ts": _now(),
                                 "summary": summ, "surfaced": bool(cand)}) + "\n")
