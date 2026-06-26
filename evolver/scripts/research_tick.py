@@ -249,7 +249,10 @@ SPACE_LIQ = {"wick_atr": (2.5, 4.5, float), "hold_hours": (3.0, 18.0, int), "bod
 # funding-conditioned variant: funding_min=0 recovers base liquidation, so the search can only match-
 # or-beat it in-sample; the OOS gate + DSR (the extra DOF costs a trial) judge if conditioning earns it.
 SPACE_LIQ_FUND = {**SPACE_LIQ, "funding_min": (0.0, 0.003, float)}
-SPACE_TREND = {"lookback": (20.0, 200.0, int), "holding": (5.0, 40.0, int), "skip": (0.0, 5.0, int),
+# holding capped at 15: on ~3yr of DAILY data a longer hold leaves too few OOS rebalances to validate
+# (the search otherwise picks a 36-day hold for low turnover -> n=5 holdout -> meaningless). Faster
+# trend only, but that's the honest limit of what daily history can confirm.
+SPACE_TREND = {"lookback": (20.0, 200.0, int), "holding": (5.0, 15.0, int), "skip": (0.0, 5.0, int),
                "thr": (0.0, 0.10, float), "vol_window": (10.0, 60.0, int)}
 SPACE_XS = {"w_mom": (-2.0, 2.0, float), "w_rev": (-2.0, 2.0, float), "w_vol": (-2.0, 2.0, float),
             "lookback": (5.0, 90.0, int), "holding": (2.0, 30.0, int), "quantile": (0.1, 0.4, float),
@@ -276,10 +279,12 @@ CRYPTO_FAMILIES = [
     # edge legitimately lives at one phase), so perturbing it would wrongly fail the robustness check.
     {"name": "funding_session", "refresh": refresh_hourly_funding, "bt": RFS, "space": SPACE_FSESS,
      "fee": 6.0, "slip": 6.0, "stab": ("hold_hours", "funding_min"), "min_cov": 24 * 30},
+    # DAILY families are low-frequency: a ~3yr holdout yields only ~15-25 rebalances, so min_n=20 was
+    # near-impossible. Lower it to 12 (the DSR's sqrt(n-1) + bootstrap still demand a real t-stat).
     {"name": "trend", "refresh": refresh_daily, "bt": RT, "space": SPACE_TREND, "fee": 5.0,
-     "stab": ("lookback", "holding", "vol_window"), "min_cov": 150},
+     "stab": ("lookback", "holding", "vol_window"), "min_cov": 150, "min_n": 12},
     {"name": "cross_sectional", "refresh": refresh_daily, "bt": RXS, "space": SPACE_XS, "fee": 4.0,
-     "stab": ("lookback", "holding", "quantile"), "min_cov": 150},
+     "stab": ("lookback", "holding", "quantile"), "min_cov": 150, "min_n": 12},
     {"name": "xs_reversal", "refresh": refresh_xs_hourly, "bt": RXS, "space": SPACE_XS_HR, "fee": 5.0,
      "stab": ("lookback", "holding", "w_rev"), "min_cov": 24 * 30},
 ]
@@ -289,9 +294,9 @@ CRYPTO_FAMILIES = [
 # REUSE the crypto backtests on FX data; fx_session is the FX twin of funding_session.
 FX_FAMILIES = [
     {"name": "fx_trend", "refresh": refresh_fx_daily, "bt": RT, "space": SPACE_TREND, "fee": 1.0,
-     "stab": ("lookback", "holding", "vol_window"), "min_cov": 150, "min_osr": 0.0},
+     "stab": ("lookback", "holding", "vol_window"), "min_cov": 150, "min_osr": 0.0, "min_n": 12},
     {"name": "fx_xsection", "refresh": refresh_fx_daily, "bt": RXS, "space": SPACE_XS, "fee": 1.0,
-     "stab": ("lookback", "holding", "quantile"), "min_cov": 150, "min_osr": 0.0},
+     "stab": ("lookback", "holding", "quantile"), "min_cov": 150, "min_osr": 0.0, "min_n": 12},
     {"name": "fx_session", "refresh": refresh_fx_hourly, "bt": RFXS, "space": SPACE_FX_SESSION, "fee": 0.5,
      "slip": 1.0, "stab": ("hold_hours", "lookback"), "min_cov": 24 * 30, "min_osr": 0.0},
 ]
