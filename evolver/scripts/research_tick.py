@@ -38,6 +38,7 @@ from evolver.data.fx import fx_candles_history, fx_closes_history, oanda_candles
 from evolver.data.okx import (okx_candles_ohlc, okx_funding_history,  # noqa: E402
                               okx_intraday_closes, okx_intraday_ohlc)
 from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
+from evolver.evolve import feedback as FB  # noqa: E402
 from evolver.evolve import fitness as F  # noqa: E402
 from evolver.evolve.engine import evolve  # noqa: E402
 from evolver.optimize.cross_sectional import run_cross_sectional as RXS  # noqa: E402
@@ -70,6 +71,8 @@ HOURLY_FUND = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA_FUND",
 DAILY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DAILY", str(ROOT / ".okx_daily_dataset.pkl")))
 FX_HOURLY = pathlib.Path(os.getenv("EVOLVER_FX_HOURLY", str(ROOT / ".fx_hourly_dataset.pkl")))
 FX_DAILY = pathlib.Path(os.getenv("EVOLVER_FX_DAILY", str(ROOT / ".fx_daily_dataset.pkl")))
+# forward-feedback: a shadow's per-candidate forward track (id -> fwd_sharpe). Empty = loop is a no-op.
+FWD_SNAPSHOT = pathlib.Path(os.getenv("EVOLVER_FWD_SNAPSHOT", "")) if os.getenv("EVOLVER_FWD_SNAPSHOT") else None
 LEDGER = pathlib.Path(os.getenv("EVOLVER_RESEARCH_LEDGER", str(ROOT / "research_ledger.jsonl")))
 
 
@@ -350,7 +353,7 @@ def _neighbors(g, space, keys):
     return out
 
 
-def cycle(fam, data):
+def cycle(fam, data, fwd_decay=1.0):
     allts = sorted({t for s in data.values() for t in s})
     split = allts[int(len(allts) * 0.72)]
     rng = random.Random(int(time.time()) % 100000)
@@ -389,7 +392,10 @@ def cycle(fam, data):
     # TEMPORAL axis (re-mining each cycle) is handled by the non-overlapping CONFIRM rule in tick().
     elite = r.elites[0]
     tr_sk, tr_ku = F._moments([v for _, v in elite.trades])
-    dho = F.deflated_sharpe(elite.full_sharpe, elite.n_trades, r.n_trials * len(FAMILIES),
+    # FORWARD-FEEDBACK: discount the Sharpe fed to the DSR by this family's LEARNED backtest->forward
+    # decay (from the shadows' OOS track). A family whose promoted edges decayed forward must clear a
+    # proportionally higher confidence bar. fwd_decay=1.0 until real forward data exists -> no change.
+    dho = F.deflated_sharpe(elite.full_sharpe * fwd_decay, elite.n_trades, r.n_trials * len(FAMILIES),
                             r.var_trials_sr, tr_sk, tr_ku)
     # per-family economic floors: the scale-free stats (DSR/bootstrap/PBO) are untouched, but the
     # minimum per-period Sharpe (min_osr) and trade count (min_n) adapt to the family's frequency —
@@ -398,15 +404,17 @@ def cycle(fam, data):
     passed = (osr > min_osr and op < 0.05 and on >= min_n and o2 > 0 and dho > 0.95
               and (npos >= 0.75 * len(nb) if nb else False)
               and (r.pbo is None or r.pbo < 0.5))
-    summ = (f"{fam['name']}: OOS {osr:+.2f} (p {op:.3f}, DSR {dho:.2f}, n {on}) | 2x-cost {o2:+.2f} | "
-            f"stable {npos}/{len(nb)} | pbo {'-' if r.pbo is None else round(r.pbo, 2)} | "
-            f"{'PASS' if passed else 'below bar'}")
+    fwd_tag = "" if fwd_decay >= 0.999 else f" [fwd-decay ×{fwd_decay} on DSR]"
+    summ = (f"{fam['name']}: OOS {osr:+.2f}{fwd_tag} (p {op:.3f}, DSR {dho:.2f}, n {on}) | "
+            f"2x-cost {o2:+.2f} | stable {npos}/{len(nb)} | "
+            f"pbo {'-' if r.pbo is None else round(r.pbo, 2)} | {'PASS' if passed else 'below bar'}")
     cand = None
     if passed:
         cand = {"id": f"{fam['name']}-{int(time.time())}", "family": fam["name"], "genome": g,
                 "oos_sharpe": round(osr, 3), "oos_p": round(op, 3), "oos_n": on, "dsr": round(dho, 3),
                 "twox_cost_sharpe": round(o2, 3), "stable": f"{npos}/{len(nb)}",
-                "pbo": (None if r.pbo is None else round(r.pbo, 3)), "found": _now()}
+                "pbo": (None if r.pbo is None else round(r.pbo, 3)),
+                "fwd_decay": round(fwd_decay, 3), "found": _now()}
     return summ, cand
 
 
@@ -418,7 +426,14 @@ def tick():
     if len(data) < 10 or cov < fam["min_cov"]:
         Q.update(lambda s: s.update(rotation=s.get("rotation", 0) + 1))   # atomic rotate
         return f"[{_now()}] {fam['name']}: data thin ({len(data)} coins, min {cov} bars) — skip + rotate"
-    summ, cand = cycle(fam, data)                  # the long part runs OUTSIDE the lock
+    fwd_decay = 1.0                                 # forward-feedback: this family's learned decay
+    if FWD_SNAPSHOT and FWD_SNAPSHOT.exists():
+        try:
+            snap = json.loads(FWD_SNAPSHOT.read_text()).get("snapshot", [])
+            fwd_decay = FB.family_decays(s0.get("approved", []), snap).get(fam["name"], 1.0)
+        except Exception:
+            fwd_decay = 1.0
+    summ, cand = cycle(fam, data, fwd_decay=fwd_decay)   # the long part runs OUTSIDE the lock
     data_end = max((max(v) for v in data.values()), default=0)
     out = {}
 
