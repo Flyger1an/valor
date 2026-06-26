@@ -34,17 +34,20 @@ from evolver.evolve import candidate_shadow as CS  # noqa: E402
 from evolver.optimize.cross_sectional import run_cross_sectional as RXS  # noqa: E402
 from evolver.optimize.funding_session import run_funding_session as RFS  # noqa: E402
 from evolver.optimize.liquidation_reversion import run_liquidation_reversion as RLR  # noqa: E402
+from evolver.optimize.oi_reversion import run_oi_reversion as ROI  # noqa: E402
 from evolver.optimize.trend_following import run_trend as RT  # noqa: E402
 from evolver.research import queue as Q  # noqa: E402
 
 # family -> (data kind, backtest, fee_bps) — must match research_tick's CRYPTO families
 FAM = {"liquidation": ("hourly_ohlc", RLR, 8.0), "liquidation_funding": ("hourly_fund", RLR, 8.0),
        "funding_session": ("hourly_fund", RFS, 6.0), "trend": ("daily", RT, 5.0),
-       "cross_sectional": ("daily", RXS, 4.0), "xs_reversal": ("hourly_closes", RXS, 5.0)}
+       "cross_sectional": ("daily", RXS, 4.0), "xs_reversal": ("hourly_closes", RXS, 5.0),
+       "oi_reversion": ("oi", ROI, 5.0)}
 QUEUE = os.getenv("EVOLVER_RESEARCH", str(ROOT / ".research_state.json"))
 HOURLY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA", str(ROOT / ".okx_hourly_dataset.pkl")))
 HOURLY_FUND = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA_FUND", str(ROOT / ".okx_hourly_fund_dataset.pkl")))
 DAILY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DAILY", str(ROOT / ".okx_daily_dataset.pkl")))
+OI_DATA = pathlib.Path(os.getenv("EVOLVER_RESEARCH_OI", str(ROOT / ".okx_oi_dataset.pkl")))
 STATE = pathlib.Path(os.getenv("EVOLVER_CRYPTO_SHADOW", str(ROOT / ".crypto_shadow_state.json")))
 HEARTBEAT_URL = os.getenv("EVOLVER_CRYPTO_HEARTBEAT_URL") or os.getenv("EVOLVER_HEARTBEAT_URL")
 
@@ -97,6 +100,8 @@ def _read_data(kinds):
         out["hourly_fund"] = pickle.loads(HOURLY_FUND.read_bytes())
     if "daily" in kinds and DAILY.exists():
         out["daily"] = pickle.loads(DAILY.read_bytes())
+    if "oi" in kinds and OI_DATA.exists():
+        out["oi"] = pickle.loads(OI_DATA.read_bytes())
     return out
 
 

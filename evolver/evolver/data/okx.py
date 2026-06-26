@@ -103,6 +103,23 @@ def okx_funding_history(inst: str, days: int = 300) -> dict:
     return out
 
 
+def okx_oi_history(ccy: str, period: str = "1D") -> dict:
+    """{ts_ms: open_interest} — total OKX contract open interest for a currency, from the rubik stats
+    feed. OI is the 'how much leverage is in the system' signal (the OI-reversion family's input).
+    NOTE: this feed has a LIMITED lookback (recent window only — OKX caps it), so the research cache
+    ACCUMULATES it across cycles to build real history. Best-effort: returns {} on error/empty."""
+    body = _get(f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy={ccy}&period={period}")
+    if body.get("code") != "0":
+        return {}
+    out = {}
+    for r in body.get("data", []):
+        try:
+            out[int(r[0])] = float(r[1])      # [ts_ms, open_interest, volume]
+        except (ValueError, IndexError, TypeError):
+            continue
+    return out
+
+
 def daily_funding(funding_by_ts: dict) -> dict:
     """Aggregate 8h funding into {utc_day_ms: summed_daily_rate}."""
     daily = {}
