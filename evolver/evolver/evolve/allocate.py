@@ -17,12 +17,22 @@ import math
 import random
 
 
+def _close(v):
+    """Close from any family's bar shape: OHLC tuples carry close at [3]; the structural families'
+    close-FIRST tuples — (close, oi), (close, funding), (close, long_liq, short_liq) — carry it at [0];
+    bare floats are the close. (Indexing [3] blindly crashed tick() on the new 2/3-tuple families.)"""
+    if isinstance(v, (tuple, list)):
+        return v[3] if len(v) >= 4 else v[0]
+    return v
+
+
 def universe_vol(data):
-    """Median recent realized vol across the universe (handles OHLC tuples or bare closes)."""
+    """Median recent realized vol across the universe (handles OHLC tuples, close-first tuples, or
+    bare closes)."""
     vols = []
     for series in list(data.values())[:8]:
         ts = sorted(series)[-60:]
-        cl = [(series[t][3] if isinstance(series[t], (tuple, list)) else series[t]) for t in ts]
+        cl = [_close(series[t]) for t in ts]
         rr = [cl[i] / cl[i - 1] - 1 for i in range(1, len(cl)) if cl[i - 1]]
         if len(rr) > 5:
             mu = sum(rr) / len(rr)
