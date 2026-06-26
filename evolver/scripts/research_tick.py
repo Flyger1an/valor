@@ -42,6 +42,7 @@ from evolver.evolve import fitness as F  # noqa: E402
 from evolver.evolve.engine import evolve  # noqa: E402
 from evolver.optimize.cross_sectional import run_cross_sectional as RXS  # noqa: E402
 from evolver.optimize.funding_session import run_funding_session as RFS  # noqa: E402
+from evolver.optimize.fx_carry import run_fx_carry as RFC  # noqa: E402
 from evolver.optimize.fx_session import run_fx_session as RFXS  # noqa: E402
 from evolver.optimize.liquidation_reversion import (LIQ_SLIP_BPS,  # noqa: E402
                                                     run_liquidation_reversion as RLR)
@@ -268,6 +269,9 @@ SPACE_FSESS = {"entry_phase": (0.0, 7.0, int), "hold_hours": (1.0, 8.0, int),
 # FX session seasonality: which SESSION (index into fx_session.SESSION_HOURS), hold, pre-window, dir
 SPACE_FX_SESSION = {"session_idx": (0.0, 7.0, int), "hold_hours": (2.0, 12.0, int),
                     "lookback": (3.0, 24.0, int), "trade_dir": (-1.0, 1.0, float)}
+# FX carry: cross-sectional long-high-yield/short-low-yield (rate differential), daily rebalance.
+# holding capped at 15 so a ~3yr holdout keeps enough rebalances (>=~17) to clear min_n (same as trend).
+SPACE_FX_CARRY = {"holding": (5.0, 15.0, int), "quantile": (0.2, 0.5, float), "skip": (0.0, 3.0, int)}
 
 # the roster — add a family = add a row. Each: data refresh, backtest, space, fee, stability keys.
 CRYPTO_FAMILIES = [
@@ -299,6 +303,8 @@ FX_FAMILIES = [
      "stab": ("lookback", "holding", "quantile"), "min_cov": 150, "min_osr": 0.0, "min_n": 12},
     {"name": "fx_session", "refresh": refresh_fx_hourly, "bt": RFXS, "space": SPACE_FX_SESSION, "fee": 0.5,
      "slip": 1.0, "stab": ("hold_hours", "lookback"), "min_cov": 24 * 30, "min_osr": 0.0},
+    {"name": "fx_carry", "refresh": refresh_fx_daily, "bt": RFC, "space": SPACE_FX_CARRY, "fee": 1.0,
+     "stab": ("holding", "quantile"), "min_cov": 150, "min_osr": 0.0, "min_n": 12},
 ]
 
 # ONE engine, SEPARATE hunts: pick the registry by asset class so each class's cross-family DSR

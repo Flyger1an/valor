@@ -18,6 +18,8 @@ from evolver.graph import runtime as rt
 from evolver.research import queue as rq
 from evolver.safety import is_admin, is_observer, kill_switch, audit
 
+FX_RESEARCH = os.getenv("EVOLVER_FX_RESEARCH", "/data/fx_research_state.json")  # the FX hunt's queue
+
 
 async def status(u: Update, c: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_observer(u.effective_chat.id):
@@ -143,12 +145,41 @@ async def candidates(u: Update, c: ContextTypes.DEFAULT_TYPE) -> None:
             f"2x-cost {cand['twox_cost_sharpe']} | stable {cand['stable']}", reply_markup=kb)
 
 
+async def fxcandidates(u: Update, c: ContextTypes.DEFAULT_TYPE) -> None:
+    """/fxcandidates — FX-hunt genomes that cleared the gate (separate queue from crypto /candidates)."""
+    if not is_admin(u.effective_chat.id):
+        return await u.message.reply_text("⛔ admin only")
+    pend = rq.list_pending(FX_RESEARCH)
+    if not pend:
+        return await u.message.reply_text("no FX candidates awaiting approval 🌐")
+    for cand in pend:
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Promote to shadow", callback_data=f"rpromote_fx:{cand['id']}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"rreject_fx:{cand['id']}"),
+        ]])
+        await u.message.reply_text(
+            f"🌐 {cand['id']} — {cand['family']}\n{cand['genome']}\n"
+            f"OOS {cand['oos_sharpe']} (p {cand['oos_p']}, n {cand['oos_n']}) | "
+            f"2x-cost {cand['twox_cost_sharpe']} | stable {cand['stable']}", reply_markup=kb)
+
+
 async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE) -> None:
     q = u.callback_query
     await q.answer()
     if not is_admin(q.message.chat.id):
         return await q.edit_message_text("⛔ admin only")
     action, tid = q.data.split(":", 1)
+    if action in ("rpromote_fx", "rreject_fx"):                # FX-hunt candidate (separate queue)
+        actor = f"tg:{q.message.chat.id}"
+        if action == "rpromote_fx":
+            hit = rq.approve(tid, actor=actor, path=FX_RESEARCH)
+            audit("fx.research.promote", {"id": tid, "genome": hit.get("genome") if hit else None}, actor=actor)
+            return await q.edit_message_text(
+                f"🚀 {tid} approved (FX, audit-logged). Add its genome to the FX shadow basket."
+                if hit else "already handled")
+        rq.reject(tid, actor=actor, path=FX_RESEARCH)
+        audit("fx.research.reject", {"id": tid}, actor=actor)
+        return await q.edit_message_text(f"🗑 {tid} rejected (FX, audit-logged)")
     if action in ("rpromote", "rreject"):                      # research-loop candidate
         actor = f"tg:{q.message.chat.id}"
         if action == "rpromote":
@@ -213,6 +244,7 @@ def build_bot() -> Application:
     app = ApplicationBuilder().token(os.environ["TELEGRAM_BOT_TOKEN"]).build()
     for cmd, fn in [("status", status), ("kpis", kpis), ("shadow", shadow), ("analyst", analyst),
                     ("research", research), ("approve", approve), ("candidates", candidates),
+                    ("fxcandidates", fxcandidates),
                     ("tweak", tweak), ("feedback", feedback), ("kill", kill), ("reset", reset)]:
         app.add_handler(CommandHandler(cmd, fn))
     app.add_handler(CallbackQueryHandler(on_button))

@@ -72,6 +72,7 @@ services:
       EVOLVER_STATE: /data/state.json
       EVOLVER_SIGNALS: /data/signals.jsonl
       EVOLVER_RESEARCH: /data/research_state.json   # /candidates reads the same queue the loop writes
+      EVOLVER_FX_RESEARCH: /data/fx_research_state.json   # /fxcandidates reads the FX hunt's queue
       EVOLVER_SHADOW: /data/shadow_state.json       # /shadow reads the forward paper book
       EVOLVER_SHADOW2: /data/shadow_analyst_state.json   # /analyst reads the v2 sim-vs-reality book
       EVOLVER_RESEARCH_LEDGER: /data/research_ledger.jsonl  # /research shows recent cycle summaries
