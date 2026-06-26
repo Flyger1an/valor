@@ -129,6 +129,7 @@ services:
       EVOLVER_RESEARCH_DAILY: /data/okx_daily_dataset.pkl  # trend / cross-sectional (~3yr)
       EVOLVER_RESEARCH_OI: /data/okx_oi_dataset.pkl        # oi_reversion (accumulates OKX OI history)
       EVOLVER_RESEARCH_FUND_CARRY: /data/okx_fund_carry_dataset.pkl   # cross-sectional funding carry
+      EVOLVER_RESEARCH_LIQ_PRINT: /data/okx_liq_print_dataset.pkl     # liquidation prints (accumulates)
       EVOLVER_FWD_SNAPSHOT: /data/crypto_shadow_state.json   # forward-feedback: learn the gate's real decay
       EVOLVER_RESEARCH_MONTHS: "15"
       EVOLVER_RESEARCH_CONFIRM: "2"   # surface only after a region survives N separate cycles
@@ -148,6 +149,7 @@ services:
       EVOLVER_RESEARCH_DAILY: /data/okx_daily_dataset.pkl
       EVOLVER_RESEARCH_OI: /data/okx_oi_dataset.pkl
       EVOLVER_RESEARCH_FUND_CARRY: /data/okx_fund_carry_dataset.pkl
+      EVOLVER_RESEARCH_LIQ_PRINT: /data/okx_liq_print_dataset.pkl
       EVOLVER_CRYPTO_SHADOW: /data/crypto_shadow_state.json
     volumes: ["evolver_data:/data"]
     restart: unless-stopped

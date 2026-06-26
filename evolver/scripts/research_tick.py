@@ -38,7 +38,7 @@ from evolver.config import DEFAULT_LIMITS  # noqa: E402
 from evolver.data.fx import fx_candles_history, fx_closes_history, oanda_candles  # noqa: E402
 from evolver.data.okx import (daily_funding, okx_candles_ohlc,  # noqa: E402
                               okx_funding_history, okx_intraday_closes,
-                              okx_intraday_ohlc, okx_oi_history)
+                              okx_intraday_ohlc, okx_liquidations, okx_oi_history)
 from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
 from evolver.evolve import allocate as AL  # noqa: E402
 from evolver.evolve import feedback as FB  # noqa: E402
@@ -49,6 +49,7 @@ from evolver.optimize.funding_carry import run_funding_carry as RFCY  # noqa: E4
 from evolver.optimize.funding_session import run_funding_session as RFS  # noqa: E402
 from evolver.optimize.fx_carry import run_fx_carry as RFC  # noqa: E402
 from evolver.optimize.fx_session import run_fx_session as RFXS  # noqa: E402
+from evolver.optimize.liquidation_print import run_liquidation_print as RLP  # noqa: E402
 from evolver.optimize.liquidation_reversion import (LIQ_SLIP_BPS,  # noqa: E402
                                                     run_liquidation_reversion as RLR)
 from evolver.optimize.oi_reversion import run_oi_reversion as ROI  # noqa: E402
@@ -78,6 +79,7 @@ HOURLY_FUND = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA_FUND",
 DAILY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DAILY", str(ROOT / ".okx_daily_dataset.pkl")))
 OI_DATA = pathlib.Path(os.getenv("EVOLVER_RESEARCH_OI", str(ROOT / ".okx_oi_dataset.pkl")))
 FUND_CARRY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_FUND_CARRY", str(ROOT / ".okx_fund_carry_dataset.pkl")))
+LIQ_PRINT = pathlib.Path(os.getenv("EVOLVER_RESEARCH_LIQ_PRINT", str(ROOT / ".okx_liq_print_dataset.pkl")))
 FX_HOURLY = pathlib.Path(os.getenv("EVOLVER_FX_HOURLY", str(ROOT / ".fx_hourly_dataset.pkl")))
 FX_DAILY = pathlib.Path(os.getenv("EVOLVER_FX_DAILY", str(ROOT / ".fx_daily_dataset.pkl")))
 # forward-feedback: a shadow's per-candidate forward track (id -> fwd_sharpe). Empty = loop is a no-op.
@@ -241,6 +243,37 @@ def refresh_funding_carry():
     return cache
 
 
+def refresh_liq_print():
+    """LIVE OKX hourly (close, long_liq, short_liq) for the liquidation-PRINT family. The liquidation
+    feed is recent-only, so this ACCUMULATES it: each cycle keeps prior hours' captured liquidation
+    notional and adds the fresh window. Honestly data-thin until enough accrues (or a vendor feed)."""
+    cache = pickle.loads(LIQ_PRINT.read_bytes()) if LIQ_PRINT.exists() else {}
+
+    def one(c):
+        try:
+            cl = okx_intraday_closes(c, "1H", 2000)
+            lq = okx_liquidations(f"{c}-USDT-SWAP")
+        except Exception:
+            return c, cache.get(c, {})
+        prev, merged = cache.get(c, {}), {}
+        for ts, close in cl.items():
+            if ts in lq:
+                ll, sl = lq[ts]                          # fresh liquidation data this cycle
+            elif ts in prev and len(prev[ts]) >= 3:
+                ll, sl = prev[ts][1], prev[ts][2]        # preserve previously-captured liq (don't lose it)
+            else:
+                ll, sl = 0.0, 0.0
+            merged[ts] = (close, ll, sl)
+        return c, merged
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        for c, d in ex.map(one, UNIVERSE):
+            if d:
+                cache[c] = d
+    _save(LIQ_PRINT, cache)
+    return cache
+
+
 def refresh_xs_hourly():
     """Hourly CLOSES for the short-term cross-sectional reversal family. Reuses the base hourly OHLC
     dataset (no extra OKX fetch) when present; cold-starts with a direct closes fetch otherwise."""
@@ -350,6 +383,11 @@ SPACE_OI = {"lookback": (2.0, 20.0, int), "holding": (2.0, 8.0, int), "oi_thresh
 # non-overlapping holdout rebalances (~15mo/8d) to clear min_n — a long hold would starve the holdout.
 SPACE_FUND_CARRY = {"lookback": (3.0, 30.0, int), "holding": (3.0, 8.0, int),
                     "quantile": (0.2, 0.4, float), "skip": (0.0, 3.0, int)}
+# liquidation-PRINT reversion: fade an actual liquidation cascade (notional spike >= liq_mult x the
+# trailing baseline) in the direction the forced flow overshot. trade_dir flips for the robustness check.
+SPACE_LIQ_PRINT = {"liq_mult": (3.0, 12.0, float), "lookback": (24.0, 168.0, int),
+                   "hold_hours": (2.0, 24.0, int), "cooldown_h": (2.0, 24.0, int),
+                   "trade_dir": (-1.0, 1.0, float)}
 # funding-settlement seasonality: which phase-hour of the 8h cycle, how long, with/against funding sign
 SPACE_FSESS = {"entry_phase": (0.0, 7.0, int), "hold_hours": (1.0, 8.0, int),
                "trade_dir": (-1.0, 1.0, float), "funding_min": (0.0, 0.003, float)}
@@ -386,6 +424,10 @@ CRYPTO_FAMILIES = [
     # is available now, so min_cov=150 like the other daily factors; min_n=12 (daily, low-frequency).
     {"name": "funding_carry", "refresh": refresh_funding_carry, "bt": RFCY, "space": SPACE_FUND_CARRY,
      "fee": 5.0, "slip": 5.0, "stab": ("lookback", "holding", "quantile"), "min_cov": 150, "min_n": 12},
+    # liquidation PRINTS: real forced-flow data (not wick proxies), with the liquidation SIDE. Hourly;
+    # accumulates the short liq feed -> honestly data-thin until it accrues (or a vendor feed is wired).
+    {"name": "liquidation_print", "refresh": refresh_liq_print, "bt": RLP, "space": SPACE_LIQ_PRINT,
+     "fee": 8.0, "slip": LIQ_SLIP_BPS, "stab": ("liq_mult", "hold_hours", "lookback"), "min_cov": 24 * 30},
 ]
 
 # FX families — thin-but-many edges, so lower the per-period Sharpe floor (min_osr) and let the

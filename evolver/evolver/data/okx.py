@@ -120,6 +120,47 @@ def okx_oi_history(ccy: str, period: str = "1D") -> dict:
     return out
 
 
+def okx_liquidations(inst: str, pages: int = 6) -> dict:
+    """{hour_ms: (long_liq_notional, short_liq_notional)} from the OKX liquidation-orders feed. A long
+    liq = a long position force-SOLD (side='sell'); a short liq = a short force-BOUGHT (side='buy') —
+    the actual forced flow, not a wick proxy. NOTE: this public feed is RECENT-only (and OKX has
+    changed it over time), so the research cache ACCUMULATES it across cycles; if it stays empty the
+    family just stays data-thin (a vendor feed is the real-history fix). Best-effort: {} on error."""
+    agg, after = {}, None
+    for _ in range(pages):
+        url = f"https://www.okx.com/api/v5/public/liquidation-orders?instType=SWAP&instId={inst}&state=filled&limit=100"
+        if after:
+            url += f"&after={after}"
+        try:
+            body = _get(url)
+        except Exception:
+            break
+        if body.get("code") != "0":
+            break
+        details, seen_ts = [], []
+        for blk in body.get("data") or []:
+            details.extend(blk.get("details") or [])
+        if not details:
+            break
+        for d in details:
+            try:
+                t = int(d["ts"])
+                seen_ts.append(t)
+                hour = (t // 3_600_000) * 3_600_000
+                notional = float(d["sz"]) * float(d.get("bkPx") or d.get("fillPx") or 0)
+                ll, sl = agg.get(hour, (0.0, 0.0))
+                if d.get("side") == "sell":           # a long was liquidated (force-sold)
+                    agg[hour] = (ll + notional, sl)
+                else:                                  # a short was liquidated (force-bought)
+                    agg[hour] = (ll, sl + notional)
+            except (KeyError, ValueError, TypeError):
+                continue
+        if not seen_ts or len(details) < 100:
+            break
+        after = min(seen_ts)                           # page to older records
+    return agg
+
+
 def daily_funding(funding_by_ts: dict) -> dict:
     """Aggregate 8h funding into {utc_day_ms: summed_daily_rate}."""
     daily = {}
