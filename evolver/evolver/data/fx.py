@@ -12,6 +12,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import pathlib
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -85,3 +87,55 @@ def oanda_closes(instrument: str, granularity: str = "D", count: int = 500) -> d
 
 def fx_closes_history(instrument: str, granularity: str = "D", bars: int = 800) -> dict:
     return {t: v[3] for t, v in fx_candles_history(instrument, granularity, bars).items()}
+
+
+def oanda_accounts() -> list:
+    """List the accounts the token can see (also the surest way to find your OANDA_ACCOUNT_ID)."""
+    return _get("/v3/accounts").get("accounts", [])
+
+
+def _load_env() -> None:
+    """Load evolver/.env so the CLI works on the box without exported vars (mirrors the scripts)."""
+    envf = pathlib.Path(__file__).resolve().parents[2] / ".env"
+    if not envf.exists():
+        return
+    for line in envf.read_text().splitlines():
+        if "=" in line and not line.strip().startswith("#"):
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
+
+
+def main(argv: list[str]) -> int:
+    _load_env()
+    if not argv or argv[0] != "--check":
+        print("usage: python -m evolver.data.fx --check   # verify the OANDA practice token + data path")
+        return 0
+    if not os.getenv("OANDA_API_KEY"):
+        print("✖ no OANDA_API_KEY (env or evolver/.env) — add your PRACTICE token first")
+        return 2
+    print(f"env={OANDA_ENV}  base={_BASE}")
+    try:
+        accts = oanda_accounts()
+    except Exception as e:
+        print(f"✖ auth failed: {e}\n   (make sure the token is from the PRACTICE/demo account, not live)")
+        return 2
+    ids = [a.get("id") for a in accts]
+    print(f"✓ token valid — {len(ids)} account(s): {ids}")
+    print(f"  (put one in evolver/.env as OANDA_ACCOUNT_ID=... for the future demo executor)")
+    try:
+        bars = oanda_candles("EUR_USD", "H1", 5)
+    except Exception as e:
+        print(f"✖ data fetch failed: {e}")
+        return 1
+    if not bars:
+        print("✖ no completed EUR_USD candles returned")
+        return 1
+    t = max(bars)
+    when = dt.datetime.fromtimestamp(t / 1000, dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    print(f"✓ data OK — EUR_USD last completed H1 close {bars[t][3]} @ {when} ({len(bars)} bars)")
+    print("→ ready. The FX hunt needs only OANDA_API_KEY; deploy with up -d --build.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
