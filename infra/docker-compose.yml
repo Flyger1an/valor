@@ -130,6 +130,7 @@ services:
       EVOLVER_FWD_SNAPSHOT: /data/crypto_shadow_state.json   # forward-feedback: learn the gate's real decay
       EVOLVER_RESEARCH_MONTHS: "15"
       EVOLVER_RESEARCH_CONFIRM: "2"   # surface only after a region survives N separate cycles
+      STRONG_MODEL: gpt-5-mini        # LLM-as-optimizer model (EVOLVER_USE_LLM=1 default; OPENAI_API_KEY via .env)
     volumes: ["evolver_data:/data"]
     restart: unless-stopped           # first cycle backfills OKX (~2-3min), then refreshes incrementally
 
@@ -162,6 +163,7 @@ services:
       EVOLVER_FWD_SNAPSHOT: /data/fx_shadow_state.json   # forward-feedback: learn the gate's real decay
       EVOLVER_RESEARCH_MONTHS: "15"
       EVOLVER_RESEARCH_CONFIRM: "2"
+      STRONG_MODEL: gpt-5-mini        # LLM-as-optimizer model (EVOLVER_USE_LLM=1 default; OPENAI_API_KEY via .env)
     volumes: ["evolver_data:/data"]
     restart: unless-stopped           # first cycle backfills OANDA history, then refreshes incrementally
 

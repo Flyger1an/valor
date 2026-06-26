@@ -68,6 +68,7 @@ CONFIRM = int(os.getenv("EVOLVER_RESEARCH_CONFIRM", "2"))
 # CONFIRM passes are on materially DIFFERENT data, not correlated re-tests of one lucky window.
 CONFIRM_GAP_MS = int(float(os.getenv("EVOLVER_CONFIRM_GAP_DAYS", "7")) * 86_400_000)
 ALLOCATE = os.getenv("EVOLVER_ALLOCATE", "1") != "0"   # bandit family selection (vs round-robin)
+USE_LLM = os.getenv("EVOLVER_USE_LLM", "1") != "0"     # LLM-as-optimizer in the search (needs OPENAI_API_KEY)
 HOURLY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA", str(ROOT / ".okx_hourly_dataset.pkl")))
 HOURLY_FUND = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA_FUND",
                                      str(ROOT / ".okx_hourly_fund_dataset.pkl")))
@@ -366,7 +367,7 @@ def cycle(fam, data, fwd_decay=1.0):
 
     r = evolve(lambda p, lo, hi: fam["bt"](data, {**p, "fee_bps": fam["fee"]}, DEFAULT_LIMITS, lo=allts[0], hi=split),
                fam["space"], fam["name"], generations=4, pop=8, seed=rng.randint(1, 99999),
-               use_llm=False, log=lambda *_: None)
+               use_llm=USE_LLM, log=lambda *_: None)
     g = r.elites[0].params
 
     # stationary block bootstrap -> preserves autocorrelation. IID per-trade resampling understates

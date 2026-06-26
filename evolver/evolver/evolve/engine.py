@@ -42,8 +42,11 @@ def evolve(backtest, space, family_desc, generations=8, pop=8, seed=7,
         traj = [{"params": c.params, "oos_sharpe": c.oos_sharpe, "dsr": c.dsr,
                  "recent_sharpe": c.recent_sharpe, "consistency": c.consistency} for c in elites[:12]]
         children = []
-        for _ in range(pop):
-            if use_llm and traj:
+        for j in range(pop):
+            # half the population is LLM-guided (OPRO: propose from the OOS/DSR/recency trajectory),
+            # half algorithmic — keeps diversity AND caps the per-cycle API calls/latency. The LLM's
+            # proposals are still scored + counted as trials, so the DSR charges for them (no free lunch).
+            if use_llm and traj and j < max(1, pop // 2):
                 child, did = llm_mutate(traj, space, family_desc, rng)
                 used_llm += int(did)
             else:
