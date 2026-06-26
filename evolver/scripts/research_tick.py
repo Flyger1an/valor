@@ -36,14 +36,16 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
 
 from evolver.config import DEFAULT_LIMITS  # noqa: E402
 from evolver.data.fx import fx_candles_history, fx_closes_history, oanda_candles  # noqa: E402
-from evolver.data.okx import (okx_candles_ohlc, okx_funding_history,  # noqa: E402
-                              okx_intraday_closes, okx_intraday_ohlc, okx_oi_history)
+from evolver.data.okx import (daily_funding, okx_candles_ohlc,  # noqa: E402
+                              okx_funding_history, okx_intraday_closes,
+                              okx_intraday_ohlc, okx_oi_history)
 from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
 from evolver.evolve import allocate as AL  # noqa: E402
 from evolver.evolve import feedback as FB  # noqa: E402
 from evolver.evolve import fitness as F  # noqa: E402
 from evolver.evolve.engine import evolve  # noqa: E402
 from evolver.optimize.cross_sectional import run_cross_sectional as RXS  # noqa: E402
+from evolver.optimize.funding_carry import run_funding_carry as RFCY  # noqa: E402
 from evolver.optimize.funding_session import run_funding_session as RFS  # noqa: E402
 from evolver.optimize.fx_carry import run_fx_carry as RFC  # noqa: E402
 from evolver.optimize.fx_session import run_fx_session as RFXS  # noqa: E402
@@ -75,6 +77,7 @@ HOURLY_FUND = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA_FUND",
                                      str(ROOT / ".okx_hourly_fund_dataset.pkl")))
 DAILY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DAILY", str(ROOT / ".okx_daily_dataset.pkl")))
 OI_DATA = pathlib.Path(os.getenv("EVOLVER_RESEARCH_OI", str(ROOT / ".okx_oi_dataset.pkl")))
+FUND_CARRY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_FUND_CARRY", str(ROOT / ".okx_fund_carry_dataset.pkl")))
 FX_HOURLY = pathlib.Path(os.getenv("EVOLVER_FX_HOURLY", str(ROOT / ".fx_hourly_dataset.pkl")))
 FX_DAILY = pathlib.Path(os.getenv("EVOLVER_FX_DAILY", str(ROOT / ".fx_daily_dataset.pkl")))
 # forward-feedback: a shadow's per-candidate forward track (id -> fwd_sharpe). Empty = loop is a no-op.
@@ -214,6 +217,30 @@ def refresh_oi():
     return cache
 
 
+def refresh_funding_carry():
+    """Daily (close, summed 8h funding) for cross-sectional funding carry. {coin:{day:(close,funding)}}.
+    Funding history paginates ~15mo, so this has real depth immediately (no accumulation needed)."""
+    cache = pickle.loads(FUND_CARRY.read_bytes()) if FUND_CARRY.exists() else {}
+
+    def one(c):
+        try:
+            cl = okx_intraday_closes(c, "1Dutc", 500, inst=f"{c}-USDT-SWAP")
+            fd = daily_funding(okx_funding_history(f"{c}-USDT-SWAP", days=MONTHS * 30))
+        except Exception:
+            return c, cache.get(c, {})
+        merged = dict(cache.get(c, {}))
+        for ts in set(cl) & set(fd):            # UTC-day-aligned closes ∩ daily-summed funding
+            merged[ts] = (cl[ts], fd[ts])
+        return c, merged
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        for c, d in ex.map(one, UNIVERSE):
+            if d:
+                cache[c] = d
+    _save(FUND_CARRY, cache)
+    return cache
+
+
 def refresh_xs_hourly():
     """Hourly CLOSES for the short-term cross-sectional reversal family. Reuses the base hourly OHLC
     dataset (no extra OKX fetch) when present; cold-starts with a direct closes fetch otherwise."""
@@ -313,8 +340,16 @@ SPACE_XS_HR = {"w_mom": (-2.0, 2.0, float), "w_rev": (-2.0, 2.0, float), "w_vol"
                "skip": (0.0, 3.0, int)}
 # OI-conditioned reversion (DAILY): fade a move only when open interest SURGED with it (fresh leverage).
 # oi_thresh = min OI growth over the lookback to qualify; trade_dir flips for the robustness check.
-SPACE_OI = {"lookback": (2.0, 20.0, int), "holding": (2.0, 12.0, int), "oi_thresh": (0.03, 0.40, float),
-            "ret_thresh": (0.02, 0.20, float), "trade_dir": (-1.0, 1.0, float)}
+# Thresholds + holding capped (0.20/0.10/8, not 0.40/0.20/12): a real reversion lives at MODERATE
+# surges, and high thresholds make trades so rare they starve the holdout (n<min_n) -> the search would
+# keep picking clean-but-untestable genomes. Capping keeps enough holdout events to actually validate.
+SPACE_OI = {"lookback": (2.0, 20.0, int), "holding": (2.0, 8.0, int), "oi_thresh": (0.03, 0.20, float),
+            "ret_thresh": (0.02, 0.10, float), "trade_dir": (-1.0, 1.0, float)}
+# cross-sectional funding carry: rank by trailing funding, long lowest / short highest. holding capped
+# at 8 (NOT 15): carry is collected continuously so a short hold loses no edge, and it keeps enough
+# non-overlapping holdout rebalances (~15mo/8d) to clear min_n — a long hold would starve the holdout.
+SPACE_FUND_CARRY = {"lookback": (3.0, 30.0, int), "holding": (3.0, 8.0, int),
+                    "quantile": (0.2, 0.4, float), "skip": (0.0, 3.0, int)}
 # funding-settlement seasonality: which phase-hour of the 8h cycle, how long, with/against funding sign
 SPACE_FSESS = {"entry_phase": (0.0, 7.0, int), "hold_hours": (1.0, 8.0, int),
                "trade_dir": (-1.0, 1.0, float), "funding_min": (0.0, 0.003, float)}
@@ -347,6 +382,10 @@ CRYPTO_FAMILIES = [
     # months) since OKX's OI feed is short + the cache accrues it; min_n=12 (daily, low-frequency).
     {"name": "oi_reversion", "refresh": refresh_oi, "bt": ROI, "space": SPACE_OI, "fee": 5.0, "slip": 5.0,
      "stab": ("lookback", "holding", "oi_thresh"), "min_cov": 60, "min_n": 12},
+    # funding carry: a cross-sectional RISK PREMIUM (funding is credited as P&L). Full funding history
+    # is available now, so min_cov=150 like the other daily factors; min_n=12 (daily, low-frequency).
+    {"name": "funding_carry", "refresh": refresh_funding_carry, "bt": RFCY, "space": SPACE_FUND_CARRY,
+     "fee": 5.0, "slip": 5.0, "stab": ("lookback", "holding", "quantile"), "min_cov": 150, "min_n": 12},
 ]
 
 # FX families — thin-but-many edges, so lower the per-period Sharpe floor (min_osr) and let the

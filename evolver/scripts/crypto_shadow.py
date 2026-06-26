@@ -32,6 +32,7 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
 
 from evolver.evolve import candidate_shadow as CS  # noqa: E402
 from evolver.optimize.cross_sectional import run_cross_sectional as RXS  # noqa: E402
+from evolver.optimize.funding_carry import run_funding_carry as RFCY  # noqa: E402
 from evolver.optimize.funding_session import run_funding_session as RFS  # noqa: E402
 from evolver.optimize.liquidation_reversion import run_liquidation_reversion as RLR  # noqa: E402
 from evolver.optimize.oi_reversion import run_oi_reversion as ROI  # noqa: E402
@@ -42,12 +43,13 @@ from evolver.research import queue as Q  # noqa: E402
 FAM = {"liquidation": ("hourly_ohlc", RLR, 8.0), "liquidation_funding": ("hourly_fund", RLR, 8.0),
        "funding_session": ("hourly_fund", RFS, 6.0), "trend": ("daily", RT, 5.0),
        "cross_sectional": ("daily", RXS, 4.0), "xs_reversal": ("hourly_closes", RXS, 5.0),
-       "oi_reversion": ("oi", ROI, 5.0)}
+       "oi_reversion": ("oi", ROI, 5.0), "funding_carry": ("funding_carry", RFCY, 5.0)}
 QUEUE = os.getenv("EVOLVER_RESEARCH", str(ROOT / ".research_state.json"))
 HOURLY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA", str(ROOT / ".okx_hourly_dataset.pkl")))
 HOURLY_FUND = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA_FUND", str(ROOT / ".okx_hourly_fund_dataset.pkl")))
 DAILY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DAILY", str(ROOT / ".okx_daily_dataset.pkl")))
 OI_DATA = pathlib.Path(os.getenv("EVOLVER_RESEARCH_OI", str(ROOT / ".okx_oi_dataset.pkl")))
+FUND_CARRY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_FUND_CARRY", str(ROOT / ".okx_fund_carry_dataset.pkl")))
 STATE = pathlib.Path(os.getenv("EVOLVER_CRYPTO_SHADOW", str(ROOT / ".crypto_shadow_state.json")))
 HEARTBEAT_URL = os.getenv("EVOLVER_CRYPTO_HEARTBEAT_URL") or os.getenv("EVOLVER_HEARTBEAT_URL")
 
@@ -102,6 +104,8 @@ def _read_data(kinds):
         out["daily"] = pickle.loads(DAILY.read_bytes())
     if "oi" in kinds and OI_DATA.exists():
         out["oi"] = pickle.loads(OI_DATA.read_bytes())
+    if "funding_carry" in kinds and FUND_CARRY.exists():
+        out["funding_carry"] = pickle.loads(FUND_CARRY.read_bytes())
     return out
 
 
