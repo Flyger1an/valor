@@ -130,6 +130,22 @@ services:
     volumes: ["evolver_data:/data"]
     restart: unless-stopped           # first cycle backfills OKX (~2-3min), then refreshes incrementally
 
+  fx-research-runner:      # FX hunt — SAME engine + gate, separate registry/state so its cross-family
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }   # multiplicity is counted on its own
+    command: ["python", "scripts/research_tick.py", "--loop", "3600"]
+    working_dir: /app/evolver
+    env_file: [../evolver/.env]   # OANDA_API_KEY (practice) for FX data; NO live-money keys
+    environment:
+      EVOLVER_FAMILIES: fx                                  # fx_trend / fx_xsection / fx_session
+      EVOLVER_RESEARCH: /data/fx_research_state.json        # SEPARATE queue from crypto
+      EVOLVER_RESEARCH_LEDGER: /data/fx_research_ledger.jsonl
+      EVOLVER_FX_HOURLY: /data/fx_hourly_dataset.pkl
+      EVOLVER_FX_DAILY: /data/fx_daily_dataset.pkl
+      EVOLVER_RESEARCH_MONTHS: "15"
+      EVOLVER_RESEARCH_CONFIRM: "2"
+    volumes: ["evolver_data:/data"]
+    restart: unless-stopped           # first cycle backfills OANDA history, then refreshes incrementally
+
   signal-feed:             # LIVE RV signals -> Redis -> evolver-loop (runs the inner analyst loop for real)
     build: { context: .., dockerfile: infra/Dockerfile.evolver }
     command: ["python", "scripts/signal_feed.py", "--loop", "1800"]   # emit every 30 min, 26 pairs

@@ -34,6 +34,7 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
         os.environ.setdefault(_k.strip(), _v.strip())
 
 from evolver.config import DEFAULT_LIMITS  # noqa: E402
+from evolver.data.fx import fx_candles_history, fx_closes_history, oanda_candles  # noqa: E402
 from evolver.data.okx import (okx_candles_ohlc, okx_funding_history,  # noqa: E402
                               okx_intraday_closes, okx_intraday_ohlc)
 from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
@@ -41,6 +42,7 @@ from evolver.evolve import fitness as F  # noqa: E402
 from evolver.evolve.engine import evolve  # noqa: E402
 from evolver.optimize.cross_sectional import run_cross_sectional as RXS  # noqa: E402
 from evolver.optimize.funding_session import run_funding_session as RFS  # noqa: E402
+from evolver.optimize.fx_session import run_fx_session as RFXS  # noqa: E402
 from evolver.optimize.liquidation_reversion import (LIQ_SLIP_BPS,  # noqa: E402
                                                     run_liquidation_reversion as RLR)
 from evolver.optimize.trend_following import run_trend as RT  # noqa: E402
@@ -51,6 +53,9 @@ from evolver.research import queue as Q  # noqa: E402
 # pooled liquidation event study. A point-in-time universe is the real fix (data effort, not done).
 UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "DOGE", "AVAX", "LINK", "DOT", "LTC", "ADA",
             "NEAR", "ARB", "OP", "INJ", "SUI", "APT", "SEI", "ATOM", "FIL"]
+# FX majors + crosses (OANDA instrument form). No survivorship issue — permanent pairs.
+FX_PAIRS = ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD", "USD_CHF", "NZD_USD",
+            "EUR_JPY", "GBP_JPY", "EUR_GBP", "AUD_JPY", "EUR_AUD"]
 MONTHS = int(os.getenv("EVOLVER_RESEARCH_MONTHS", "15"))
 # only surface a candidate after its REGION clears the bar this many separate cycles — makes any
 # cadence (weekly/daily/hourly) safe: a single lucky search can't surface, repeated survival can.
@@ -62,6 +67,8 @@ HOURLY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA", str(ROOT / ".okx_hourly
 HOURLY_FUND = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA_FUND",
                                      str(ROOT / ".okx_hourly_fund_dataset.pkl")))
 DAILY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DAILY", str(ROOT / ".okx_daily_dataset.pkl")))
+FX_HOURLY = pathlib.Path(os.getenv("EVOLVER_FX_HOURLY", str(ROOT / ".fx_hourly_dataset.pkl")))
+FX_DAILY = pathlib.Path(os.getenv("EVOLVER_FX_DAILY", str(ROOT / ".fx_daily_dataset.pkl")))
 LEDGER = pathlib.Path(os.getenv("EVOLVER_RESEARCH_LEDGER", str(ROOT / "research_ledger.jsonl")))
 
 
@@ -193,6 +200,50 @@ def refresh_xs_hourly():
     return out
 
 
+def refresh_fx_daily():
+    """Rolling OANDA daily CLOSES for FX trend + cross-sectional. {pair: {ts: close}}."""
+    cache = pickle.loads(FX_DAILY.read_bytes()) if FX_DAILY.exists() else {}
+
+    def one(pr):
+        try:
+            return pr, {**cache.get(pr, {}), **fx_closes_history(pr, "D", 900)}
+        except Exception:
+            return pr, cache.get(pr, {})
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        for pr, d in ex.map(one, FX_PAIRS):
+            if d:
+                cache[pr] = d
+    _save(FX_DAILY, cache)
+    return cache
+
+
+def refresh_fx_hourly():
+    """Rolling OANDA hourly OHLC for the FX session family. {pair: {ts: (o,h,l,c)}}."""
+    cache = pickle.loads(FX_HOURLY.read_bytes()) if FX_HOURLY.exists() else {}
+    target = MONTHS * 30 * 24
+
+    def one(pr):
+        ex_ = cache.get(pr, {})
+        try:
+            new = (fx_candles_history(pr, "H1", target) if len(ex_) < target * 0.8
+                   else oanda_candles(pr, "H1", 500))
+        except Exception:
+            return pr, ex_
+        merged = {**ex_, **new}
+        if merged:
+            cut = max(merged) - target * 3_600_000
+            merged = {t: v for t, v in merged.items() if t >= cut}
+        return pr, merged
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        for pr, d in ex.map(one, FX_PAIRS):
+            if d:
+                cache[pr] = d
+    _save(FX_HOURLY, cache)
+    return cache
+
+
 SPACE_LIQ = {"wick_atr": (2.5, 4.5, float), "hold_hours": (3.0, 18.0, int), "body_max": (0.35, 0.7, float),
              "cooldown_h": (2.0, 18.0, int), "atr_window": (36.0, 96.0, int)}
 # funding-conditioned variant: funding_min=0 recovers base liquidation, so the search can only match-
@@ -211,17 +262,20 @@ SPACE_XS_HR = {"w_mom": (-2.0, 2.0, float), "w_rev": (-2.0, 2.0, float), "w_vol"
 # funding-settlement seasonality: which phase-hour of the 8h cycle, how long, with/against funding sign
 SPACE_FSESS = {"entry_phase": (0.0, 7.0, int), "hold_hours": (1.0, 8.0, int),
                "trade_dir": (-1.0, 1.0, float), "funding_min": (0.0, 0.003, float)}
+# FX session seasonality: which SESSION (index into fx_session.SESSION_HOURS), hold, pre-window, dir
+SPACE_FX_SESSION = {"session_idx": (0.0, 7.0, int), "hold_hours": (2.0, 12.0, int),
+                    "lookback": (3.0, 24.0, int), "trade_dir": (-1.0, 1.0, float)}
 
 # the roster — add a family = add a row. Each: data refresh, backtest, space, fee, stability keys.
-FAMILIES = [
+CRYPTO_FAMILIES = [
     {"name": "liquidation", "refresh": refresh_hourly, "bt": RLR, "space": SPACE_LIQ, "fee": 8.0,
-     "stab": ("wick_atr", "hold_hours", "atr_window"), "min_cov": 24 * 60},
+     "slip": LIQ_SLIP_BPS, "stab": ("wick_atr", "hold_hours", "atr_window"), "min_cov": 24 * 60},
     {"name": "liquidation_funding", "refresh": refresh_hourly_funding, "bt": RLR, "space": SPACE_LIQ_FUND,
-     "fee": 8.0, "stab": ("wick_atr", "hold_hours", "funding_min"), "min_cov": 24 * 60},
+     "fee": 8.0, "slip": LIQ_SLIP_BPS, "stab": ("wick_atr", "hold_hours", "funding_min"), "min_cov": 24 * 60},
     # stability tests only CONTINUOUS params — entry_phase is a categorical selector (a seasonality
     # edge legitimately lives at one phase), so perturbing it would wrongly fail the robustness check.
     {"name": "funding_session", "refresh": refresh_hourly_funding, "bt": RFS, "space": SPACE_FSESS,
-     "fee": 6.0, "stab": ("hold_hours", "funding_min"), "min_cov": 24 * 30},
+     "fee": 6.0, "slip": 6.0, "stab": ("hold_hours", "funding_min"), "min_cov": 24 * 30},
     {"name": "trend", "refresh": refresh_daily, "bt": RT, "space": SPACE_TREND, "fee": 5.0,
      "stab": ("lookback", "holding", "vol_window"), "min_cov": 150},
     {"name": "cross_sectional", "refresh": refresh_daily, "bt": RXS, "space": SPACE_XS, "fee": 4.0,
@@ -229,6 +283,24 @@ FAMILIES = [
     {"name": "xs_reversal", "refresh": refresh_xs_hourly, "bt": RXS, "space": SPACE_XS_HR, "fee": 5.0,
      "stab": ("lookback", "holding", "w_rev"), "min_cov": 24 * 30},
 ]
+
+# FX families — thin-but-many edges, so lower the per-period Sharpe floor (min_osr) and let the
+# scale-free DSR/bootstrap (t-stat based, require significance) do the work. fx_trend/fx_xsection
+# REUSE the crypto backtests on FX data; fx_session is the FX twin of funding_session.
+FX_FAMILIES = [
+    {"name": "fx_trend", "refresh": refresh_fx_daily, "bt": RT, "space": SPACE_TREND, "fee": 1.0,
+     "stab": ("lookback", "holding", "vol_window"), "min_cov": 150, "min_osr": 0.0},
+    {"name": "fx_xsection", "refresh": refresh_fx_daily, "bt": RXS, "space": SPACE_XS, "fee": 1.0,
+     "stab": ("lookback", "holding", "quantile"), "min_cov": 150, "min_osr": 0.0},
+    {"name": "fx_session", "refresh": refresh_fx_hourly, "bt": RFXS, "space": SPACE_FX_SESSION, "fee": 0.5,
+     "slip": 1.0, "stab": ("hold_hours", "lookback"), "min_cov": 24 * 30, "min_osr": 0.0},
+]
+
+# ONE engine, SEPARATE hunts: pick the registry by asset class so each class's cross-family DSR
+# multiplicity is counted on its own (pooling crypto+FX would wrongly inflate both bars). Default
+# crypto = legacy behavior; the fx-research-runner sets EVOLVER_FAMILIES=fx.
+_FAMILY_SETS = {"crypto": CRYPTO_FAMILIES, "fx": FX_FAMILIES, "all": CRYPTO_FAMILIES + FX_FAMILIES}
+FAMILIES = _FAMILY_SETS.get(os.getenv("EVOLVER_FAMILIES", "crypto"), CRYPTO_FAMILIES)
 
 
 def _region(fam, g):
@@ -273,9 +345,10 @@ def cycle(fam, data):
         return block_bootstrap_pvalue(x, n_boot=3000)
 
     ho = run(g, lo=split)
-    # 2x-cost stress must exceed the LIVE shadow baseline, so double slippage too (not just fee) —
-    # otherwise "survives 2x cost" was still cheaper than what the paper book actually charges.
-    ho2 = [v for _, v in fam["bt"](data, {**g, "fee_bps": 2 * fam["fee"], "slip_bps": 2 * LIQ_SLIP_BPS},
+    # 2x-cost stress doubles fee AND the family's OWN per-side slippage (NOT a hardcoded crypto value —
+    # applying 24bps liquidation slip to a 1bp FX strategy would wrongly kill it). Families that don't
+    # model slippage carry slip=0, so this just doubles their fee.
+    ho2 = [v for _, v in fam["bt"](data, {**g, "fee_bps": 2 * fam["fee"], "slip_bps": 2 * fam.get("slip", 0.0)},
                                    DEFAULT_LIMITS, lo=split)]
     nb = _neighbors(g, fam["space"], fam["stab"])
     nb_sr = [_sh(run(q, lo=split)) for q in nb]
@@ -294,7 +367,11 @@ def cycle(fam, data):
     tr_sk, tr_ku = F._moments([v for _, v in elite.trades])
     dho = F.deflated_sharpe(elite.full_sharpe, elite.n_trades, r.n_trials * len(FAMILIES),
                             r.var_trials_sr, tr_sk, tr_ku)
-    passed = (osr > 0.05 and op < 0.05 and on >= 20 and o2 > 0 and dho > 0.95
+    # per-family economic floors: the scale-free stats (DSR/bootstrap/PBO) are untouched, but the
+    # minimum per-period Sharpe (min_osr) and trade count (min_n) adapt to the family's frequency —
+    # FX's thin-but-many edges set min_osr=0 and lean on the t-stat-based DSR + bootstrap.
+    min_osr, min_n = fam.get("min_osr", 0.05), fam.get("min_n", 20)
+    passed = (osr > min_osr and op < 0.05 and on >= min_n and o2 > 0 and dho > 0.95
               and (npos >= 0.75 * len(nb) if nb else False)
               and (r.pbo is None or r.pbo < 0.5))
     summ = (f"{fam['name']}: OOS {osr:+.2f} (p {op:.3f}, DSR {dho:.2f}, n {on}) | 2x-cost {o2:+.2f} | "
