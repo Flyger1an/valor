@@ -231,8 +231,9 @@ def refresh_funding_carry():
             cl = V.hourly_closes(c, 2400)
         except Exception:
             return c, cache.get(c, {})
-        merged = dict(cache.get(c, {}))
-        for ft in set(rate) & set(cl):          # funding settles on the hour -> match the hourly close
+        rate = {(t // 3_600_000) * 3_600_000: v for t, v in rate.items()}   # snap funding ts to the hour
+        merged = dict(cache.get(c, {}))                                     # (Gate stamps +1s; OKX on-hour)
+        for ft in set(rate) & set(cl):          # now aligns with the on-the-hour close
             merged[ft] = (cl[ft], rate[ft])
         return c, merged
 
