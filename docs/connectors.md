@@ -6,6 +6,7 @@ Connectors implement `MarketDataConnector` in `src/lib/data/connectors.ts`.
 export interface MarketDataConnector {
   id: string;
   label: string;
+  mode: MarketDataMode;
   needsApiKey: boolean;
   fetchLatest(): Promise<MarketDataBundle>;
 }
@@ -13,14 +14,18 @@ export interface MarketDataConnector {
 
 ## Current Connectors
 
-`getDefaultConnector()` routes on `ENABLE_PUBLIC_MARKET_FETCH`:
+- `SampleMarketDataConnector`: deterministic local fixture bundle.
+- `CoinGeckoSpotConnector`: public spot price adapter for BTC, ETH, and SOL. It is enabled with `ENABLE_PUBLIC_MARKET_FETCH=coingecko`.
+- `BinanceMarketConnector`: public Binance spot/perp adapter. It is enabled with `ENABLE_PUBLIC_MARKET_FETCH=binance`.
+- `PublicCryptoMarketConnector`: public OKX/Binance/CoinGecko data path with fixture fallback. It is enabled with `ENABLE_PUBLIC_MARKET_FETCH=true`, `public`, or `live`.
 
-- `PublicCryptoMarketConnector` — **the default** (used when the var is unset or any value other than the three below). Live OKX primary + Binance fallback for spot/perp/funding/open-interest, CoinGecko for stablecoin pegs, mempool.space + Etherscan for chain fees. Falls back to fixtures per-field on error (provenance recorded in the bundle's lineage).
-- `SampleMarketDataConnector` (`=false`): deterministic local fixture bundle, no network.
-- `CoinGeckoSpotConnector` (`=coingecko`): public spot price for BTC, ETH, SOL only. Order-book depth is **synthetic** — bid/ask sizes are hardcoded to 0 and the spread is fabricated.
-- `BinanceMarketConnector` (`=binance`): live Binance spot + perp.
+When `ENABLE_PUBLIC_MARKET_FETCH` is absent, `false`, `0`, `off`, or `sample`, Valor uses deterministic sample data. Unknown values also fall back to sample mode.
 
-**Always fixtures (no connector fetches them live):** exchange health/withdrawals/reserves, security advisories / news / RSS, and ETF proxies.
+Public live modes rebuild BTC/ETH and ETH/SOL z-score histories from exchange daily candles when possible, then append the live spot point. If that history fetch fails, Valor falls back to fixture histories and records that lineage on the market-data bundle.
+
+## Data Quality
+
+Every refresh now produces a data-quality report with connector mode, bundle age, market count, issue counts, fallback status, and whether new paper entries are blocked. Sample fixtures remain inspectable even with static timestamps. Public-data sessions block new paper entries when snapshots are stale, books are crossed, depth is missing, spreads are extreme, or the connector falls back to fixtures.
 
 ## Adding an Exchange Connector
 

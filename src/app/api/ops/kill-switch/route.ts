@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FileKillSwitchStore } from "@/lib/kill-switch/kill-switch";
-import { LocalStateStore } from "@/lib/state/local-store";
+import { getStateStore } from "@/lib/state/store-factory";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
     reason?: string;
   } | null;
   const killSwitch = new FileKillSwitchStore();
-  const local = new LocalStateStore();
+  const local = getStateStore();
 
   const next =
     body?.action === "dashboard_reset"

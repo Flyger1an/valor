@@ -1,106 +1,176 @@
 import {
   dailyDigestAlert,
+  edgeScoreboardToAlertEvents,
   riskAlertToAlertEvent,
-  riskTransitionAlert,
   signalToTradeableAlert,
+  systemTrustToAlertEvents,
 } from "@/lib/alerts/from-domain";
 import { runBasisCarryBacktest } from "@/lib/backtest/backtester";
-import { buildDataProvenance } from "@/lib/data/provenance";
 import { getDefaultConnector } from "@/lib/data/connectors";
+import { evaluateDataQuality } from "@/lib/data/quality";
 import type {
+  AlertDelivery,
   AlertEvent,
   AlertRouterConfig,
   AlertRouterState,
 } from "@/lib/alerts/types";
-import type { MarketDataBundle } from "@/lib/domain/types";
-import { advancePaperBook } from "@/lib/paper/paper-book";
+import { createAuditTrail } from "@/lib/audit/audit-log";
+import type {
+  DataQualityReport,
+  EdgeScoreboard,
+  MarketDataBundle,
+  MarketRiskState,
+  PaperPortfolio,
+  RelativeValueSignal,
+  SystemTrustVerdict,
+} from "@/lib/domain/types";
+import { applyEdgeScoreboardPolicy } from "@/lib/edge/policy";
+import { simulatePaperPortfolio } from "@/lib/paper/paper-broker";
 import { evaluateMarketRisk } from "@/lib/risk/risk-engine";
-import { buildSignalJournal } from "@/lib/signals/signal-journal";
+import { evaluateSystemTrust } from "@/lib/risk/system-trust";
 import { generateRelativeValueSignals } from "@/lib/signals/relative-value";
-import { LocalStateStore } from "@/lib/state/local-store";
+import { getStateStore } from "@/lib/state/store-factory";
+import type { SchedulerStatus, StateStore } from "@/lib/state/local-store";
+import type { KillSwitchState } from "@/lib/kill-switch/kill-switch";
 
-export async function refreshAndPersistMarketState() {
-  const store = new LocalStateStore();
-  const previous = store.read();
+export async function refreshAndPersistMarketState(
+  options: {
+    store?: StateStore;
+    assessedAt?: Date;
+  } = {},
+) {
+  const store = options.store ?? getStateStore();
+  const previousState = store.read();
   const connector = getDefaultConnector();
   const data = await connector.fetchLatest();
-  const computed = computeFromData(data, previous);
-  const provenance = buildDataProvenance(data, connector);
+  const dataQuality = evaluateDataQuality(data, {
+    connectorId: connector.id,
+    connectorLabel: connector.label,
+    mode: connector.mode,
+    assessedAt: options.assessedAt?.toISOString(),
+  });
+  const computed = computeFromData(data, dataQuality, {
+    paper: previousState.paper,
+    schedulerStatus: previousState.schedulerStatus,
+    alertDeliveries: previousState.alertDeliveries,
+    killSwitch: previousState.killSwitch,
+    now: options.assessedAt,
+  });
 
   const next = store.update((state) => ({
     ...state,
     lastRefreshAt: data.generatedAt,
     data,
+    dataQuality,
     signals: computed.signals,
     risk: computed.risk,
     backtest: computed.backtest,
-    paper: computed.paper,
-    equityHistory: computed.equityHistory,
-    signalJournal: computed.signalJournal.entries,
-    dataProvenance: provenance,
-    alertEvents: mergeAlerts(state.alertEvents, computed.alertEvents),
+    systemTrust: computed.systemTrust,
+    alertEvents: computed.alertEvents,
+    auditEvents: createAuditTrail({
+      data,
+      signals: computed.signals,
+      risk: computed.risk,
+      backtest: computed.backtest,
+      paper: previousState.paper ?? computed.paperPreview,
+    }),
   }));
 
   store.appendAction({
     action: "data.refresh",
-    status: "ok",
-    message: `Refreshed ${data.markets.length} markets via ${connector.label}; paper ${computed.paperBookSummary.opened} opened / ${computed.paperBookSummary.closed} closed; journal ${computed.signalJournal.persistedSignals} persistent signals.`,
+    status: dataQuality.blocksPaperTrading ? "error" : "ok",
+    message: `Refreshed ${data.markets.length} markets via ${connector.label}; data quality ${dataQuality.status}.`,
     timestamp: data.generatedAt,
   });
 
-  return { connector, data, computed, state: next, provenance };
+  return { connector, data, dataQuality, computed, state: next };
 }
 
 export function computeFromData(
   data: MarketDataBundle,
-  previous?: ReturnType<LocalStateStore["read"]>,
+  dataQuality?: DataQualityReport,
+  options: {
+    paper?: PaperPortfolio;
+    schedulerStatus?: SchedulerStatus;
+    alertDeliveries?: AlertDelivery[];
+    killSwitch?: KillSwitchState;
+    now?: Date;
+  } = {},
 ) {
-  const signals = generateRelativeValueSignals(data);
+  const generatedSignals = generateRelativeValueSignals(data);
   const risk = evaluateMarketRisk(data);
   const backtest = runBasisCarryBacktest(data.backtestHistory);
-  const paperBook = advancePaperBook({
-    previous: previous?.paper,
+  const evidencePaper =
+    options.paper ??
+    simulatePaperPortfolio({
+      signals: generatedSignals,
+      risk,
+      dataQuality,
+      marketData: data,
+    });
+  const edgePolicy = applyEdgeScoreboardPolicy({
+    signals: generatedSignals,
+    paper: evidencePaper,
+    updatedAt: data.generatedAt,
+  });
+  const signals = edgePolicy.signals;
+  const systemTrust = evaluateSystemTrust({
+    dataQuality,
+    risk,
+    schedulerStatus: options.schedulerStatus,
+    alertDeliveries: options.alertDeliveries,
+    killSwitch: options.killSwitch,
+    paper: evidencePaper,
+    now: options.now ?? new Date(data.generatedAt),
+  });
+  const paperPreview = simulatePaperPortfolio({
     signals,
     risk,
-    timestamp: data.generatedAt,
-    equityHistory: previous?.equityHistory,
+    dataQuality,
+    systemTrust,
+    marketData: data,
   });
-  const signalJournal = buildSignalJournal({
+  const alertEvents = buildComputedAlertEvents({
+    risk,
     signals,
-    previous: previous?.signalJournal,
-    timestamp: data.generatedAt,
+    paper: paperPreview,
+    systemTrust,
+    edgeScoreboard: edgePolicy.scoreboard,
   });
-  const transition = previous?.risk
-    ? riskTransitionAlert({ previousState: previous.risk.state, next: risk })
-    : null;
-  const alertEvents = [
-    ...(transition ? [transition] : []),
-    ...risk.activeAlerts.map(riskAlertToAlertEvent),
-    ...signals
-      .filter((signal) => signal.eligibleForPaperTrading)
-      .slice(0, 4)
-      .map(signalToTradeableAlert),
-    dailyDigestAlert({
-      risk,
-      paper: paperBook.portfolio,
-      signalCount: signals.length,
-    }),
-  ];
 
   return {
     signals,
     risk,
     backtest,
-    paper: paperBook.portfolio,
-    equityHistory: paperBook.equityHistory,
-    signalJournal,
-    paperBookSummary: {
-      opened: paperBook.opened,
-      closed: paperBook.closed,
-      marked: paperBook.marked,
-    },
+    paperPreview,
     alertEvents,
+    edgePolicy: edgePolicy.decision,
+    edgeScoreboard: edgePolicy.scoreboard,
+    systemTrust,
   };
+}
+
+function buildComputedAlertEvents(input: {
+  risk: MarketRiskState;
+  signals: RelativeValueSignal[];
+  paper: PaperPortfolio;
+  systemTrust: SystemTrustVerdict;
+  edgeScoreboard: EdgeScoreboard;
+}) {
+  return [
+    ...input.risk.activeAlerts.map(riskAlertToAlertEvent),
+    ...systemTrustToAlertEvents(input.systemTrust),
+    ...edgeScoreboardToAlertEvents(input.edgeScoreboard),
+    ...input.signals
+      .filter((signal) => signal.eligibleForPaperTrading)
+      .slice(0, 4)
+      .map(signalToTradeableAlert),
+    dailyDigestAlert({
+      risk: input.risk,
+      paper: input.paper,
+      signalCount: input.signals.length,
+    }),
+  ];
 }
 
 export function buildAlertRouterConfig(now = new Date()): AlertRouterConfig {

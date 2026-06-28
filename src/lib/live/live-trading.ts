@@ -3,6 +3,7 @@ import type {
   LiveTradeEvaluation,
   LiveTradingSettings,
   RelativeValueSignal,
+  SystemTrustVerdict,
   Venue,
 } from "@/lib/domain/types";
 
@@ -37,6 +38,7 @@ export function evaluateLiveTradeRequest(input: {
   settings?: LiveTradingSettings;
   manualConfirmation: boolean;
   currentDailyPnlUsd: number;
+  systemTrust?: SystemTrustVerdict;
 }): LiveTradeEvaluation {
   const settings = input.settings ?? readLiveTradingSettings();
   const reasons: string[] = [];
@@ -47,6 +49,10 @@ export function evaluateLiveTradeRequest(input: {
 
   if (settings.killSwitchActive) {
     reasons.push("Live kill switch is active.");
+  }
+
+  if (input.systemTrust?.blocksLiveTrading) {
+    reasons.push(`System trust blocks live trading: ${input.systemTrust.summary}`);
   }
 
   if (settings.manualConfirmationRequired && !input.manualConfirmation) {

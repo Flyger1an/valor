@@ -39,7 +39,6 @@ export const relativeValueSignals = sqliteTable("relative_value_signals", {
     mode: "boolean",
   }).notNull(),
   timestamp: text("timestamp").notNull(),
-  // Added 0003 — enriched contract fields (nullable for pre-enrichment rows).
   zscore: real("zscore"),
   spreadValue: real("spread_value"),
   expectedConvergenceHours: real("expected_convergence_hours"),
@@ -178,4 +177,45 @@ export const appState = sqliteTable("app_state", {
   key: text("key").primaryKey(),
   valueJson: text("value_json").notNull(),
   updatedAt: text("updated_at").notNull(),
+});
+
+export const dataQualityReports = sqliteTable("data_quality_reports", {
+  id: text("id").primaryKey(),
+  connectorId: text("connector_id").notNull(),
+  connectorLabel: text("connector_label").notNull(),
+  mode: text("mode").notNull(),
+  status: text("status").notNull(),
+  generatedAt: text("generated_at").notNull(),
+  assessedAt: text("assessed_at").notNull(),
+  dataAgeMinutes: real("data_age_minutes").notNull(),
+  marketCount: integer("market_count").notNull(),
+  issueCount: integer("issue_count").notNull(),
+  criticalIssueCount: integer("critical_issue_count").notNull(),
+  fallbackUsed: integer("fallback_used", { mode: "boolean" }).notNull(),
+  fixtureBacked: integer("fixture_backed", { mode: "boolean" }).notNull(),
+  blocksPaperTrading: integer("blocks_paper_trading", {
+    mode: "boolean",
+  }).notNull(),
+  summary: text("summary").notNull(),
+  issuesJson: text("issues_json").notNull(),
+});
+
+export const paperPositions = sqliteTable("paper_positions", {
+  id: text("id").primaryKey(),
+  signalId: text("signal_id").notNull(),
+  assetPair: text("asset_pair").notNull(),
+  venue: text("venue").notNull(),
+  direction: text("direction").notNull(),
+  notionalUsd: real("notional_usd").notNull(),
+  entryEdgeBps: real("entry_edge_bps").notNull(),
+  markPnlUsd: real("mark_pnl_usd").notNull(),
+  openedAt: text("opened_at").notNull(),
+});
+
+export const actionLog = sqliteTable("action_log", {
+  id: text("id").primaryKey(),
+  timestamp: text("timestamp").notNull(),
+  action: text("action").notNull(),
+  status: text("status").notNull(),
+  message: text("message").notNull(),
 });

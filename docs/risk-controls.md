@@ -29,4 +29,4 @@ The live guardrail interface lives in `src/lib/live/live-trading.ts`. By default
 - All generated signals have `eligibleForLiveTrading=false`.
 - Max leverage defaults to 1x.
 
-No exchange executor exists in the MVP.
+The only executor boundary is the dry-run executor in `src/lib/execution/dry-run-executor.ts`. It records local order intents and dry-run fills; it has no exchange client and cannot place live orders.

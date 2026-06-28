@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import { runBasisCarryBacktest } from "@/lib/backtest/backtester";
 import { refreshAndPersistMarketState } from "@/lib/ops/recompute";
-import { LocalStateStore } from "@/lib/state/local-store";
+import { getStateStore } from "@/lib/state/store-factory";
 
 export const dynamic = "force-dynamic";
 
 export async function POST() {
-  const store = new LocalStateStore();
+  const store = getStateStore();
   let state = store.read();
   if (!state.data) {
     await refreshAndPersistMarketState();

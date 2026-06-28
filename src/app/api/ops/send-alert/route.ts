@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendAlertNow } from "@/lib/ops/alert-delivery";
 import { refreshAndPersistMarketState } from "@/lib/ops/recompute";
-import { LocalStateStore } from "@/lib/state/local-store";
+import { getStateStore } from "@/lib/state/store-factory";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +9,7 @@ export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => null)) as {
     alertId?: string;
   } | null;
-  const store = new LocalStateStore();
+  const store = getStateStore();
   let state = store.read();
   if (state.alertEvents.length === 0) {
     await refreshAndPersistMarketState();
