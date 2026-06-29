@@ -1,17 +1,27 @@
 import { NextResponse } from "next/server";
 import { getDashboardState } from "@/lib/dashboard/get-dashboard-state";
+import { requireOpsAuth } from "@/lib/ops/auth";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const blocked = requireOpsAuth(request, {
+    access: "read",
+    rateLimit: { scope: "ops.status", limit: 120, windowMs: 60_000 },
+  });
+  if (blocked) return blocked;
+
   const state = await getDashboardState();
 
   return NextResponse.json({
     ok: true,
     generatedAt: state.data.generatedAt,
     lastRefreshAt: state.data.generatedAt,
-    dataAgeLabel: state.dataFreshness.ageLabel,
+    dataAgeMinutes: state.dataQuality.dataAgeMinutes,
+    dataQualityStatus: state.dataQuality.status,
+    dataQualitySummary: state.dataQuality.summary,
     connector: state.connector.label,
+    connectorMode: state.connector.mode,
     riskState: state.risk.state,
     riskScore: state.risk.score,
     signalCount: state.signals.length,
@@ -20,9 +30,9 @@ export async function GET() {
     alertCount: state.risk.activeAlerts.length,
     paperEquityUsd: state.paper.equityUsd,
     killSwitchActive: Boolean(state.killSwitch?.active),
-    liveMarketCount: state.dataProvenance.liveMarketCount,
-    fixtureMarketCount: state.dataProvenance.fixtureMarketCount,
-    llmMode: state.llmStatus.mode,
+    relativeValueHistorySource: state.data.relativeValueHistorySource ?? "fixture",
+    llmConfigured: state.llmStatus.configured,
+    llmEnabled: state.llmStatus.enabled,
     timestamp: new Date().toISOString(),
   });
 }

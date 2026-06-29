@@ -1,9 +1,12 @@
 import type { AlertEvent } from "@/lib/alerts/types";
 import type {
+  EdgeScoreboard,
   MarketRiskState,
   PaperPortfolio,
   RelativeValueSignal,
   RiskAlert,
+  SystemTrustIssue,
+  SystemTrustVerdict,
 } from "@/lib/domain/types";
 import { severityFromRiskState } from "@/lib/alerts/severity-policy";
 
@@ -51,44 +54,6 @@ export function signalToTradeableAlert(signal: RelativeValueSignal): AlertEvent 
   };
 }
 
-export function riskTransitionAlert(input: {
-  previousState: MarketRiskState["state"];
-  next: MarketRiskState;
-}): AlertEvent | null {
-  if (input.previousState === input.next.state) return null;
-
-  const worsened =
-    stateRank(input.next.state) > stateRank(input.previousState);
-  const severity: AlertEvent["severity"] =
-    input.next.state === "Black"
-      ? "BLACK"
-      : input.next.state === "Red"
-        ? "CRITICAL"
-        : worsened
-          ? "WATCH"
-          : "INFO";
-
-  return {
-    id: `alert:risk-transition:${input.next.updatedAt}`,
-    severity,
-    title: `Risk state moved ${input.previousState} → ${input.next.state}`,
-    message: input.next.explanation,
-    source: "risk-state-engine",
-    scope: {},
-    createdAt: input.next.updatedAt,
-    fingerprint: `risk-transition:${input.previousState}:${input.next.state}`,
-    tradingImpact:
-      severity === "BLACK" || severity === "CRITICAL"
-        ? "Tighten exposure and review restrictions immediately."
-        : "Review restrictions and paper book posture.",
-    metadata: {
-      previousState: input.previousState,
-      nextState: input.next.state,
-      riskScore: input.next.score,
-    },
-  };
-}
-
 export function dailyDigestAlert(input: {
   risk: MarketRiskState;
   paper: PaperPortfolio;
@@ -117,11 +82,86 @@ export function dailyDigestAlert(input: {
   };
 }
 
-function stateRank(state: MarketRiskState["state"]): number {
-  if (state === "Green") return 0;
-  if (state === "Yellow") return 1;
-  if (state === "Red") return 2;
-  return 3;
+export function systemTrustToAlertEvents(verdict: SystemTrustVerdict): AlertEvent[] {
+  if (verdict.status === "trusted" || verdict.issueCount === 0) return [];
+
+  const surfacedIssues = verdict.issues.filter(
+    (issue) =>
+      issue.blocksPaperTrading ||
+      issue.blocksLiveTrading ||
+      issue.severity !== "info",
+  );
+  if (surfacedIssues.length === 0) return [];
+
+  const leadIssues = surfacedIssues
+    .slice(0, 3)
+    .map(formatSystemTrustIssue)
+    .join(" ");
+  const remaining =
+    surfacedIssues.length > 3
+      ? ` ${surfacedIssues.length - 3} more issue(s).`
+      : "";
+  const issueFingerprint = surfacedIssues
+    .map((issue) => issue.code)
+    .sort()
+    .join("|");
+
+  return [
+    {
+      id: `alert:system-trust:${verdict.status}:${verdict.generatedAt}`,
+      severity: systemTrustAlertSeverity(verdict),
+      title: `System trust ${verdict.status}`,
+      message: `${verdict.summary} ${leadIssues}${remaining}`.trim(),
+      source: "system-trust-gate",
+      scope: {},
+      createdAt: verdict.generatedAt,
+      fingerprint: `system-trust:${verdict.status}:${issueFingerprint}`,
+      tradingImpact: systemTrustTradingImpact(verdict),
+      metadata: {
+        status: verdict.status,
+        blocksPaperTrading: verdict.blocksPaperTrading,
+        blocksLiveTrading: verdict.blocksLiveTrading,
+        issueCount: verdict.issueCount,
+        criticalIssueCount: verdict.criticalIssueCount,
+        surfacedIssueCount: surfacedIssues.length,
+      },
+    },
+  ];
+}
+
+export function edgeScoreboardToAlertEvents(
+  scoreboard: EdgeScoreboard,
+): AlertEvent[] {
+  return scoreboard.rows
+    .filter((row) => row.status === "underperforming")
+    .map<AlertEvent>((row) => ({
+      id: `alert:edge-scoreboard:${row.kind}:${scoreboard.updatedAt}`,
+      severity: "WATCH",
+      title: `${formatSignalKind(row.kind)} underperforming`,
+      message: `${formatSignalKind(row.kind)} has ${formatUsd(
+        row.totalPnlUsd,
+      )} net paper PnL across ${row.closedCount} closed trade(s), ${row.winRatePct.toFixed(
+        1,
+      )}% win rate, and ${row.acceptanceRatePct.toFixed(
+        1,
+      )}% acceptance. ${row.recommendation}`,
+      source: "edge-scoreboard",
+      scope: {},
+      createdAt: scoreboard.updatedAt,
+      fingerprint: `edge-underperforming:${row.kind}`,
+      tradingImpact:
+        "Signal family is marked watch-only by edge policy; new paper entries are blocked until evidence improves.",
+      metadata: {
+        kind: row.kind,
+        totalPnlUsd: row.totalPnlUsd,
+        realizedPnlUsd: row.realizedPnlUsd,
+        markPnlUsd: row.markPnlUsd,
+        closedCount: row.closedCount,
+        winRatePct: row.winRatePct,
+        paperEligibleCount: row.paperEligibleCount,
+        openPositionCount: row.openPositionCount,
+      },
+    }));
 }
 
 function mapRiskAlertSeverity(
@@ -131,4 +171,49 @@ function mapRiskAlertSeverity(
   if (severity === "high") return "CRITICAL";
   if (severity === "medium") return "WATCH";
   return "INFO";
+}
+
+function systemTrustAlertSeverity(verdict: SystemTrustVerdict): AlertEvent["severity"] {
+  if (
+    verdict.issues.some(
+      (issue) =>
+        issue.code === "black-risk-state" || issue.code === "kill-switch-active",
+    )
+  ) {
+    return "BLACK";
+  }
+  if (verdict.blocksPaperTrading || verdict.criticalIssueCount > 0) {
+    return "CRITICAL";
+  }
+  return "WATCH";
+}
+
+function systemTrustTradingImpact(verdict: SystemTrustVerdict): string {
+  if (verdict.blocksPaperTrading) {
+    return "Blocks new paper entries and all live attempts.";
+  }
+  if (verdict.blocksLiveTrading) {
+    return "Paper research can continue; live trading remains blocked.";
+  }
+  return "Review required before increasing trading privileges.";
+}
+
+function formatSystemTrustIssue(issue: SystemTrustIssue): string {
+  const blocks = [
+    issue.blocksPaperTrading ? "paper" : "",
+    issue.blocksLiveTrading ? "live" : "",
+  ]
+    .filter(Boolean)
+    .join("/");
+  const suffix = blocks ? ` Blocks ${blocks}.` : "";
+  return `${issue.code}: ${issue.message}${suffix}`;
+}
+
+function formatSignalKind(kind: string): string {
+  return kind.replaceAll("_", " ");
+}
+
+function formatUsd(value: number): string {
+  const sign = value < 0 ? "-" : "";
+  return `${sign}$${Math.abs(value).toFixed(2)}`;
 }

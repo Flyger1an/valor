@@ -1,11 +1,17 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { AlertOctagon, BellRing, LineChart, RefreshCcw, Send } from "lucide-react";
-import { useRouter } from "next/navigation";
+import {
+  AlertOctagon,
+  BellRing,
+  ClipboardCheck,
+  LineChart,
+  RefreshCcw,
+  Send,
+} from "lucide-react";
 import { useState } from "react";
 
-type ActionKey = "refresh" | "backtest" | "paper" | "alert" | "kill";
+type ActionKey = "refresh" | "backtest" | "paper" | "execute" | "alert" | "kill";
 
 const ACTIONS: Array<{
   key: ActionKey;
@@ -34,6 +40,13 @@ const ACTIONS: Array<{
     endpoint: "/api/ops/paper-trade",
   },
   {
+    key: "execute",
+    label: "Dry-Run Intent",
+    icon: <ClipboardCheck size={15} aria-hidden="true" />,
+    endpoint: "/api/ops/dry-run-execution",
+    body: { requestedNotionalUsd: 100, manualConfirmation: false },
+  },
+  {
     key: "alert",
     label: "Send First Alert",
     icon: <BellRing size={15} aria-hidden="true" />,
@@ -50,7 +63,6 @@ const ACTIONS: Array<{
 ];
 
 export function OperationalControls() {
-  const router = useRouter();
   const [busy, setBusy] = useState<ActionKey | null>(null);
   const [result, setResult] = useState<string>("No action run in this browser session.");
 
@@ -71,7 +83,7 @@ export function OperationalControls() {
       });
       const json = await response.json();
       setResult(JSON.stringify(json, null, 2));
-      router.refresh();
+      window.setTimeout(() => window.location.reload(), 500);
     } catch (error) {
       setResult(error instanceof Error ? error.message : "Unknown action error");
     } finally {

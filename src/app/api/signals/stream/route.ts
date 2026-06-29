@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { LocalStateStore } from "@/lib/state/local-store";
+import { requireOpsAuth } from "@/lib/ops/auth";
+import { getStateStore } from "@/lib/state/store-factory";
 import type { RelativeValueSignal, RiskState } from "@/lib/domain/types";
 
 export const dynamic = "force-dynamic";
@@ -75,8 +76,14 @@ function toContract(sig: RelativeValueSignal, regime: string) {
   };
 }
 
-export async function GET() {
-  const state = new LocalStateStore().read();
+export async function GET(request: Request) {
+  const blocked = requireOpsAuth(request, {
+    access: "read",
+    rateLimit: { scope: "signals.stream", limit: 20, windowMs: 60_000 },
+  });
+  if (blocked) return blocked;
+
+  const state = getStateStore().read();
   const regime = REGIME_BY_RISK[state.risk?.state ?? "Yellow"];
   const mapped = (state.signals ?? [])
     .map((s) => toContract(s, regime))

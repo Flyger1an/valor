@@ -8,10 +8,14 @@ import {
   buildAlertRouterConfig,
   mergeAlertRouterState,
 } from "@/lib/ops/recompute";
-import { LocalStateStore } from "@/lib/state/local-store";
+import type { StateStore } from "@/lib/state/local-store";
+import { getStateStore } from "@/lib/state/store-factory";
 
-export async function sendAlertNow(alert: AlertEvent) {
-  const store = new LocalStateStore();
+export async function sendAlertNow(
+  alert: AlertEvent,
+  options: { store?: StateStore } = {},
+) {
+  const store = options.store ?? getStateStore();
   const state = store.read();
   const config = buildAlertRouterConfig(new Date());
   const routed = routeAlert(

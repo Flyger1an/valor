@@ -18,6 +18,8 @@ export type Asset =
 
 export type RiskState = "Green" | "Yellow" | "Red" | "Black";
 
+export type MarketDataMode = "sample" | "coingecko" | "public";
+
 export type SignalKind =
   | "spot_perp_basis"
   | "funding_carry"
@@ -132,11 +134,32 @@ export interface MarketDataBundle {
   btcEthRatioHistory: PairSpreadPoint[];
   ethSolSpreadHistory: PairSpreadPoint[];
   backtestHistory: HistoricalPoint[];
-  /**
-   * Lineage of the z-score histories above: "live-klines" when reconstructed
-   * from real exchange candles, "fixture" when seeded from sample data.
-   */
   relativeValueHistorySource?: "live-klines" | "fixture";
+}
+
+export interface DataQualityIssue {
+  code: string;
+  severity: "info" | "warning" | "critical";
+  scope: string;
+  message: string;
+}
+
+export interface DataQualityReport {
+  connectorId: string;
+  connectorLabel: string;
+  mode: MarketDataMode;
+  status: "healthy" | "degraded" | "blocked";
+  generatedAt: string;
+  assessedAt: string;
+  dataAgeMinutes: number;
+  marketCount: number;
+  issueCount: number;
+  criticalIssueCount: number;
+  fallbackUsed: boolean;
+  fixtureBacked: boolean;
+  blocksPaperTrading: boolean;
+  summary: string;
+  issues: DataQualityIssue[];
 }
 
 export interface RelativeValueSignal {
@@ -154,29 +177,16 @@ export interface RelativeValueSignal {
   timestamp: string;
   eligibleForPaperTrading: boolean;
   eligibleForLiveTrading: boolean;
-  /**
-   * Standardized dislocation. Real z-score for mean-reversion signals
-   * (btc_eth_ratio, pair_spread_zscore); a per-type normalized dislocation for
-   * carry/cross-venue signals. Optional so pre-enrichment persisted rows load.
-   */
   zscore?: number;
-  /**
-   * Spread level as a fraction (basis/funding/premium) or fractional dislocation
-   * from mean (ratio/pair signals).
-   */
   spreadValue?: number;
-  /**
-   * Estimated convergence horizon in hours — mean-reversion half-life where a
-   * spread history exists, per-type default otherwise.
-   */
   expectedConvergenceHours?: number;
-  /**
-   * ADF unit-root test on the spread/ratio history. Only set for mean-reversion
-   * signal kinds; paper eligibility requires this to be true when present.
-   */
   spreadStationary?: boolean;
-  /** ADF t-statistic on the lag level coefficient (more negative ⇒ more stationary). */
   adfTestStatistic?: number;
+  edgePolicy?: {
+    action: "watch_only";
+    source: "edge_scoreboard";
+    reason: string;
+  };
 }
 
 export interface TradingRestriction {
@@ -253,13 +263,22 @@ export interface BacktestReport {
 export interface PaperPosition {
   id: string;
   signalId: string;
+  signalKind?: SignalKind;
   assetPair: string;
   venue: string;
   direction: SignalDirection;
   notionalUsd: number;
   entryEdgeBps: number;
+  currentEdgeBps?: number;
+  entryReferencePrice?: number;
+  currentReferencePrice?: number;
+  markSource?: "market_price" | "edge_proxy";
   markPnlUsd: number;
+  fundingAccruedUsd?: number;
+  feesPaidUsd?: number;
   openedAt: string;
+  lastMarkedAt?: string;
+  holdingHours?: number;
 }
 
 export interface PaperTrade {
@@ -271,18 +290,17 @@ export interface PaperTrade {
   direction: SignalDirection;
   notionalUsd: number;
   feesUsd: number;
-  status: "filled" | "rejected";
+  status: "filled" | "held" | "closed" | "rejected";
   reason: string;
+  realizedPnlUsd?: number;
+  fundingUsd?: number;
+  markPnlUsd?: number;
 }
 
 export interface PaperPortfolio {
-  /** Cash ledger: starting cash + realized PnL − fees paid. */
   cashUsd: number;
-  /** Total account value: cash + unrealized mark-to-market of open positions. */
   equityUsd: number;
-  /** Cumulative realized trading PnL from closed positions (gross of fees). */
   realizedPnlUsd: number;
-  /** Cumulative fees paid across opens and closes. */
   feesPaidUsd: number;
   dailyPnlUsd: number;
   weeklyPnlUsd: number;
@@ -298,6 +316,75 @@ export interface PaperRiskLimits {
   maxSignalRiskScore: number;
   minLiquidityScore: number;
   allowWhenRiskState: RiskState[];
+  maxHoldingHours: number;
+}
+
+export type EdgeScoreboardStatus =
+  | "proving"
+  | "watch"
+  | "underperforming"
+  | "insufficient";
+
+export interface EdgeScoreboardRow {
+  kind: SignalKind;
+  generatedCount: number;
+  paperEligibleCount: number;
+  openPositionCount: number;
+  activeNotionalUsd: number;
+  ledgerEventCount: number;
+  filledCount: number;
+  heldCount: number;
+  closedCount: number;
+  rejectedCount: number;
+  averageExpectedEdgeBps: number;
+  averageSignalRiskScore: number;
+  markPnlUsd: number;
+  realizedPnlUsd: number;
+  totalPnlUsd: number;
+  fundingUsd: number;
+  winRatePct: number;
+  acceptanceRatePct: number;
+  averageHoldingHours: number;
+  averageEdgeDecayBps: number;
+  status: EdgeScoreboardStatus;
+  recommendation: string;
+}
+
+export interface EdgeScoreboard {
+  updatedAt: string;
+  rows: EdgeScoreboardRow[];
+  totals: {
+    generatedCount: number;
+    paperEligibleCount: number;
+    openPositionCount: number;
+    ledgerEventCount: number;
+    totalPnlUsd: number;
+    realizedPnlUsd: number;
+    markPnlUsd: number;
+    underperformingCount: number;
+  };
+}
+
+export type SystemTrustStatus = "trusted" | "caution" | "blocked";
+
+export interface SystemTrustIssue {
+  code: string;
+  severity: "info" | "warning" | "critical";
+  scope: string;
+  message: string;
+  blocksPaperTrading: boolean;
+  blocksLiveTrading: boolean;
+}
+
+export interface SystemTrustVerdict {
+  status: SystemTrustStatus;
+  generatedAt: string;
+  summary: string;
+  blocksPaperTrading: boolean;
+  blocksLiveTrading: boolean;
+  issueCount: number;
+  criticalIssueCount: number;
+  issues: SystemTrustIssue[];
 }
 
 export interface LiveTradingSettings {
@@ -317,6 +404,179 @@ export interface LiveTradeEvaluation {
   dryRun: boolean;
   reasons: string[];
   auditLabel: string;
+}
+
+export type ExecutionMode = "dry_run";
+export type ExecutionOrderSide = "buy" | "sell" | "spread";
+export type ExecutionOrderStatus =
+  | "previewed"
+  | "dry_run_recorded"
+  | "blocked"
+  | "cancelled";
+
+export interface ExecutionBalance {
+  venue: string;
+  asset: Asset;
+  available: number;
+  reserved: number;
+  mode: ExecutionMode;
+  updatedAt: string;
+}
+
+export interface ExecutionOrderPreview {
+  id: string;
+  mode: ExecutionMode;
+  signalId: string;
+  signalKind: SignalKind;
+  assetPair: string;
+  venue: string;
+  direction: SignalDirection;
+  side: ExecutionOrderSide;
+  requestedNotionalUsd: number;
+  estimatedFeesUsd: number;
+  estimatedSlippageUsd: number;
+  estimatedTotalCostUsd: number;
+  createdAt: string;
+  notes: string[];
+}
+
+export interface ExecutionFill {
+  id: string;
+  orderIntentId: string;
+  mode: ExecutionMode;
+  status: "dry_run";
+  assetPair: string;
+  venue: string;
+  notionalUsd: number;
+  price: number;
+  feesUsd: number;
+  createdAt: string;
+}
+
+export interface LiveTradeAttempt {
+  id: string;
+  mode: ExecutionMode;
+  signalId: string;
+  signalKind: SignalKind;
+  assetPair: string;
+  venue: string;
+  direction: SignalDirection;
+  requestedNotionalUsd: number;
+  allowed: boolean;
+  dryRun: boolean;
+  status: ExecutionOrderStatus;
+  reasons: string[];
+  evaluationAuditLabel: string;
+  preview: ExecutionOrderPreview;
+  fills: ExecutionFill[];
+  createdAt: string;
+}
+
+export type ExecutionReconciliationStatus = "clean" | "attention" | "blocked";
+
+export interface ExecutionReconciliationIssue {
+  code: string;
+  severity: "info" | "warning" | "critical";
+  scope: string;
+  message: string;
+}
+
+export interface ExecutionReconciliationReport {
+  id: string;
+  mode: ExecutionMode;
+  generatedAt: string;
+  status: ExecutionReconciliationStatus;
+  attemptCount: number;
+  allowedCount: number;
+  blockedCount: number;
+  dryRunFillCount: number;
+  totalNotionalUsd: number;
+  totalEstimatedCostUsd: number;
+  issueCount: number;
+  criticalIssueCount: number;
+  issues: ExecutionReconciliationIssue[];
+}
+
+export type OperationalRunbookStatus = "ready" | "attention" | "blocked";
+export type OperationalRunbookArea =
+  | "stop_resume"
+  | "data"
+  | "alerts"
+  | "paper"
+  | "execution"
+  | "scheduler";
+
+export interface OperationalRunbookStep {
+  id: string;
+  area: OperationalRunbookArea;
+  title: string;
+  status: "ready" | "action_required" | "blocked";
+  severity: "info" | "warning" | "critical";
+  trigger: string;
+  action: string;
+  verification: string;
+  evidence: string;
+  blocksPaperTrading: boolean;
+  blocksLiveTrading: boolean;
+}
+
+export interface OperationalRunbookReport {
+  id: string;
+  generatedAt: string;
+  status: OperationalRunbookStatus;
+  summary: string;
+  stepCount: number;
+  actionRequiredCount: number;
+  blockedCount: number;
+  criticalStepCount: number;
+  steps: OperationalRunbookStep[];
+}
+
+export type TinyLiveReadinessStatus =
+  | "no_go"
+  | "watchlist"
+  | "candidate_review";
+
+export interface TinyLiveReadinessBlocker {
+  code: string;
+  severity: "info" | "warning" | "critical";
+  message: string;
+  evidence: string;
+}
+
+export interface TinyLiveReadinessCandidate {
+  kind: SignalKind;
+  status: EdgeScoreboardStatus;
+  closedCount: number;
+  totalPnlUsd: number;
+  winRatePct: number;
+  acceptanceRatePct: number;
+  averageExpectedEdgeBps: number;
+  recommendation: string;
+}
+
+export interface TinyLiveReadinessReport {
+  id: string;
+  generatedAt: string;
+  status: TinyLiveReadinessStatus;
+  summary: string;
+  candidate?: TinyLiveReadinessCandidate;
+  evidenceDays: number;
+  closedTradeCount: number;
+  blockerCount: number;
+  criticalBlockerCount: number;
+  blockers: TinyLiveReadinessBlocker[];
+  minimums: {
+    evidenceDays: number;
+    closedTradesPerFamily: number;
+    winRatePct: number;
+    totalPnlUsd: number;
+  };
+  memo: {
+    conclusion: string;
+    evidenceWindow: string;
+    requiredNextEvidence: string;
+  };
 }
 
 export interface AuditEvent {

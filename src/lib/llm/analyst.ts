@@ -81,7 +81,6 @@ async function callOpenAiCompatible(input: {
 }): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), input.settings.timeoutMs);
-
   const requestBody: Record<string, unknown> = {
     model: input.settings.model,
     messages: [
@@ -96,8 +95,7 @@ async function callOpenAiCompatible(input: {
       },
     ],
   };
-  // Only send temperature when explicitly configured. Reasoning models (gpt-5.x)
-  // reject any non-default value, so omitting it keeps live calls working.
+
   if (input.settings.temperature !== undefined) {
     requestBody.temperature = input.settings.temperature;
   }

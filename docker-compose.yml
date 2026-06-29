@@ -42,6 +42,7 @@ services:
     env_file:
       - .env
     environment:
+      VALOR_APP_URL: http://app:3000
       DATABASE_URL: postgresql://${POSTGRES_USER:-valor}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-valor}
       REDIS_URL: redis://redis:6379
     depends_on:

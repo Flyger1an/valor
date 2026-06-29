@@ -5,6 +5,7 @@ import type {
   Asset,
   ChainFeeSnapshot,
   MarketDataBundle,
+  MarketDataMode,
   MarketSnapshot,
   StablecoinSnapshot,
   Venue,
@@ -13,6 +14,7 @@ import type {
 export interface MarketDataConnector {
   id: string;
   label: string;
+  mode: MarketDataMode;
   needsApiKey: boolean;
   fetchLatest(): Promise<MarketDataBundle>;
 }
@@ -20,6 +22,7 @@ export interface MarketDataConnector {
 export class SampleMarketDataConnector implements MarketDataConnector {
   id = "sample-fixtures";
   label = "Deterministic sample market bundle";
+  mode = "sample" as const;
   needsApiKey = false;
 
   async fetchLatest(): Promise<MarketDataBundle> {
@@ -59,6 +62,7 @@ export class SampleMarketDataConnector implements MarketDataConnector {
 export class CoinGeckoSpotConnector implements MarketDataConnector {
   id = "coingecko-public";
   label = "CoinGecko public spot price adapter";
+  mode = "coingecko" as const;
   needsApiKey = false;
 
   async fetchLatest(): Promise<MarketDataBundle> {
@@ -102,6 +106,7 @@ export class CoinGeckoSpotConnector implements MarketDataConnector {
 export class BinanceMarketConnector implements MarketDataConnector {
   id = "binance-public";
   label = "Binance public spot + perp adapter";
+  mode = "public" as const;
   needsApiKey = false;
 
   async fetchLatest(): Promise<MarketDataBundle> {
@@ -122,6 +127,7 @@ export class BinanceMarketConnector implements MarketDataConnector {
 export class PublicCryptoMarketConnector implements MarketDataConnector {
   id = "public-crypto-live";
   label = "Live public crypto APIs with fixture fallback";
+  mode = "public" as const;
   needsApiKey = false;
 
   async fetchLatest(): Promise<MarketDataBundle> {
@@ -193,20 +199,28 @@ async function withRelativeValueHistory(
   };
 }
 
-export function getDefaultConnector(): MarketDataConnector {
-  if (process.env.ENABLE_PUBLIC_MARKET_FETCH === "false") {
+export function getDefaultConnector(
+  env: NodeJS.ProcessEnv = process.env,
+): MarketDataConnector {
+  const mode = env.ENABLE_PUBLIC_MARKET_FETCH?.trim().toLowerCase();
+
+  if (!mode || ["false", "0", "off", "sample"].includes(mode)) {
     return new SampleMarketDataConnector();
   }
 
-  if (process.env.ENABLE_PUBLIC_MARKET_FETCH === "coingecko") {
+  if (mode === "coingecko") {
     return new CoinGeckoSpotConnector();
   }
 
-  if (process.env.ENABLE_PUBLIC_MARKET_FETCH === "binance") {
+  if (mode === "binance") {
     return new BinanceMarketConnector();
   }
 
-  return new PublicCryptoMarketConnector();
+  if (["true", "public", "live"].includes(mode)) {
+    return new PublicCryptoMarketConnector();
+  }
+
+  return new SampleMarketDataConnector();
 }
 
 function mapCoinGeckoSpot(

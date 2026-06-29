@@ -21,11 +21,12 @@ __pycache__/
 .evolver/
 *.egg-info/
 .pytest_cache/
-# evolver runtime artifacts — market-data caches, paper state, ledgers (NOT source; never commit)
+
+# evolver runtime artifacts: market-data caches, paper state, and ledgers
 *.pkl
 evolver/.*_state.json
 evolver/*_ledger.jsonl
 *.tmp
 
-# stray local clone — never nest the repo inside itself
+# stray local clone: never nest the repo inside itself
 /valor/

@@ -6,18 +6,21 @@ export interface LlmSettings {
   model: string;
   timeoutMs: number;
   maxContextChars: number;
-  /**
-   * Sampling temperature. Left undefined by default so the request omits it and
-   * the provider's default applies — required by reasoning models (e.g. gpt-5.x)
-   * that reject any non-default temperature. Set LLM_TEMPERATURE to override.
-   */
   temperature?: number;
 }
 
 export interface RagDocument {
   id: string;
   title: string;
-  kind: "risk" | "signal" | "backtest" | "paper" | "audit" | "docs";
+  kind:
+    | "risk"
+    | "signal"
+    | "backtest"
+    | "paper"
+    | "scoreboard"
+    | "ops"
+    | "audit"
+    | "docs";
   content: string;
   timestamp?: string;
 }

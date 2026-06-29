@@ -6,7 +6,7 @@ export function readLlmSettings(env: NodeJS.ProcessEnv = process.env): LlmSettin
     provider: "openai-compatible",
     apiKey: env.LLM_API_KEY,
     baseUrl: env.LLM_API_BASE_URL ?? "https://api.openai.com/v1",
-    model: env.LLM_MODEL ?? "gpt-4.1",
+    model: env.LLM_MODEL ?? "gpt-5.5",
     timeoutMs: numberFromEnv(env.LLM_TIMEOUT_MS, 20_000),
     maxContextChars: numberFromEnv(env.LLM_MAX_CONTEXT_CHARS, 24_000),
     temperature: optionalNumberFromEnv(env.LLM_TEMPERATURE),

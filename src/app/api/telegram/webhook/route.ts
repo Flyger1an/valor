@@ -4,7 +4,7 @@ import type { MarketStatusSummary } from "@/lib/alerts/types";
 import { riskAlertToAlertEvent } from "@/lib/alerts/from-domain";
 import { FileKillSwitchStore } from "@/lib/kill-switch/kill-switch";
 import { refreshAndPersistMarketState } from "@/lib/ops/recompute";
-import { LocalStateStore } from "@/lib/state/local-store";
+import { getStateStore } from "@/lib/state/store-factory";
 import {
   handleTelegramCommand,
   type TelegramUpdate,
@@ -13,9 +13,6 @@ import {
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
-  // 1) Verify Telegram's secret token before doing ANY work. This endpoint can
-  // trip the kill switch, so when a secret is configured we fail closed — chat
-  // ids are not secret and cannot be the only line of defense.
   const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
   if (expectedSecret) {
     const presented = request.headers.get("x-telegram-bot-api-secret-token");
@@ -24,7 +21,6 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // 2) Parse and shape-validate the body before touching any state.
   const update = await parseUpdate(request);
   if (!update) {
     return NextResponse.json(
@@ -33,8 +29,6 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // 3) Authorize the chat up front. Unauthorized callers get a flat response
-  // with no recompute and no state mutation (prevents resource-amplification).
   const chatId = String(update.message?.chat.id ?? "");
   const authorizedChatIds = listFromEnv(process.env.TELEGRAM_AUTHORIZED_CHAT_IDS);
   if (!chatId || !authorizedChatIds.includes(chatId)) {
@@ -44,8 +38,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // 4) Authorized path: load state, refreshing only if we have nothing to report.
-  const store = new LocalStateStore();
+  const store = getStateStore();
   let state = store.read();
   if (!state.risk || !state.signals) {
     await refreshAndPersistMarketState();
@@ -99,7 +92,7 @@ export async function POST(request: NextRequest) {
     );
     await provider.send(
       {
-        id: `telegram-response:${chatId}:${new Date().toISOString()}`,
+        id: `telegram-response:${Date.now()}`,
         severity: result.authorized ? "INFO" : "WATCH",
         title: "Valor command response",
         message: result.text,
@@ -123,11 +116,6 @@ export async function POST(request: NextRequest) {
   return NextResponse.json(result);
 }
 
-/**
- * Parse the request body and reject anything that is not a well-formed Telegram
- * update. Returns null for malformed JSON or a structurally invalid message so
- * the caller can respond 400 instead of throwing an unhandled 500.
- */
 async function parseUpdate(request: NextRequest): Promise<TelegramUpdate | null> {
   let raw: unknown;
   try {
@@ -135,9 +123,10 @@ async function parseUpdate(request: NextRequest): Promise<TelegramUpdate | null>
   } catch {
     return null;
   }
-  if (!raw || typeof raw !== "object") return null;
 
+  if (!raw || typeof raw !== "object") return null;
   const message = (raw as { message?: unknown }).message;
+
   if (message !== undefined) {
     if (typeof message !== "object" || message === null) return null;
     const chat = (message as { chat?: unknown }).chat;

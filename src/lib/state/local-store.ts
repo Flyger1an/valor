@@ -8,35 +8,32 @@ import type {
 import type {
   AuditEvent,
   BacktestReport,
+  DataQualityReport,
+  LiveTradeAttempt,
   MarketDataBundle,
   MarketRiskState,
   PaperPortfolio,
   RelativeValueSignal,
+  SystemTrustVerdict,
 } from "@/lib/domain/types";
 import type { KillSwitchState } from "@/lib/kill-switch/kill-switch";
-import type { PaperEquityPoint } from "@/lib/paper/paper-book";
-import type { SignalJournalEntry } from "@/lib/signals/signal-journal";
-import type { DataProvenance } from "@/lib/data/provenance";
-import {
-  loadValorStateFromSqlite,
-  persistValorStateToSqlite,
-} from "@/lib/state/sqlite-persistence";
 
 export interface ValorLocalState {
   lastRefreshAt?: string;
   data?: MarketDataBundle;
+  dataQuality?: DataQualityReport;
   signals?: RelativeValueSignal[];
   risk?: MarketRiskState;
   backtest?: BacktestReport;
   paper?: PaperPortfolio;
-  equityHistory?: PaperEquityPoint[];
-  signalJournal?: SignalJournalEntry[];
-  dataProvenance?: DataProvenance;
+  systemTrust?: SystemTrustVerdict;
+  liveTradeAttempts: LiveTradeAttempt[];
   alertEvents: AlertEvent[];
   alertDeliveries: AlertDelivery[];
   alertRouterState: AlertRouterState;
   auditEvents: AuditEvent[];
   killSwitch?: KillSwitchState;
+  schedulerStatus: SchedulerStatus;
   actionLog: Array<{
     id: string;
     timestamp: string;
@@ -46,26 +43,62 @@ export interface ValorLocalState {
   }>;
 }
 
-const INITIAL_STATE: ValorLocalState = {
+export interface SchedulerStatus {
+  running: boolean;
+  activeRunId?: string;
+  cycleCount: number;
+  consecutiveErrors: number;
+  lastRunStartedAt?: string;
+  lastRunFinishedAt?: string;
+  lastHeartbeatAt?: string;
+  lastSkippedAt?: string;
+  staleRunDetectedAt?: string;
+  staleRunCount?: number;
+  lastSuccessAt?: string;
+  lastErrorAt?: string;
+  lastDurationMs?: number;
+  lastMessage: string;
+  lastDataQualityStatus?: DataQualityReport["status"];
+  lastPaperTrades?: number;
+  lastAlertCount?: number;
+}
+
+export interface StateStore {
+  read(): ValorLocalState;
+  update(mutator: (state: ValorLocalState) => ValorLocalState): ValorLocalState;
+  appendAction(input: {
+    action: string;
+    status: "ok" | "error" | "dry_run";
+    message: string;
+    timestamp?: string;
+  }): ValorLocalState;
+  write(state: ValorLocalState): void;
+}
+
+export const INITIAL_STATE: ValorLocalState = {
   alertEvents: [],
   alertDeliveries: [],
+  liveTradeAttempts: [],
   alertRouterState: {
     lastSentByFingerprint: {},
     acknowledgedAlertIds: [],
   },
   auditEvents: [],
+  schedulerStatus: {
+    running: false,
+    cycleCount: 0,
+    consecutiveErrors: 0,
+    lastMessage: "Scheduler has not run yet.",
+  },
   actionLog: [],
 };
 
-export class LocalStateStore {
+export class LocalStateStore implements StateStore {
   constructor(
     private readonly path = process.env.VALOR_STATE_PATH ?? ".valor/state.json",
   ) {}
 
   read(): ValorLocalState {
-    const fromSqlite = loadValorStateFromSqlite();
-    if (fromSqlite) return { ...INITIAL_STATE, ...fromSqlite };
-
     try {
       return {
         ...INITIAL_STATE,
@@ -91,21 +124,51 @@ export class LocalStateStore {
     return this.update((state) => ({
       ...state,
       actionLog: [
-        {
-          id: `action:${Date.now()}:${Math.random().toString(16).slice(2)}`,
-          timestamp: input.timestamp ?? new Date().toISOString(),
-          action: input.action,
-          status: input.status,
-          message: input.message,
-        },
+        createActionLogEntry(input),
         ...state.actionLog,
       ].slice(0, 100),
     }));
   }
 
   write(state: ValorLocalState) {
-    persistValorStateToSqlite(state);
     mkdirSync(dirname(this.path), { recursive: true });
     writeFileSync(this.path, JSON.stringify(state, null, 2));
   }
+}
+
+export function createActionLogEntry(input: {
+  action: string;
+  status: "ok" | "error" | "dry_run";
+  message: string;
+  timestamp?: string;
+}): ValorLocalState["actionLog"][number] {
+  return {
+    id: `action:${Date.now()}:${Math.random().toString(16).slice(2)}`,
+    timestamp: input.timestamp ?? new Date().toISOString(),
+    action: input.action,
+    status: input.status,
+    message: input.message,
+  };
+}
+
+export function emptyPaperPortfolio(): PaperPortfolio {
+  return {
+    cashUsd: 100_000,
+    equityUsd: 100_000,
+    realizedPnlUsd: 0,
+    feesPaidUsd: 0,
+    dailyPnlUsd: 0,
+    weeklyPnlUsd: 0,
+    positions: [],
+    trades: [],
+    rejectedSignals: [],
+    riskLimits: {
+      maxPositionUsd: 12_500,
+      maxPortfolioNotionalPct: 0.5,
+      maxSignalRiskScore: 70,
+      minLiquidityScore: 45,
+      allowWhenRiskState: ["Green", "Yellow", "Red"],
+      maxHoldingHours: 72,
+    },
+  };
 }
