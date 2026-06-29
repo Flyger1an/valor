@@ -4,6 +4,7 @@ const config = {
   delayMs: numberFromEnv(process.env.SOAK_DELAY_MS, 2_000),
   sendAlerts: process.env.SCHEDULER_SEND_ALERTS === "true",
   alertLimit: numberFromEnv(process.env.SCHEDULER_ALERT_LIMIT, 3),
+  opsSecret: process.env.VALOR_OPS_SECRET,
 };
 
 const results = [];
@@ -57,7 +58,7 @@ if (!health.ok) process.exitCode = 1;
 async function postJson(url, body) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: opsHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(body),
   });
   return {
@@ -68,7 +69,9 @@ async function postJson(url, body) {
 }
 
 async function getJson(url) {
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    headers: opsHeaders(),
+  });
   return {
     ok: response.ok,
     status: response.status,
@@ -84,6 +87,14 @@ function numberFromEnv(value, fallback) {
   if (!value) return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function opsHeaders(headers = {}) {
+  if (!config.opsSecret) return headers;
+  return {
+    ...headers,
+    "x-valor-ops-secret": config.opsSecret,
+  };
 }
 
 function sleep(ms) {

@@ -10,6 +10,7 @@ const config = {
   alertLimit: numberFromEnv(process.env.SCHEDULER_ALERT_LIMIT, 3),
   runOnce: process.env.SCHEDULER_RUN_ONCE === "true",
   runOnStart: process.env.SCHEDULER_RUN_ON_START !== "false",
+  opsSecret: process.env.VALOR_OPS_SECRET,
 };
 
 let running = false;
@@ -46,7 +47,7 @@ async function runCycle() {
   try {
     const response = await fetch(`${config.appUrl}/api/ops/scheduler`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: opsHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({
         sendAlerts: config.sendAlerts,
         alertLimit: config.alertLimit,
@@ -81,6 +82,14 @@ function numberFromEnv(value, fallback) {
   if (!value) return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function opsHeaders(headers = {}) {
+  if (!config.opsSecret) return headers;
+  return {
+    ...headers,
+    "x-valor-ops-secret": config.opsSecret,
+  };
 }
 
 function log(event) {

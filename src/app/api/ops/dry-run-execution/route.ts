@@ -6,6 +6,7 @@ import {
   reconcileDryRunAttempts,
 } from "@/lib/execution/dry-run-executor";
 import { readLiveTradingSettings } from "@/lib/live/live-trading";
+import { requireOpsAuth } from "@/lib/ops/auth";
 import { refreshAndPersistMarketState } from "@/lib/ops/recompute";
 import { simulatePaperPortfolio } from "@/lib/paper/paper-broker";
 import { evaluateSystemTrust } from "@/lib/risk/system-trust";
@@ -13,7 +14,13 @@ import { getStateStore } from "@/lib/state/store-factory";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const blocked = requireOpsAuth(request, {
+    access: "read",
+    rateLimit: { scope: "ops.dry-run-execution.read", limit: 120, windowMs: 60_000 },
+  });
+  if (blocked) return blocked;
+
   const store = getStateStore();
   const state = store.read();
   const now = new Date();
@@ -28,6 +35,12 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const blocked = requireOpsAuth(request, {
+    access: "write",
+    rateLimit: { scope: "ops.dry-run-execution.write", limit: 20, windowMs: 60_000 },
+  });
+  if (blocked) return blocked;
+
   const store = getStateStore();
   let state = store.read();
 

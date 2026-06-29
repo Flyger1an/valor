@@ -1,9 +1,16 @@
 import { NextResponse } from "next/server";
 import { getDashboardState } from "@/lib/dashboard/get-dashboard-state";
+import { requireOpsAuth } from "@/lib/ops/auth";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const blocked = requireOpsAuth(request, {
+    access: "read",
+    rateLimit: { scope: "ops.status", limit: 120, windowMs: 60_000 },
+  });
+  if (blocked) return blocked;
+
   const state = await getDashboardState();
 
   return NextResponse.json({

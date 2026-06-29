@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireOpsAuth } from "@/lib/ops/auth";
 import { sendAlertNow } from "@/lib/ops/alert-delivery";
 import { refreshAndPersistMarketState } from "@/lib/ops/recompute";
 import { getStateStore } from "@/lib/state/store-factory";
@@ -6,6 +7,12 @@ import { getStateStore } from "@/lib/state/store-factory";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
+  const blocked = requireOpsAuth(request, {
+    access: "write",
+    rateLimit: { scope: "ops.send-alert", limit: 5, windowMs: 60_000 },
+  });
+  if (blocked) return blocked;
+
   const body = (await request.json().catch(() => null)) as {
     alertId?: string;
   } | null;

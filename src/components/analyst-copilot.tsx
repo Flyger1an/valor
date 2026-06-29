@@ -29,7 +29,17 @@ export function AnalystCopilot(props: {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ question }),
       });
-      setResponse((await result.json()) as AnalystResponse);
+      const json = await result.json();
+      if (!result.ok) {
+        setResponse({
+          mode: "offline",
+          answer: json.error ?? "Analyst request was blocked.",
+          guardrail: "Ops authorization blocked this request.",
+          citations: [],
+        });
+        return;
+      }
+      setResponse(json as AnalystResponse);
     } finally {
       setLoading(false);
     }

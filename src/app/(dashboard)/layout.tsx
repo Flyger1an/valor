@@ -1,4 +1,5 @@
 import { DashboardShell } from "@/components/dashboard/shell";
+import { requireBrowserSession } from "@/lib/auth/page-session";
 import { getDashboardState } from "@/lib/dashboard/get-dashboard-state";
 
 export const dynamic = "force-dynamic";
@@ -8,6 +9,7 @@ export default async function DashboardLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  await requireBrowserSession();
   const state = await getDashboardState();
 
   return (

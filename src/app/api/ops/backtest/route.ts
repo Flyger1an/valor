@@ -1,11 +1,18 @@
 import { NextResponse } from "next/server";
 import { runBasisCarryBacktest } from "@/lib/backtest/backtester";
+import { requireOpsAuth } from "@/lib/ops/auth";
 import { refreshAndPersistMarketState } from "@/lib/ops/recompute";
 import { getStateStore } from "@/lib/state/store-factory";
 
 export const dynamic = "force-dynamic";
 
-export async function POST() {
+export async function POST(request: Request) {
+  const blocked = requireOpsAuth(request, {
+    access: "write",
+    rateLimit: { scope: "ops.backtest", limit: 10, windowMs: 60_000 },
+  });
+  if (blocked) return blocked;
+
   const store = getStateStore();
   let state = store.read();
   if (!state.data) {

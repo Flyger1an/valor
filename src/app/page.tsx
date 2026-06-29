@@ -21,8 +21,10 @@ import {
 } from "lucide-react";
 import { AnalystCopilot } from "@/components/analyst-copilot";
 import { EquityChart } from "@/components/equity-chart";
+import { LogoutButton } from "@/components/logout-button";
 import { OperationalControls } from "@/components/operational-controls";
 import { SignalsTable } from "@/components/signals-table";
+import { requireBrowserSession } from "@/lib/auth/page-session";
 import { buildDashboardState } from "@/lib/dashboard/build-dashboard";
 import type {
   AuditEvent,
@@ -42,6 +44,7 @@ import type {
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
+  await requireBrowserSession();
   const state = await buildDashboardState();
   const topSignals = state.signals.slice(0, 4);
 
@@ -124,7 +127,10 @@ export default async function Home() {
             <p className="eyebrow">Local-first research cockpit</p>
             <h1>Crypto Relative-Value + Risk Intelligence</h1>
           </div>
-          <RiskBadge risk={state.risk} />
+          <div className="topbar-actions">
+            <RiskBadge risk={state.risk} />
+            <LogoutButton />
+          </div>
         </header>
 
         <section className="section-band" id="overview">

@@ -25,7 +25,9 @@ export function LivePulse() {
 
   const pullStatus = useCallback(async (soft = true) => {
     try {
-      const response = await fetch("/api/ops/status", { cache: "no-store" });
+      const response = await fetch("/api/ops/status", {
+        cache: "no-store",
+      });
       if (!response.ok) throw new Error(`status ${response.status}`);
       const body = (await response.json()) as StatusPayload & { ok: boolean };
       setStatus(body);
@@ -39,7 +41,9 @@ export function LivePulse() {
   const hardRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const response = await fetch("/api/ops/refresh", { method: "POST" });
+      const response = await fetch("/api/ops/refresh", {
+        method: "POST",
+      });
       if (!response.ok) throw new Error(`refresh ${response.status}`);
       await pullStatus(false);
     } catch (refreshError) {

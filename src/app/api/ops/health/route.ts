@@ -1,12 +1,19 @@
 import { NextResponse } from "next/server";
 import { readLiveTradingSettings } from "@/lib/live/live-trading";
+import { requireOpsAuth } from "@/lib/ops/auth";
 import { buildDeploymentHealthReport } from "@/lib/ops/deployment-health";
 import { schedulerConfigFromEnv } from "@/lib/ops/scheduler";
 import { getStateStore } from "@/lib/state/store-factory";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const blocked = requireOpsAuth(request, {
+    access: "read",
+    rateLimit: { scope: "ops.health", limit: 120, windowMs: 60_000 },
+  });
+  if (blocked) return blocked;
+
   try {
     const state = getStateStore().read();
     const schedulerConfig = schedulerConfigFromEnv();

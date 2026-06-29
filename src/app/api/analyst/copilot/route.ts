@@ -1,10 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildDashboardState } from "@/lib/dashboard/build-dashboard";
 import { askAnalyst } from "@/lib/llm/analyst";
+import { requireOpsAuth } from "@/lib/ops/auth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
+  const blocked = requireOpsAuth(request, {
+    access: "write",
+    rateLimit: { scope: "analyst.copilot", limit: 20, windowMs: 60_000 },
+  });
+  if (blocked) return blocked;
+
   const body = (await request.json().catch(() => null)) as {
     question?: string;
   } | null;

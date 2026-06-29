@@ -2,6 +2,7 @@ import { Database, TerminalSquare } from "lucide-react";
 import { DashboardNavLinks } from "@/components/dashboard/nav-links";
 import { RiskBadge } from "@/components/dashboard/ui";
 import { LivePulse } from "@/components/live-pulse";
+import { LogoutButton } from "@/components/logout-button";
 import type { DashboardState } from "@/lib/dashboard/get-dashboard-state";
 
 export function DashboardShell(props: {
@@ -38,7 +39,10 @@ export function DashboardShell(props: {
             <p className="eyebrow">{props.subtitle}</p>
             <h1>{props.title}</h1>
           </div>
-          <RiskBadge risk={props.state.risk} />
+          <div className="topbar-actions">
+            <RiskBadge risk={props.state.risk} />
+            <LogoutButton />
+          </div>
         </header>
         <LivePulse />
         {props.children}

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { applyEdgeScoreboardPolicy } from "@/lib/edge/policy";
+import { requireOpsAuth } from "@/lib/ops/auth";
 import { refreshAndPersistMarketState } from "@/lib/ops/recompute";
 import { simulatePaperPortfolio } from "@/lib/paper/paper-broker";
 import { evaluateSystemTrust } from "@/lib/risk/system-trust";
@@ -7,7 +8,13 @@ import { getStateStore } from "@/lib/state/store-factory";
 
 export const dynamic = "force-dynamic";
 
-export async function POST() {
+export async function POST(request: Request) {
+  const blocked = requireOpsAuth(request, {
+    access: "write",
+    rateLimit: { scope: "ops.paper-trade", limit: 20, windowMs: 60_000 },
+  });
+  if (blocked) return blocked;
+
   const store = getStateStore();
   let state = store.read();
   if (!state.signals || !state.risk) {
