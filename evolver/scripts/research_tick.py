@@ -107,6 +107,29 @@ def notify(msg):
         pass
 
 
+def _digest(cyc, fam, summ):
+    """~Weekly Telegram digest (replaces the old 6-hourly heartbeat) — self-contained on the box, no
+    babysitting: venue progress, candidate status, funding_carry accrual, and the latest cycle result."""
+    s = Q.load()
+    try:
+        d0 = dt.datetime.strptime(s.get("started", ""), "%Y-%m-%d %H:%M")
+        up = f"{(dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - d0).days}d"
+    except Exception:
+        up = "?"
+    appr, pend = len(s.get("approved", [])), len(s.get("pending", []))
+    fc = ""
+    try:
+        if FUND_CARRY.exists():
+            mn = min((len(v) for v in pickle.loads(FUND_CARRY.read_bytes()).values()), default=0)
+            fc = f"\nfunding_carry accrual: {mn}/150 bars" if mn else ""
+    except Exception:
+        fc = ""
+    fams = os.getenv("EVOLVER_FAMILIES", "crypto")
+    label = V.NAME if fams in ("crypto", "all") else fams   # okx/gate for crypto, "fx" for the FX hunt
+    return (f"📊 Valor WEEKLY [{label}] — cycle {cyc}, up {up}\n"
+            f"candidates: {appr} approved / {pend} pending{fc}\nlatest: {summ}")
+
+
 def _save(path, obj):
     tmp = path.with_suffix(".tmp")
     tmp.write_bytes(pickle.dumps(obj))
@@ -614,8 +637,8 @@ def tick():
     if cand:
         return (f"[{_now()}] cycle {cyc}: {fam['name']} cleared gate "
                 f"({out['nconf']}/{CONFIRM} independent confirmations, holding) — {summ}")
-    if cyc % 6 == 0:
-        notify(f"🔬 research heartbeat — cycle {cyc} ({fam['name']}), 0 candidates. {summ}")
+    if cyc % 168 == 0:                       # ~weekly digest (was a 6-hourly heartbeat)
+        notify(_digest(cyc, fam, summ))
     return f"[{_now()}] cycle {cyc}: nothing cleared the bar — {summ}"
 
 
