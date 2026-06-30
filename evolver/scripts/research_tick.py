@@ -514,7 +514,8 @@ FX_FAMILIES = [
 # in case a high-vol-of-vol regime fattens the premium enough to clear. Telegram-alerts on a CONFIRM'd hit.
 VOL_FAMILIES = [
     {"name": "vol_premium", "refresh": refresh_vol_premium, "bt": RVP, "space": SPACE_VOL, "fee": 5.0,
-     "slip": 10.0, "stab": ("tenor_days", "iv_rank_min", "lookback"), "min_cov": 200, "min_n": 20},
+     "slip": 10.0, "stab": ("tenor_days", "iv_rank_min", "lookback"), "min_cov": 200, "min_n": 20,
+     "min_coins": 2},   # Deribit liquid DVOL = BTC + ETH only (not the ≥10-coin spot floor)
 ]
 _FAMILY_SETS = {"crypto": CRYPTO_FAMILIES, "fx": FX_FAMILIES, "vol": VOL_FAMILIES,
                 "all": CRYPTO_FAMILIES + FX_FAMILIES}
@@ -620,7 +621,7 @@ def tick():
     fam = FAMILIES[idx]
     data = fam["refresh"]()
     cov = min((len(v) for v in data.values()), default=0)
-    if len(data) < 10 or cov < fam["min_cov"]:
+    if len(data) < fam.get("min_coins", 10) or cov < fam["min_cov"]:    # vol_premium: only BTC+ETH exist
         Q.update(lambda s: s.update(rotation=s.get("rotation", 0) + 1))   # atomic rotate
         return f"[{_now()}] {fam['name']}: data thin ({len(data)} coins, min {cov} bars) — skip + rotate"
     rgm, vol_ref = AL.regime(AL.universe_vol(data), s0.get("vol_ref"))    # self-calibrated vol regime
