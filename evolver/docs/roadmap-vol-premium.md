@@ -19,7 +19,7 @@ plumbing in front of the gate that's greenfield.
 - No scaling claims from sample data or a single regime.
 - **Stop at the human-authorization gate** before any real key or capital. Promotion is human-gated.
 
-**Status at a glance:** Phase 0 ✅ · 1 ✅ · 2 ⬜ · 3 ⬜ · 4 ⬜ · 5 ⬜ · 6 ⬜ — *Phase 2 (BS pricing + delta-hedged P&L model) next.*
+**Status at a glance:** Phase 0 ✅ · 1 ✅ · 2 ✅ · 3 ⬜ · 4 ⬜ · 5 ⬜ · 6 ⬜ — *Phase 3 (vol-premium family + gate validation) next.*
 (⬜ todo · 🔄 in progress · ✅ done — flip each as work lands; record the commit hash.)
 
 ---
@@ -62,7 +62,7 @@ confirmed reachable from the droplet. **Functional-not-scaffold check:** on 33 m
 variance premium runs **+6.0 mean / +9.2 median vol pts, positive 71% of days, −31.5 worst-case tail** —
 the edge is real, the crash risk is real, neither hidden.
 
-## Phase 2 — Options pricing + delta-hedged P&L model ⬜ (the net-new core)
+## Phase 2 — Options pricing + delta-hedged P&L model ✅ (`evolver/optimize/vol_pnl.py`) — the net-new core
 **Purpose:** the honest options backtest engine — the part the spot families never needed.
 **Work:**
 - Black-Scholes pricing + greeks (delta / gamma / vega / theta), pure-Python.
@@ -73,6 +73,17 @@ the edge is real, the crash risk is real, neither hidden.
 - Unit tests vs known Black-Scholes values.
 - A synthetic check: the simulator recovers a planted (implied − realized) premium **net of frictions**,
   AND shows the loss in a vol-spike scenario (the tail is real, not hidden).
+
+**✅ Done (2026-06-29, `evolver/optimize/vol_pnl.py` + `tests/test_vol_pnl.py`, 6/6 pass):** pure-Python
+Black-Scholes (price + delta/gamma/vega/theta — matched to textbook + put-call parity) and a
+`delta_hedged_straddle_pnl` simulator that sells an ATM straddle, rehedges along the real path, and
+accrues P&L net of fees/slippage/option-spread. Verified behaviors: **profits when realized < implied,
+loses in a vol spike, ~0 when implied = realized** (no free money). **Functional-not-scaffold proof:**
+ran the actual strategy on 33 months of LIVE Deribit data (33 non-overlapping 30d trades, daily-rehedged,
+net of all frictions) → **mean +1.02%/trade, annualized Sharpe ~1.0, 58% win, worst −7.2%.** The gross
++6 vol-pt premium collapses to a modest NET ~1.0 Sharpe once frictions bite (honest); delta-hedging
+contained the raw −31.5 tail to −7.2% net. Whether that net survives the gate (small n=33, the tail) is
+Phase 3's job — this proves the machine is real, not whether the edge clears.
 
 ## Phase 3 — Vol-premium family + gate validation ⬜ (`evolver/optimize/vol_premium.py`)
 **Purpose:** a family the gate can judge, validated by the same surface-rate methodology.
@@ -136,3 +147,7 @@ _(dated entries appended as phases land — newest last)_
 - 2026-06-29 — **Phase 1 ✅** (`evolver/data/deribit.py`): pure-stdlib connector verified live (BTC+ETH).
   Confirmed the edge is REAL on 33mo of live data (variance premium +6.0 mean / +9.2 median vol pts, 71%
   positive, −31.5 tail) — functional, not scaffold. **Phase 2 (BS pricing + delta-hedged P&L) next.**
+- 2026-06-29 — **Phase 2 ✅** (`evolver/optimize/vol_pnl.py`, 6/6 tests): BS matches textbook; simulator
+  profits on quiet vol / loses on spike / ~0 when implied=realized. Real-data run (33 live trades, net
+  of frictions): **mean +1.02%/trade, Sharpe ~1.0, 58% win, −7.2% worst** — gross +6 → modest net ~1.0,
+  hedging contained the tail. Machine real + honest; gate verdict is Phase 3. **Phase 3 (family + gate) next.**
