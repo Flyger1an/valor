@@ -19,7 +19,7 @@ plumbing in front of the gate that's greenfield.
 - No scaling claims from sample data or a single regime.
 - **Stop at the human-authorization gate** before any real key or capital. Promotion is human-gated.
 
-**Status at a glance:** Phase 0 ✅ · 1 ⬜ · 2 ⬜ · 3 ⬜ · 4 ⬜ · 5 ⬜ · 6 ⬜ — *Phase 1 (Deribit connector) next.*
+**Status at a glance:** Phase 0 ✅ · 1 ✅ · 2 ⬜ · 3 ⬜ · 4 ⬜ · 5 ⬜ · 6 ⬜ — *Phase 2 (BS pricing + delta-hedged P&L model) next.*
 (⬜ todo · 🔄 in progress · ✅ done — flip each as work lands; record the commit hash.)
 
 ---
@@ -45,7 +45,7 @@ implied side); **BTC price daily history ~1096 days (3yr)** (the realized side).
 regimes → an honest DVOL-vs-realized backtest is feasible now, with greeks ready for the delta-hedged
 version. **Data feasibility CONFIRMED.**
 
-## Phase 1 — Deribit connector ⬜ (`evolver/data/deribit.py`)
+## Phase 1 — Deribit connector ✅ (`evolver/data/deribit.py`)
 **Purpose:** a pure-stdlib connector (no numpy on the box) for the vol-premium family's data.
 **Work:**
 - Fetch: option chain (strikes/expiries), mark IV per option, underlying index, DVOL, historical
@@ -54,6 +54,13 @@ version. **Data feasibility CONFIRMED.**
 **Acceptance gates:**
 - Connector returns real data, verified live.
 - Smoke test passes on the droplet.
+
+**✅ Done (2026-06-29, `evolver/data/deribit.py`):** pure-stdlib connector — `dvol_history` (implied,
+~1000d), `price_history` (realized, ~1000d), `option_chain` (868 live), `option_ticker` (mark_iv +
+greeks), `index_price`. Verified live on every function for **BTC AND ETH**; same endpoints Phase 0
+confirmed reachable from the droplet. **Functional-not-scaffold check:** on 33 months of live data the
+variance premium runs **+6.0 mean / +9.2 median vol pts, positive 71% of days, −31.5 worst-case tail** —
+the edge is real, the crash risk is real, neither hidden.
 
 ## Phase 2 — Options pricing + delta-hedged P&L model ⬜ (the net-new core)
 **Purpose:** the honest options backtest engine — the part the spot families never needed.
@@ -126,3 +133,6 @@ _(dated entries appended as phases land — newest last)_
 - 2026-06-29 — **Phase 0 ✅** (`scripts/deribit_probe.py`): Deribit reachable from sandbox + droplet (no
   geo-block); DVOL ~2.7yr daily + 868 options w/ greeks + ~3yr price history — data feasibility
   confirmed. **Phase 1 (Deribit connector) next.**
+- 2026-06-29 — **Phase 1 ✅** (`evolver/data/deribit.py`): pure-stdlib connector verified live (BTC+ETH).
+  Confirmed the edge is REAL on 33mo of live data (variance premium +6.0 mean / +9.2 median vol pts, 71%
+  positive, −31.5 tail) — functional, not scaffold. **Phase 2 (BS pricing + delta-hedged P&L) next.**
