@@ -19,12 +19,12 @@ plumbing in front of the gate that's greenfield.
 - No scaling claims from sample data or a single regime.
 - **Stop at the human-authorization gate** before any real key or capital. Promotion is human-gated.
 
-**Status at a glance:** Phase 0 ⬜ · 1 ⬜ · 2 ⬜ · 3 ⬜ · 4 ⬜ · 5 ⬜ · 6 ⬜ — *not started.*
+**Status at a glance:** Phase 0 ✅ · 1 ⬜ · 2 ⬜ · 3 ⬜ · 4 ⬜ · 5 ⬜ · 6 ⬜ — *Phase 1 (Deribit connector) next.*
 (⬜ todo · 🔄 in progress · ✅ done — flip each as work lands; record the commit hash.)
 
 ---
 
-## Phase 0 — Observe-first: Deribit data probe ⬜
+## Phase 0 — Observe-first: Deribit data probe ✅ (`scripts/deribit_probe.py`)
 **Purpose:** confirm the data exists and is usable BEFORE writing plumbing — the discipline that caught
 the OKX OI 16:00-UTC alignment, the OKX liquidation `instFamily` param, the Gate funding +1s offset,
 and the `universe_vol` crash. Assume nothing; parse against the real response.
@@ -37,6 +37,13 @@ and the `universe_vol` crash. Assume nothing; parse against the real response.
 - Reachable from the droplet (not geo-blocked).
 - IV surface + a usable history depth confirmed (or a documented data gap + vendor fallback noted).
 - A reusable `venue_probe`-style report committed.
+
+**✅ Found (2026-06-29, `scripts/deribit_probe.py`, verified live on sandbox AND droplet — 200, no
+geo-block):** `btc_usd` index live; **868 live BTC options** across 12 expiries with `mark_iv` + full
+greeks (delta/gamma/vega/theta/rho); **DVOL daily history ~1000 days (~2.7yr)** + hourly recent (the
+implied side); **BTC price daily history ~1096 days (3yr)** (the realized side). Both span multiple vol
+regimes → an honest DVOL-vs-realized backtest is feasible now, with greeks ready for the delta-hedged
+version. **Data feasibility CONFIRMED.**
 
 ## Phase 1 — Deribit connector ⬜ (`evolver/data/deribit.py`)
 **Purpose:** a pure-stdlib connector (no numpy on the box) for the vol-premium family's data.
@@ -115,4 +122,7 @@ those frictions AND a tail event before anything surfaces. The most likely hones
 
 ## Build log
 _(dated entries appended as phases land — newest last)_
-- 2026-06-29 — roadmap created; Phase 0 next (Deribit observe-first probe).
+- 2026-06-29 — roadmap created.
+- 2026-06-29 — **Phase 0 ✅** (`scripts/deribit_probe.py`): Deribit reachable from sandbox + droplet (no
+  geo-block); DVOL ~2.7yr daily + 868 options w/ greeks + ~3yr price history — data feasibility
+  confirmed. **Phase 1 (Deribit connector) next.**
