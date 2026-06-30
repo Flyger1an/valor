@@ -36,6 +36,7 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
 
 from evolver.config import DEFAULT_LIMITS  # noqa: E402
 from evolver.data.fx import fx_candles_history, fx_closes_history, oanda_candles  # noqa: E402
+from evolver.data import deribit as DRB  # noqa: E402  (vol-premium: Deribit options/DVOL)
 from evolver.data import venue as V  # noqa: E402  (crypto connector: EVOLVER_VENUE=okx|gate)
 from evolver.data.stats import block_bootstrap_pvalue  # noqa: E402
 from evolver.evolve import allocate as AL  # noqa: E402
@@ -52,6 +53,7 @@ from evolver.optimize.liquidation_reversion import (LIQ_SLIP_BPS,  # noqa: E402
                                                     run_liquidation_reversion as RLR)
 from evolver.optimize.oi_reversion import run_oi_reversion as ROI  # noqa: E402
 from evolver.optimize.trend_following import run_trend as RT  # noqa: E402
+from evolver.optimize.vol_premium import run_vol_premium as RVP  # noqa: E402
 from evolver.research import queue as Q  # noqa: E402
 
 # CAVEAT (survivorship): currently-listed symbols only -> biased UP (coins that delisted or blew up
@@ -77,6 +79,7 @@ DAILY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DAILY", str(ROOT / ".okx_daily_
 OI_DATA = pathlib.Path(os.getenv("EVOLVER_RESEARCH_OI", str(ROOT / ".okx_oi_dataset.pkl")))
 FUND_CARRY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_FUND_CARRY", str(ROOT / ".okx_fund_carry_dataset.pkl")))
 LIQ_PRINT = pathlib.Path(os.getenv("EVOLVER_RESEARCH_LIQ_PRINT", str(ROOT / ".okx_liq_print_dataset.pkl")))
+VOL_DATA = pathlib.Path(os.getenv("EVOLVER_RESEARCH_VOL", str(ROOT / ".deribit_vol_dataset.pkl")))
 FX_HOURLY = pathlib.Path(os.getenv("EVOLVER_FX_HOURLY", str(ROOT / ".fx_hourly_dataset.pkl")))
 FX_DAILY = pathlib.Path(os.getenv("EVOLVER_FX_DAILY", str(ROOT / ".fx_daily_dataset.pkl")))
 # forward-feedback: a shadow's per-candidate forward track (id -> fwd_sharpe). Empty = loop is a no-op.
@@ -299,6 +302,32 @@ def refresh_liq_print():
     return cache
 
 
+def refresh_vol_premium():
+    """LIVE Deribit daily (close, DVOL) for the vol-premium family (BTC + ETH). {coin:{day:(close,dvol)}}.
+    Deribit gives ~2.7yr of DVOL + price, so this is data-rich immediately. Accumulates across cycles."""
+    cache = pickle.loads(VOL_DATA.read_bytes()) if VOL_DATA.exists() else {}
+
+    def one(coin):
+        try:
+            dv = DRB.dvol_history(coin, days=1000)
+            px = DRB.price_history(coin, days=1000)
+        except Exception:
+            return coin, cache.get(coin, {})
+        dvol = {t // 86_400_000: v for t, v in dv.items()}
+        price = {t // 86_400_000: v for t, v in px.items()}
+        merged = dict(cache.get(coin, {}))
+        for day in set(dvol) & set(price):           # align by UTC day (price ∩ DVOL)
+            merged[day * 86_400_000] = (price[day], dvol[day])
+        return coin, merged
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        for c, d in ex.map(one, DRB.UNIVERSE):
+            if d:
+                cache[c] = d
+    _save(VOL_DATA, cache)
+    return cache
+
+
 def refresh_xs_hourly():
     """Hourly CLOSES for the short-term cross-sectional reversal family. Reuses the base hourly OHLC
     dataset (no extra OKX fetch) when present; cold-starts with a direct closes fetch otherwise."""
@@ -413,6 +442,9 @@ SPACE_FUND_CARRY = {"lookback": (3.0, 30.0, int), "holding": (3.0, 6.0, int),
 SPACE_LIQ_PRINT = {"liq_mult": (3.0, 12.0, float), "lookback": (24.0, 168.0, int),
                    "hold_hours": (2.0, 24.0, int), "cooldown_h": (2.0, 24.0, int),
                    "trade_dir": (-1.0, 1.0, float)}
+# vol-premium (Deribit): delta-hedged short straddles. tenor<=14 + iv_rank<=0.5 keep enough holdout
+# trades to clear min_n (n-starvation guard, same as the daily spot families).
+SPACE_VOL = {"tenor_days": (5.0, 14.0, int), "iv_rank_min": (0.0, 0.5, float), "lookback": (30.0, 90.0, int)}
 # funding-settlement seasonality: which phase-hour of the 8h cycle, how long, with/against funding sign
 SPACE_FSESS = {"entry_phase": (0.0, 7.0, int), "hold_hours": (1.0, 8.0, int),
                "trade_dir": (-1.0, 1.0, float), "funding_min": (0.0, 0.003, float)}
@@ -477,7 +509,15 @@ FX_FAMILIES = [
 # ONE engine, SEPARATE hunts: pick the registry by asset class so each class's cross-family DSR
 # multiplicity is counted on its own (pooling crypto+FX would wrongly inflate both bars). Default
 # crypto = legacy behavior; the fx-research-runner sets EVOLVER_FAMILIES=fx.
-_FAMILY_SETS = {"crypto": CRYPTO_FAMILIES, "fx": FX_FAMILIES, "all": CRYPTO_FAMILIES + FX_FAMILIES}
+# Deribit options — the variance-risk-premium hunt (build #4). Its own asset class -> separate state /
+# queue / multiplicity. NOTE: rejected on 2.7yr of history (docs/roadmap-vol-premium.md); soaking FORWARD
+# in case a high-vol-of-vol regime fattens the premium enough to clear. Telegram-alerts on a CONFIRM'd hit.
+VOL_FAMILIES = [
+    {"name": "vol_premium", "refresh": refresh_vol_premium, "bt": RVP, "space": SPACE_VOL, "fee": 5.0,
+     "slip": 10.0, "stab": ("tenor_days", "iv_rank_min", "lookback"), "min_cov": 200, "min_n": 20},
+]
+_FAMILY_SETS = {"crypto": CRYPTO_FAMILIES, "fx": FX_FAMILIES, "vol": VOL_FAMILIES,
+                "all": CRYPTO_FAMILIES + FX_FAMILIES}
 FAMILIES = _FAMILY_SETS.get(os.getenv("EVOLVER_FAMILIES", "crypto"), CRYPTO_FAMILIES)
 
 

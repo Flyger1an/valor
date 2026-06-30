@@ -19,10 +19,10 @@ plumbing in front of the gate that's greenfield.
 - No scaling claims from sample data or a single regime.
 - **Stop at the human-authorization gate** before any real key or capital. Promotion is human-gated.
 
-**Status at a glance:** Phase 0 ✅ · 1 ✅ · 2 ✅ · 3 ✅ · 4 ⬜ · 5 ⬜ · 6 ⬜ — *⚠️ DECISION POINT: the
-family + gate are sound, but the REAL net premium does NOT clear the gate on 2.7yr of data. Phases 4–6
-(executor / deploy / soak) hinge on the call: soak-it-forward anyway, or conclude "not clearable for
-this setup."*
+**Status at a glance:** Phase 0 ✅ · 1 ✅ · 2 ✅ · 3 ✅ · 4 ⏭️ (deferred) · 5 ✅ · 6 🔄 (soaking) —
+*DECISION MADE: soak it forward. The net premium is REJECTED on 2.7yr of history, but it's deployed as a
+parallel Deribit hunt (`deribit-research-runner`) to watch FORWARD for a high-vol-of-vol regime that
+fattens it enough to clear. Phase 4 (testnet executor) deferred — not needed for paper research.*
 (⬜ todo · 🔄 in progress · ✅ done — flip each as work lands; record the commit hash.)
 
 ---
@@ -115,7 +115,7 @@ it anyway as a parallel hunt to SOAK FORWARD (the premium is regime-dependent; a
 regime could fatten it — cheap to run alongside the others), or **(b)** CONCLUDE the finding and not
 invest the executor/deploy effort in a family the data rejects. User's call.
 
-## Phase 4 — Demo/testnet-locked Deribit executor ⬜ (`evolver/execution/deribit_executor.py`)
+## Phase 4 — Demo/testnet-locked Deribit executor ⏭️ DEFERRED (not needed for paper soak)
 **Purpose:** the dormant-but-ready execution layer, locked to testnet (like okx/oanda executors).
 **Work:**
 - `test.deribit.com`-locked: place / cancel / positions / flatten / reconcile, with `--check` /
@@ -124,7 +124,7 @@ invest the executor/deploy effort in a family the data rejects. User's call.
 - Testnet-locked, verified — no implementation can reach the live venue.
 - `--selftest` passes.
 
-## Phase 5 — Deploy as a parallel hunt + forward shadow ⬜
+## Phase 5 — Deploy as a parallel hunt + forward shadow ✅ (wired; deploying)
 **Purpose:** run it as an independent hunt (separate state / queue / multiplicity), exactly like the
 Gate venue — never disturbing the running OKX / Gate / FX soak.
 **Work:**
@@ -134,6 +134,13 @@ Gate venue — never disturbing the running OKX / Gate / FX soak.
 **Acceptance gates:**
 - Deployed; first real-data cycle runs clean (honest reject, or a CONFIRM'd candidate Telegram-alerts).
 - The existing hunts are untouched (separate runner, separate multiplicity).
+
+**✅ Done (2026-06-29):** `research_tick` now has a `vol` family set (`EVOLVER_FAMILIES=vol` →
+`vol_premium`), a `refresh_vol_premium` (live Deribit DVOL+price for BTC+ETH, ~1000 days, accumulates),
+and a `deribit-research-runner` compose service with its own state/queue/datasets (separate
+multiplicity). Verified end-to-end locally: registry selects, refresh pulls 1000d/coin, the gate runs on
+real data and REJECTS (as expected). The per-candidate forward shadow is deferred until something
+promotes — the runner CONFIRM-gates and Telegram-alerts on a hit, which is the soak-forward net.
 
 ## Phase 6 — Soak + readiness (human gate) ⬜
 **Purpose:** give the vol premium a fair, honest test across regimes, and decide go/no-go — no real capital.
@@ -172,3 +179,7 @@ _(dated entries appended as phases land — newest last)_
   surfaces, noise never). REAL-data verdict: **REJECTED** — net premium (n=268, 2.7yr) doesn't clear the
   gate (gross +6 → ~1.0 idealized → rejected once holdout + multiplicity + 2x-cost + PBO apply). Honest
   "not clearable for this setup" result. **⚠️ DECISION before Phase 4: soak-it-forward anyway, or conclude.**
+- 2026-06-29 — **DECISION: soak forward. Phase 5 ✅ / Phase 4 deferred.** Deployed `vol_premium` as a
+  parallel Deribit hunt (`deribit-research-runner`, own state/multiplicity); `refresh_vol_premium` pulls
+  live DVOL+price. Verified end-to-end (rejects on real data, as expected). Now soaking (Phase 6) —
+  Telegram-alerts if a future high-vol regime ever clears it. Testnet executor (Phase 4) deferred.

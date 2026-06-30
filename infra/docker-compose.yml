@@ -224,6 +224,22 @@ services:
     volumes: ["evolver_data:/data"]
     restart: unless-stopped
 
+  deribit-research-runner: # vol-premium hunt (Deribit options) — SOAKING FORWARD. The net premium was
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }   # REJECTED on 2.7yr history (see
+    command: ["python", "scripts/research_tick.py", "--loop", "3600"]   # docs/roadmap-vol-premium.md);
+    working_dir: /app/evolver                              # running it forward in case a high-vol regime
+    env_file: [../evolver/.env]   # TELEGRAM_* for alerts; Deribit public data needs no auth   # clears it
+    environment:
+      EVOLVER_FAMILIES: vol                                # vol_premium only (its own multiplicity universe)
+      EVOLVER_RESEARCH: /data/vol_research_state.json       # SEPARATE queue
+      EVOLVER_RESEARCH_LEDGER: /data/vol_research_ledger.jsonl
+      EVOLVER_RESEARCH_VOL: /data/deribit_vol_dataset.pkl   # Deribit DVOL+price (~2.7yr), accumulates
+      EVOLVER_RESEARCH_MONTHS: "15"
+      EVOLVER_RESEARCH_CONFIRM: "2"
+      STRONG_MODEL: gpt-5-mini
+    volumes: ["evolver_data:/data"]
+    restart: unless-stopped
+
   signal-feed:             # LIVE RV signals -> Redis -> evolver-loop (runs the inner analyst loop for real)
     build: { context: .., dockerfile: infra/Dockerfile.evolver }
     command: ["python", "scripts/signal_feed.py", "--loop", "1800"]   # emit every 30 min, 26 pairs
