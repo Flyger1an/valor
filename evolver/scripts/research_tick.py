@@ -54,6 +54,7 @@ from evolver.optimize.liquidation_reversion import (LIQ_SLIP_BPS,  # noqa: E402
 from evolver.optimize.oi_reversion import run_oi_reversion as ROI  # noqa: E402
 from evolver.optimize.trend_following import run_trend as RT  # noqa: E402
 from evolver.optimize.vol_premium import run_vol_premium as RVP  # noqa: E402
+from evolver.optimize.options_flow import run_options_pin as ROP, max_pain as _maxpain, oi_wall as _oiwall  # noqa: E402,E501
 from evolver.research import queue as Q  # noqa: E402
 
 # CAVEAT (survivorship): currently-listed symbols only -> biased UP (coins that delisted or blew up
@@ -80,6 +81,7 @@ OI_DATA = pathlib.Path(os.getenv("EVOLVER_RESEARCH_OI", str(ROOT / ".okx_oi_data
 FUND_CARRY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_FUND_CARRY", str(ROOT / ".okx_fund_carry_dataset.pkl")))
 LIQ_PRINT = pathlib.Path(os.getenv("EVOLVER_RESEARCH_LIQ_PRINT", str(ROOT / ".okx_liq_print_dataset.pkl")))
 VOL_DATA = pathlib.Path(os.getenv("EVOLVER_RESEARCH_VOL", str(ROOT / ".deribit_vol_dataset.pkl")))
+OPT_FLOW = pathlib.Path(os.getenv("EVOLVER_OPT_FLOW", str(ROOT / ".deribit_optflow_dataset.pkl")))
 FX_HOURLY = pathlib.Path(os.getenv("EVOLVER_FX_HOURLY", str(ROOT / ".fx_hourly_dataset.pkl")))
 FX_DAILY = pathlib.Path(os.getenv("EVOLVER_FX_DAILY", str(ROOT / ".fx_daily_dataset.pkl")))
 # forward-feedback: a shadow's per-candidate forward track (id -> fwd_sharpe). Empty = loop is a no-op.
@@ -328,6 +330,35 @@ def refresh_vol_premium():
     return cache
 
 
+def refresh_options_flow():
+    """Daily snapshot of Deribit options POSITIONING (BTC+ETH) for the max-pain pin family. Picks the
+    DOMINANT expiry (most OI) in a 2–35d window and stores its pin/wall + spot:
+    {coin: {day_ms: (spot, {"max_pain","oi_wall","total_oi","pcr","dte"})}}. Deribit serves NO historical
+    OI-by-strike, so this ACCUMULATES forward — one snapshot per UTC day; backtestable once weeks accrue."""
+    cache = pickle.loads(OPT_FLOW.read_bytes()) if OPT_FLOW.exists() else {}
+    day = int(time.time() // 86400) * 86400 * 1000          # UTC-day bucket (one snapshot/day, overwrites)
+    for coin in DRB.UNIVERSE:
+        try:
+            snap = DRB.oi_by_strike(coin)
+        except Exception:
+            continue
+        spot = snap.get("spot") or 0.0
+        cand = [e for e in snap.get("by_expiry", {}).values() if 2.0 <= e["dte"] <= 35.0 and e["strikes"]]
+        if spot <= 0 or not cand:
+            continue
+        dom = max(cand, key=lambda e: e["oi"])              # the dominant near-term expiry's book
+        ks = dom["strikes"]
+        mp, wall = _maxpain(ks), _oiwall(ks)
+        if not mp:
+            continue
+        c_oi = sum(c for c, _ in ks.values())
+        p_oi = sum(p for _, p in ks.values())
+        cache.setdefault(coin, {})[day] = (spot, {"max_pain": mp, "oi_wall": wall, "total_oi": dom["oi"],
+                                                  "pcr": p_oi / max(c_oi, 1e-9), "dte": dom["dte"]})
+    _save(OPT_FLOW, cache)
+    return cache
+
+
 def refresh_xs_hourly():
     """Hourly CLOSES for the short-term cross-sectional reversal family. Reuses the base hourly OHLC
     dataset (no extra OKX fetch) when present; cold-starts with a direct closes fetch otherwise."""
@@ -445,6 +476,10 @@ SPACE_LIQ_PRINT = {"liq_mult": (3.0, 12.0, float), "lookback": (24.0, 168.0, int
 # vol-premium (Deribit): delta-hedged short straddles. tenor<=14 + iv_rank<=0.5 keep enough holdout
 # trades to clear min_n (n-starvation guard, same as the daily spot families).
 SPACE_VOL = {"tenor_days": (5.0, 14.0, int), "iv_rank_min": (0.0, 0.5, float), "lookback": (30.0, 90.0, int)}
+# options pin: trade toward a near expiry's max-pain. gap_min / dte_max / hold / trade_dir (search picks
+# the sign — the gate decides if the pin pulls toward, repels, or neither).
+SPACE_PIN = {"gap_min": (0.01, 0.05, float), "dte_max": (5.0, 21.0, float),
+             "hold_days": (2.0, 10.0, int), "trade_dir": (-1.0, 1.0, float)}
 # funding-settlement seasonality: which phase-hour of the 8h cycle, how long, with/against funding sign
 SPACE_FSESS = {"entry_phase": (0.0, 7.0, int), "hold_hours": (1.0, 8.0, int),
                "trade_dir": (-1.0, 1.0, float), "funding_min": (0.0, 0.003, float)}
@@ -509,13 +544,18 @@ FX_FAMILIES = [
 # ONE engine, SEPARATE hunts: pick the registry by asset class so each class's cross-family DSR
 # multiplicity is counted on its own (pooling crypto+FX would wrongly inflate both bars). Default
 # crypto = legacy behavior; the fx-research-runner sets EVOLVER_FAMILIES=fx.
-# Deribit options — the variance-risk-premium hunt (build #4). Its own asset class -> separate state /
-# queue / multiplicity. NOTE: rejected on 2.7yr of history (docs/roadmap-vol-premium.md); soaking FORWARD
-# in case a high-vol-of-vol regime fattens the premium enough to clear. Telegram-alerts on a CONFIRM'd hit.
+# Deribit options hunt — its own asset class (separate state / queue / multiplicity). Two families:
+#  • vol_premium (#4): variance risk premium. REJECTED on 2.7yr history; soaking forward.
+#  • options_pin (#5): max-pain forced-flow. Deribit serves no historical OI-by-strike, so it
+#    FORWARD-ACCUMULATES daily snapshots (data-thin/skip until ~min_cov days accrue, then the gate judges).
+# Both Telegram-alert on a CONFIRM'd hit.
 VOL_FAMILIES = [
     {"name": "vol_premium", "refresh": refresh_vol_premium, "bt": RVP, "space": SPACE_VOL, "fee": 5.0,
      "slip": 10.0, "stab": ("tenor_days", "iv_rank_min", "lookback"), "min_cov": 200, "min_n": 20,
      "min_coins": 2},   # Deribit liquid DVOL = BTC + ETH only (not the ≥10-coin spot floor)
+    {"name": "options_pin", "refresh": refresh_options_flow, "bt": ROP, "space": SPACE_PIN, "fee": 5.0,
+     "slip": 8.0, "stab": ("gap_min", "dte_max", "hold_days"), "min_cov": 60, "min_n": 15,
+     "min_coins": 2},   # forward-accumulating; thin until ~2mo of snapshots
 ]
 _FAMILY_SETS = {"crypto": CRYPTO_FAMILIES, "fx": FX_FAMILIES, "vol": VOL_FAMILIES,
                 "all": CRYPTO_FAMILIES + FX_FAMILIES}

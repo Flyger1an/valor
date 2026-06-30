@@ -224,16 +224,17 @@ services:
     volumes: ["evolver_data:/data"]
     restart: unless-stopped
 
-  deribit-research-runner: # vol-premium hunt (Deribit options) — SOAKING FORWARD. The net premium was
-    build: { context: .., dockerfile: infra/Dockerfile.evolver }   # REJECTED on 2.7yr history (see
-    command: ["python", "scripts/research_tick.py", "--loop", "3600"]   # docs/roadmap-vol-premium.md);
-    working_dir: /app/evolver                              # running it forward in case a high-vol regime
-    env_file: [../evolver/.env]   # TELEGRAM_* for alerts; Deribit public data needs no auth   # clears it
+  deribit-research-runner: # Deribit options hunt — two families, own multiplicity universe. vol_premium
+    build: { context: .., dockerfile: infra/Dockerfile.evolver }   # (#4) REJECTED on 2.7yr history, soaks
+    command: ["python", "scripts/research_tick.py", "--loop", "3600"]   # forward; options_pin (#5) max-pain
+    working_dir: /app/evolver                              # forced-flow forward-ACCUMULATES daily snapshots
+    env_file: [../evolver/.env]   # TELEGRAM_* for alerts; Deribit public data needs no auth   # (no history)
     environment:
-      EVOLVER_FAMILIES: vol                                # vol_premium only (its own multiplicity universe)
+      EVOLVER_FAMILIES: vol                                # VOL_FAMILIES = [vol_premium, options_pin]
       EVOLVER_RESEARCH: /data/vol_research_state.json       # SEPARATE queue
       EVOLVER_RESEARCH_LEDGER: /data/vol_research_ledger.jsonl
       EVOLVER_RESEARCH_VOL: /data/deribit_vol_dataset.pkl   # Deribit DVOL+price (~2.7yr), accumulates
+      EVOLVER_OPT_FLOW: /data/deribit_optflow_dataset.pkl   # options_pin positioning snapshots (forward-accum)
       EVOLVER_RESEARCH_MONTHS: "15"
       EVOLVER_RESEARCH_CONFIRM: "2"
       STRONG_MODEL: gpt-5-mini
