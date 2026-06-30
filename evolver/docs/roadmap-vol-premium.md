@@ -19,7 +19,10 @@ plumbing in front of the gate that's greenfield.
 - No scaling claims from sample data or a single regime.
 - **Stop at the human-authorization gate** before any real key or capital. Promotion is human-gated.
 
-**Status at a glance:** Phase 0 ✅ · 1 ✅ · 2 ✅ · 3 ⬜ · 4 ⬜ · 5 ⬜ · 6 ⬜ — *Phase 3 (vol-premium family + gate validation) next.*
+**Status at a glance:** Phase 0 ✅ · 1 ✅ · 2 ✅ · 3 ✅ · 4 ⬜ · 5 ⬜ · 6 ⬜ — *⚠️ DECISION POINT: the
+family + gate are sound, but the REAL net premium does NOT clear the gate on 2.7yr of data. Phases 4–6
+(executor / deploy / soak) hinge on the call: soak-it-forward anyway, or conclude "not clearable for
+this setup."*
 (⬜ todo · 🔄 in progress · ✅ done — flip each as work lands; record the commit hash.)
 
 ---
@@ -85,7 +88,7 @@ net of all frictions) → **mean +1.02%/trade, annualized Sharpe ~1.0, 58% win, 
 contained the raw −31.5 tail to −7.2% net. Whether that net survives the gate (small n=33, the tail) is
 Phase 3's job — this proves the machine is real, not whether the edge clears.
 
-## Phase 3 — Vol-premium family + gate validation ⬜ (`evolver/optimize/vol_premium.py`)
+## Phase 3 — Vol-premium family + gate validation ✅ (`evolver/optimize/vol_premium.py`)
 **Purpose:** a family the gate can judge, validated by the same surface-rate methodology.
 **Work:**
 - A delta-hedged short-vol family (params: tenor, moneyness, rehedge interval, entry IV-rank threshold,
@@ -97,6 +100,20 @@ Phase 3's job — this proves the machine is real, not whether the edge clears.
 - Surface-rate test PASS (planted majority, noise 0/K).
 - Survives 2x-cost stress AND a tail/drawdown guard (clears net of crash risk, not just average return).
 - Existing families' noise rejection unchanged; `test_core` + `test_stats` green.
+
+**✅ Done (2026-06-29, `evolver/optimize/vol_premium.py` + `scripts/vol_premium_thesis_test.py`):**
+delta-hedged short-straddle family (params: tenor, `iv_rank_min` entry, lookback), pooled across BTC+ETH.
+**Machine SOUND:** the surface-rate thesis test passes — a planted strong premium surfaces in the
+majority, noise NEVER does. **But the REAL net premium does NOT clear:** run on 2.7yr of live Deribit
+data (n=268 trades), the gate REJECTS it across runs (OOS +0.33 / pbo 0.86 uncapped; OOS −0.09 /
+2x-cost −0.35 with a fair, n-healthy space). The gross +6 → idealized ~1.0 Sharpe (Phase 2) → through
+the gate's holdout + multiplicity + 2x-cost + PBO, **rejected.** This is the honest "not clearable for
+this setup" outcome — for the highest-quality target. The gate did its job; we didn't fool ourselves.
+
+⚠️ **DECISION POINT before Phases 4–6:** the family rejects on history. Two honest paths — **(a)** deploy
+it anyway as a parallel hunt to SOAK FORWARD (the premium is regime-dependent; a future high-vol-of-vol
+regime could fatten it — cheap to run alongside the others), or **(b)** CONCLUDE the finding and not
+invest the executor/deploy effort in a family the data rejects. User's call.
 
 ## Phase 4 — Demo/testnet-locked Deribit executor ⬜ (`evolver/execution/deribit_executor.py`)
 **Purpose:** the dormant-but-ready execution layer, locked to testnet (like okx/oanda executors).
@@ -151,3 +168,7 @@ _(dated entries appended as phases land — newest last)_
   profits on quiet vol / loses on spike / ~0 when implied=realized. Real-data run (33 live trades, net
   of frictions): **mean +1.02%/trade, Sharpe ~1.0, 58% win, −7.2% worst** — gross +6 → modest net ~1.0,
   hedging contained the tail. Machine real + honest; gate verdict is Phase 3. **Phase 3 (family + gate) next.**
+- 2026-06-29 — **Phase 3 ✅** (`vol_premium.py` + thesis test): family + gate SOUND (planted premium
+  surfaces, noise never). REAL-data verdict: **REJECTED** — net premium (n=268, 2.7yr) doesn't clear the
+  gate (gross +6 → ~1.0 idealized → rejected once holdout + multiplicity + 2x-cost + PBO apply). Honest
+  "not clearable for this setup" result. **⚠️ DECISION before Phase 4: soak-it-forward anyway, or conclude.**
