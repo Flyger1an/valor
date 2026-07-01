@@ -141,6 +141,7 @@ export function runBasisCarryBacktest(
   const winningTrades = trades.filter((trade) => trade.realizedPnlUsd > 0).length;
   const exitTrades = trades.filter((trade) => trade.action === "exit").length;
   const endingEquityUsd = equityCurve[equityCurve.length - 1].equity;
+  const sortino = sortinoRatio(dailyReturns);
 
   return {
     strategyName: cfg.strategyName,
@@ -157,7 +158,7 @@ export function runBasisCarryBacktest(
       2,
     ),
     sharpe: round(annualizeDailySharpe(dailyReturns), 2),
-    sortino: round(sortinoRatio(dailyReturns), 2),
+    sortino: sortino === null ? null : round(sortino, 2),
     winRatePct: exitTrades === 0 ? 0 : round((winningTrades / exitTrades) * 100, 1),
     exposureAvgPct: round((activeDays / (history.length - 1)) * cfg.maxPositionPct * 100, 1),
     turnoverUsd: round(turnoverUsd, 2),

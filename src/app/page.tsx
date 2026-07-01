@@ -514,7 +514,7 @@ function BacktestPanel({ backtest }: { backtest: BacktestReport }) {
   const metrics = [
     ["Ending Equity", money(backtest.endingEquityUsd)],
     ["Max Drawdown", `${backtest.maxDrawdownPct.toFixed(2)}%`],
-    ["Sortino", backtest.sortino.toFixed(2)],
+    ["Sortino", backtest.sortino === null ? "∞ (no downside)" : backtest.sortino.toFixed(2)],
     ["Win Rate", `${backtest.winRatePct.toFixed(1)}%`],
     ["Exposure", `${backtest.exposureAvgPct.toFixed(1)}%`],
     ["Turnover", money(backtest.turnoverUsd)],

@@ -250,7 +250,7 @@ export interface BacktestReport {
   totalReturnPct: number;
   maxDrawdownPct: number;
   sharpe: number;
-  sortino: number;
+  sortino: number | null; // null when there is no downside deviation (Sortino undefined) — never a magic sentinel
   winRatePct: number;
   exposureAvgPct: number;
   turnoverUsd: number;
@@ -297,6 +297,11 @@ export interface PaperTrade {
   markPnlUsd?: number;
 }
 
+export interface PaperEquityPoint {
+  timestamp: string;
+  equityUsd: number;
+}
+
 export interface PaperPortfolio {
   cashUsd: number;
   equityUsd: number;
@@ -308,6 +313,8 @@ export interface PaperPortfolio {
   trades: PaperTrade[];
   rejectedSignals: PaperTrade[];
   riskLimits: PaperRiskLimits;
+  // timestamped equity samples so daily/weekly PnL are REAL time-windows (cadence-independent), not extrapolations
+  equityHistory?: PaperEquityPoint[];
 }
 
 export interface PaperRiskLimits {

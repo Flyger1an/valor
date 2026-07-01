@@ -143,6 +143,34 @@ describe("paper broker", () => {
     expect(second.trades[0].reason).toContain("market reference price");
   });
 
+  it("computes daily/weekly PnL as real time-windows over an accumulating equity history", () => {
+    const signal = fundingSignal();
+    const risk = evaluateMarketRisk(sampleMarketData);
+    const first = stepPaperPortfolio({
+      signals: [signal],
+      risk,
+      marketData: withOkxBtcPerpMark(100),
+      now: new Date("2026-06-22T17:00:00.000Z"),
+    });
+    const second = stepPaperPortfolio({
+      signals: [signal],
+      risk,
+      previousPortfolio: first,
+      marketData: withOkxBtcPerpMark(90),
+      now: new Date("2026-06-22T18:00:00.000Z"),
+    });
+
+    // one equity sample accumulates per step
+    expect(first.equityHistory).toHaveLength(1);
+    expect(second.equityHistory).toHaveLength(2);
+    // daily PnL is the real windowed equity change (not a per-cycle heuristic)
+    expect(second.dailyPnlUsd).toBeCloseTo(second.equityUsd - first.equityUsd, 2);
+    expect(second.dailyPnlUsd).toBeGreaterThan(0);
+    // both samples fall inside the 24h AND 7d windows, so weekly === daily —
+    // proving the old weeklyPnl = dailyPnl × 2.4 fabrication is gone.
+    expect(second.weeklyPnlUsd).toBe(second.dailyPnlUsd);
+  });
+
   it("closes existing positions when edge decays", () => {
     const signals = generateRelativeValueSignals(sampleMarketData);
     const risk = evaluateMarketRisk(sampleMarketData);

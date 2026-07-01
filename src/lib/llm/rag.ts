@@ -50,7 +50,7 @@ export function buildAnalystCorpus(state: DashboardState): RagDocument[] {
     title: state.backtest.strategyName,
     kind: "backtest",
     timestamp: state.backtest.endedAt,
-    content: `Backtest from ${state.backtest.startedAt} to ${state.backtest.endedAt}. Return ${state.backtest.totalReturnPct}%. Max drawdown ${state.backtest.maxDrawdownPct}%. Sharpe ${state.backtest.sharpe}. Sortino ${state.backtest.sortino}. Win rate ${state.backtest.winRatePct}%. Turnover ${state.backtest.turnoverUsd}. Assumptions: ${state.backtest.assumptions.join(" ")}`,
+    content: `Backtest from ${state.backtest.startedAt} to ${state.backtest.endedAt}. Return ${state.backtest.totalReturnPct}%. Max drawdown ${state.backtest.maxDrawdownPct}%. Sharpe ${state.backtest.sharpe}. Sortino ${state.backtest.sortino ?? "n/a (no downside)"}. Win rate ${state.backtest.winRatePct}%. Turnover ${state.backtest.turnoverUsd}. Assumptions: ${state.backtest.assumptions.join(" ")}`,
   };
 
   const paperDoc: RagDocument = {

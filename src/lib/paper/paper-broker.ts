@@ -3,6 +3,7 @@ import type {
   MarketDataBundle,
   MarketSnapshot,
   MarketRiskState,
+  PaperEquityPoint,
   PaperPortfolio,
   PaperPosition,
   PaperRiskLimits,
@@ -243,17 +244,38 @@ export function stepPaperPortfolio(input: {
     ...(input.previousPortfolio?.rejectedSignals ?? []),
   ].slice(0, 100);
 
+  const equityUsd = round(cashUsd + markPnl, 2);
+  // Real time-windowed PnL from an equity curve (cadence-independent) — replaces the old
+  // dailyPnl = this-cycle-mark and weeklyPnl = daily × 2.4 fabrications. Keep ~8 days of samples so the
+  // 24h / 7d windows are always covered; when history is younger than a window, it honestly reports the
+  // change since inception.
+  const nowMs = new Date(nowIso).getTime();
+  const equityHistory: PaperEquityPoint[] = [
+    ...(input.previousPortfolio?.equityHistory ?? []),
+    { timestamp: nowIso, equityUsd },
+  ]
+    .filter((point) => nowMs - new Date(point.timestamp).getTime() <= 8 * 86_400_000)
+    .slice(-1000);
+  const equityAtWindowStart = (windowMs: number): number => {
+    const cutoff = nowMs - windowMs;
+    const start = equityHistory.find(
+      (point) => new Date(point.timestamp).getTime() >= cutoff,
+    );
+    return start?.equityUsd ?? equityHistory[0]?.equityUsd ?? equityUsd;
+  };
+
   return {
     cashUsd: round(cashUsd, 2),
-    equityUsd: round(cashUsd + markPnl, 2),
+    equityUsd,
     realizedPnlUsd: round(previousRealizedPnlUsd + realizedPnl, 2),
     feesPaidUsd: round(previousFeesPaidUsd + cycleFeesPaidUsd, 2),
-    dailyPnlUsd: round(markPnl + realizedPnl, 2),
-    weeklyPnlUsd: round((markPnl + realizedPnl) * 2.4, 2),
+    dailyPnlUsd: round(equityUsd - equityAtWindowStart(86_400_000), 2),
+    weeklyPnlUsd: round(equityUsd - equityAtWindowStart(7 * 86_400_000), 2),
     positions,
     trades,
     rejectedSignals: rejected,
     riskLimits: limits,
+    equityHistory,
   };
 }
 

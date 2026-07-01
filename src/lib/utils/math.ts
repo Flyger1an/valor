@@ -183,9 +183,11 @@ export function annualizeDailySharpe(dailyReturns: number[]): number {
   return (avg / sd) * Math.sqrt(365);
 }
 
-export function sortinoRatio(dailyReturns: number[]): number {
+export function sortinoRatio(dailyReturns: number[]): number | null {
   const downside = dailyReturns.filter((value) => value < 0);
   const downsideDeviation = standardDeviation(downside);
-  if (downsideDeviation === 0) return dailyReturns.some((v) => v > 0) ? 99 : 0;
+  // No downside deviation => Sortino is genuinely undefined (division by zero). Return null so callers
+  // render it honestly ("∞ / no downside") rather than a magic 99 masquerading as a real ratio.
+  if (downsideDeviation === 0) return dailyReturns.some((v) => v > 0) ? null : 0;
   return (mean(dailyReturns) / downsideDeviation) * Math.sqrt(365);
 }
