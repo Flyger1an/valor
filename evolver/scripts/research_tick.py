@@ -71,6 +71,13 @@ CONFIRM = int(os.getenv("EVOLVER_RESEARCH_CONFIRM", "2"))
 # a confirmation only counts if the data window advanced this many days since the last one — so the
 # CONFIRM passes are on materially DIFFERENT data, not correlated re-tests of one lucky window.
 CONFIRM_GAP_MS = int(float(os.getenv("EVOLVER_CONFIRM_GAP_DAYS", "7")) * 86_400_000)
+# SHADOW BAR (docs/scope-gate-calibration.md) — a calibration MEASUREMENT, not a relaxation. Each cycle we
+# recompute the verdict with ONLY the two decision-theoretic α knobs relaxed; the "marginal band" (passes
+# relaxed, fails strict) is logged so forward CONFIRM can later adjudicate whether the strict α is
+# over-rejecting real edges. It NEVER creates a candidate / alert / trade — production `passed` is untouched.
+SHADOW_P = float(os.getenv("EVOLVER_SHADOW_P", "0.15"))       # relaxed bootstrap α (strict 0.05)
+SHADOW_DSR = float(os.getenv("EVOLVER_SHADOW_DSR", "0.80"))   # relaxed deflated-Sharpe conf (strict 0.95)
+SHADOW_LEDGER = pathlib.Path(os.getenv("EVOLVER_SHADOW_LEDGER", str(ROOT / ".shadow_calibration.jsonl")))
 ALLOCATE = os.getenv("EVOLVER_ALLOCATE", "1") != "0"   # bandit family selection (vs round-robin)
 USE_LLM = os.getenv("EVOLVER_USE_LLM", "1") != "0"     # LLM-as-optimizer in the search (needs OPENAI_API_KEY)
 HOURLY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA", str(ROOT / ".okx_hourly_dataset.pkl")))
@@ -91,6 +98,16 @@ LEDGER = pathlib.Path(os.getenv("EVOLVER_RESEARCH_LEDGER", str(ROOT / "research_
 
 def _now():
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+
+def _log_shadow(rec):
+    """Append a marginal-band record (passes relaxed α, fails strict) to the calibration ledger. Pure
+    telemetry — no candidate, no alert, no trade; forward CONFIRM later adjudicates if these recur."""
+    try:
+        with open(SHADOW_LEDGER, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
 
 
 def _sh(x):
@@ -636,10 +653,23 @@ def cycle(fam, data, fwd_decay=1.0):
     passed = (osr > min_osr and op < 0.05 and on >= min_n and o2 > 0 and dho > 0.95
               and (npos >= 0.75 * len(nb) if nb else False)
               and (r.pbo is None or r.pbo < 0.5))
+    # SHADOW BAR (docs/scope-gate-calibration.md) — MEASUREMENT ONLY: identical clauses, ONLY the two α
+    # knobs relaxed (op, dho); every overfitting/robustness clause frozen. Log the marginal band
+    # (relaxed-pass / strict-fail) for forward adjudication. Does NOT touch `passed`, `cand`, or alerts.
+    shadow_passed = (osr > min_osr and op < SHADOW_P and on >= min_n and o2 > 0 and dho > SHADOW_DSR
+                     and (npos >= 0.75 * len(nb) if nb else False)
+                     and (r.pbo is None or r.pbo < 0.5))
+    marginal = shadow_passed and not passed
+    if marginal:
+        _log_shadow({"family": fam["name"], "genome": g, "oos_sharpe": round(osr, 3),
+                     "oos_p": round(op, 3), "oos_n": on, "dsr": round(dho, 3), "twox_cost": round(o2, 3),
+                     "stable": f"{npos}/{len(nb)}", "pbo": (None if r.pbo is None else round(r.pbo, 3)),
+                     "band": "relaxed-pass/strict-fail", "ts": int(time.time()), "at": _now()})
     fwd_tag = "" if fwd_decay >= 0.999 else f" [fwd-decay ×{fwd_decay} on DSR]"
     summ = (f"{fam['name']}: OOS {osr:+.2f}{fwd_tag} (p {op:.3f}, DSR {dho:.2f}, n {on}) | "
             f"2x-cost {o2:+.2f} | stable {npos}/{len(nb)} | "
-            f"pbo {'-' if r.pbo is None else round(r.pbo, 2)} | {'PASS' if passed else 'below bar'}")
+            f"pbo {'-' if r.pbo is None else round(r.pbo, 2)} | "
+            f"{'PASS' if passed else 'below bar'}{'  ·shadow-marginal·' if marginal else ''}")
     cand = None
     if passed:
         cand = {"id": f"{fam['name']}-{int(time.time())}", "family": fam["name"], "genome": g,

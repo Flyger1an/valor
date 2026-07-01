@@ -124,6 +124,7 @@ services:
     environment:
       EVOLVER_RESEARCH: /data/research_state.json          # shared candidate queue (bot reads it)
       EVOLVER_RESEARCH_LEDGER: /data/research_ledger.jsonl
+      EVOLVER_SHADOW_LEDGER: /data/shadow_calibration.jsonl   # gate-calibration marginal band (pooled, all hunts)
       EVOLVER_RESEARCH_DATA: /data/okx_hourly_dataset.pkl  # liquidation family (rolling 15mo)
       EVOLVER_RESEARCH_DATA_FUND: /data/okx_hourly_fund_dataset.pkl  # liquidation_funding (OHLC+funding)
       EVOLVER_RESEARCH_DAILY: /data/okx_daily_dataset.pkl  # trend / cross-sectional (~3yr)
@@ -163,6 +164,7 @@ services:
       EVOLVER_VENUE: gate                                  # crypto refreshes hit Gate, not OKX
       EVOLVER_RESEARCH: /data/gate_research_state.json      # SEPARATE queue from OKX
       EVOLVER_RESEARCH_LEDGER: /data/gate_research_ledger.jsonl
+      EVOLVER_SHADOW_LEDGER: /data/shadow_calibration.jsonl   # gate-calibration marginal band (pooled, all hunts)
       EVOLVER_RESEARCH_DATA: /data/gate_hourly_dataset.pkl
       EVOLVER_RESEARCH_DATA_FUND: /data/gate_hourly_fund_dataset.pkl
       EVOLVER_RESEARCH_DAILY: /data/gate_daily_dataset.pkl
@@ -202,6 +204,7 @@ services:
       EVOLVER_FAMILIES: fx                                  # fx_trend / fx_xsection / fx_session
       EVOLVER_RESEARCH: /data/fx_research_state.json        # SEPARATE queue from crypto
       EVOLVER_RESEARCH_LEDGER: /data/fx_research_ledger.jsonl
+      EVOLVER_SHADOW_LEDGER: /data/shadow_calibration.jsonl   # gate-calibration marginal band (pooled, all hunts)
       EVOLVER_FX_HOURLY: /data/fx_hourly_dataset.pkl
       EVOLVER_FX_DAILY: /data/fx_daily_dataset.pkl
       FX_RATES_PKL: /data/fx_rates.pkl   # FRED real-rates cache for fx_carry (FRED_API_KEY via .env)
@@ -233,6 +236,7 @@ services:
       EVOLVER_FAMILIES: vol                                # VOL_FAMILIES = [vol_premium, options_pin]
       EVOLVER_RESEARCH: /data/vol_research_state.json       # SEPARATE queue
       EVOLVER_RESEARCH_LEDGER: /data/vol_research_ledger.jsonl
+      EVOLVER_SHADOW_LEDGER: /data/shadow_calibration.jsonl   # gate-calibration marginal band (pooled, all hunts)
       EVOLVER_RESEARCH_VOL: /data/deribit_vol_dataset.pkl   # Deribit DVOL+price (~2.7yr), accumulates
       EVOLVER_OPT_FLOW: /data/deribit_optflow_dataset.pkl   # options_pin positioning snapshots (forward-accum)
       EVOLVER_RESEARCH_MONTHS: "15"
