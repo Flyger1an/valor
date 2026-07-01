@@ -55,7 +55,7 @@ never move. The retail-capacity thesis cuts both ways.
 
 ## The experiment — a shadow bar, adjudicated forward
 
-- **Phase A** ⬜→🔄 — each cycle, compute a *second* verdict `shadow_passed` with ONLY the two α knobs
+- **Phase A** ✅ SHIPPED — each cycle, compute a *second* verdict `shadow_passed` with ONLY the two α knobs
   relaxed (`op < EVOLVER_SHADOW_P=0.15`, `dho > EVOLVER_SHADOW_DSR=0.80`); **every overfitting/robustness
   clause frozen identical.** It NEVER creates a candidate, alerts, or trades. It logs the **marginal band**
   (passes relaxed, fails strict) to a calibration ledger (`EVOLVER_CALIB_LEDGER` — a distinct name from
@@ -85,3 +85,8 @@ depth/volume), not a loosening. Deferred — we have zero candidates to size.
 
 ### Build log
 - 2026-06-30 — scope written; **Phase A** building (shadow-logging only, zero behaviour change).
+- 2026-06-30 — **Phase A ✅ SHIPPED** (bfe6ed6): shadow bar live on all 4 hunts (research/gate/fx/deribit),
+  pooled ledger `/data/shadow_calibration.jsonl`. Verified — garbage stays rejected under relaxed α,
+  production surface-rate unchanged, clean cycles on the box (no crash). Caught + fixed an env-name
+  collision (`EVOLVER_CALIB_LEDGER`, not the liquidation book's `EVOLVER_SHADOW_LEDGER`). Now accumulating
+  the marginal band for Phase B/C (forward adjudication in ~1–2 months).
