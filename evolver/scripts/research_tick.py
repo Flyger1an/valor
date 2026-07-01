@@ -77,7 +77,9 @@ CONFIRM_GAP_MS = int(float(os.getenv("EVOLVER_CONFIRM_GAP_DAYS", "7")) * 86_400_
 # over-rejecting real edges. It NEVER creates a candidate / alert / trade — production `passed` is untouched.
 SHADOW_P = float(os.getenv("EVOLVER_SHADOW_P", "0.15"))       # relaxed bootstrap α (strict 0.05)
 SHADOW_DSR = float(os.getenv("EVOLVER_SHADOW_DSR", "0.80"))   # relaxed deflated-Sharpe conf (strict 0.95)
-SHADOW_LEDGER = pathlib.Path(os.getenv("EVOLVER_SHADOW_LEDGER", str(ROOT / ".shadow_calibration.jsonl")))
+SHADOW_LEDGER = pathlib.Path(os.getenv("EVOLVER_CALIB_LEDGER", str(ROOT / ".shadow_calibration.jsonl")))
+# ^ EVOLVER_CALIB_LEDGER, NOT EVOLVER_SHADOW_LEDGER — the latter is the liquidation-basket paper book
+# (shadow_runner.py). Distinct name so a calibration record can never land in the forward paper ledger.
 ALLOCATE = os.getenv("EVOLVER_ALLOCATE", "1") != "0"   # bandit family selection (vs round-robin)
 USE_LLM = os.getenv("EVOLVER_USE_LLM", "1") != "0"     # LLM-as-optimizer in the search (needs OPENAI_API_KEY)
 HOURLY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DATA", str(ROOT / ".okx_hourly_dataset.pkl")))

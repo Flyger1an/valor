@@ -58,7 +58,8 @@ never move. The retail-capacity thesis cuts both ways.
 - **Phase A** ⬜→🔄 — each cycle, compute a *second* verdict `shadow_passed` with ONLY the two α knobs
   relaxed (`op < EVOLVER_SHADOW_P=0.15`, `dho > EVOLVER_SHADOW_DSR=0.80`); **every overfitting/robustness
   clause frozen identical.** It NEVER creates a candidate, alerts, or trades. It logs the **marginal band**
-  (passes relaxed, fails strict) to a calibration ledger (`EVOLVER_SHADOW_LEDGER`). Pure telemetry; the
+  (passes relaxed, fails strict) to a calibration ledger (`EVOLVER_CALIB_LEDGER` — a distinct name from
+  the liquidation paper book's `EVOLVER_SHADOW_LEDGER`, so the two can never cross). Pure telemetry; the
   production `passed`/candidate path is byte-for-byte unchanged.
 - **Phase B** ⬜ — run marginal-band genomes through the SAME CONFIRM machinery, but *stricter* (relaxation
   on the historical axis repaid on the forward axis).
