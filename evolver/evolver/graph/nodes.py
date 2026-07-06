@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from evolver.core.signal import Signal
 from evolver.core.risk import PaperResult
-from evolver.agents.analyst import decide, llm_decide, build_fast_llm
+from evolver.core.calibration import freeze, load_calibration, unfreeze
+from evolver.agents.analyst import decide_with_meta, build_fast_llm
 from evolver.agents.critic import reflect
+from evolver.obs.decisions import record_decision
 from evolver.optimize.optuna_study import run_optimization
 from evolver.graph import runtime as rt
 
@@ -20,10 +22,10 @@ def analyst_node(state: dict) -> dict:
     sig = Signal.from_dict(state["signal"])
     _rm, risk_params, strategy, _ = rt.load_state()
     llm = build_fast_llm()  # fast model when configured, else deterministic fallback
-    if llm is not None:
-        ctx = {"regime": sig.regime, "similar": state.get("similar", [])}
-        return {"decision": llm_decide(sig, ctx, risk_params, rt.LIMITS, llm, strategy)}
-    return {"decision": decide(sig, risk_params, rt.LIMITS, strategy)}
+    ctx = {"regime": sig.regime, "similar": state.get("similar", [])}
+    decision, meta = decide_with_meta(sig, ctx, risk_params, rt.LIMITS, llm, strategy)
+    record_decision("inner", state["signal"], decision, meta)
+    return {"decision": decision}
 
 
 def paper_trade_node(state: dict) -> dict:
@@ -50,10 +52,19 @@ def evaluate_node(state: dict) -> dict:
 
 
 def critic_node(state: dict) -> dict:
-    """Outer loop: optimize + (if a winner) register a human-gated proposal."""
+    """Outer loop: optimize + (if a winner) register a human-gated proposal.
+    The critic's LLM path is now WIRED (was dormant: reflect() defaulted llm=None), and its
+    context includes the measured calibration — so threshold recalibration proposals are informed
+    by reality, while staying whitelist-checked and human-approved like everything else."""
     _rm, _risk_params, strategy, _ = rt.load_state()
-    proposal = run_optimization(rt.read_signals(), strategy, rt.LIMITS)
-    proposal["reflection"] = reflect(state["kpis"], [], strategy).get("reflection", "")
+    calib = load_calibration()
+    freeze(calib)   # pin ONE calibration for the whole study — a shadow write landing mid-run
+    try:            # must not make trials incomparable (review finding)
+        proposal = run_optimization(rt.read_signals(), strategy, rt.LIMITS)
+    finally:
+        unfreeze()
+    kpis = {**state["kpis"], "measured_calibration": calib} if calib else state["kpis"]
+    proposal["reflection"] = reflect(kpis, [], strategy, llm=build_fast_llm()).get("reflection", "")
     if proposal.get("promote"):
         tid = state.get("thread_id", "default")
         rt.register_pending(tid, proposal)

@@ -14,6 +14,7 @@ import os
 import random
 from dataclasses import dataclass
 
+from evolver.core.calibration import CALIBRATED_TYPES, load_calibration, conv_scale
 from evolver.core.signal import Signal
 
 # OKX-calibrated execution costs (overridable via env). OKX perp taker ≈ 0.05% = 5 bps;
@@ -37,6 +38,7 @@ class Fill:
     realized_vol: float
     converged: bool
     max_dd_during: float
+    calib_version: str = ""   # measured-reality calibration applied ("" = uncalibrated priors)
 
 
 def _clip(x: float, lo: float, hi: float) -> float:
@@ -67,6 +69,14 @@ def _gross_target_return(sig: Signal) -> float:
         return min(float(m.get("deviation_bps", 0.0)) / 1e4, _MAX_TARGET_RETURN)
     # cointegration_spread / stat_arb_pair: capture a fraction of the spread on reversion
     return min(abs(sig.spread_value) * 0.5, _MAX_TARGET_RETURN)
+
+
+def predicted_p_converge(sig: Signal) -> float:
+    """The sim's UNCALIBRATED convergence prior. Exported so the shadow book can record the
+    prediction it is measuring against — the honest denominator for calibration (scaling by
+    realized ÷ stated-confidence over-shrinks, because entered trades' stated confidence sits
+    above this prior)."""
+    return _clip(0.5 + (sig.confidence - 0.5) * 0.9 - sig.risk_score * 0.3, 0.05, 0.95)
 
 
 def _slippage_bps(sig: Signal) -> float:
@@ -102,8 +112,12 @@ class PerpPaperSim:
         notional = float(decision["size_usd"]) * float(decision.get("leverage", 1.0))
 
         target = _gross_target_return(sig)
-        # P(convergence) rises with confidence, falls with risk_score
-        p_converge = _clip(0.5 + (sig.confidence - 0.5) * 0.9 - sig.risk_score * 0.3, 0.05, 0.95)
+        # P(convergence) rises with confidence, falls with risk_score — then scaled by MEASURED
+        # reality (core/calibration.py, from the forward shadow book). Scope-honest: the scale is
+        # applied only to the signal types the shadow book actually measures (CALIBRATED_TYPES);
+        # other types keep raw priors until a book measures them.
+        calib = load_calibration() if sig.type in CALIBRATED_TYPES else None
+        p_converge = _clip(predicted_p_converge(sig) * conv_scale(calib), 0.05, 0.95)
         converged = rng.random() < p_converge
         capture = rng.uniform(0.6, 1.1) if converged else rng.uniform(-0.7, -0.1)
         gross_ret = target * capture
@@ -129,4 +143,5 @@ class PerpPaperSim:
             realized_vol=_vol(sig),
             converged=converged,
             max_dd_during=round(mdd, 4),
+            calib_version=(calib or {}).get("version", ""),
         )

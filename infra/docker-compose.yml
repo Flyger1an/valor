@@ -37,6 +37,9 @@ services:
       EVOLVER_KILL: /data/kill.flag
       EVOLVER_STATE: /data/state.json
       EVOLVER_SIGNALS: /data/signals.jsonl
+      EVOLVER_SIM_CALIB: /data/sim_calibration.json      # measured-reality calibration (shadow writes)
+      EVOLVER_DECISIONS: /data/decisions.jsonl           # decision-attribution ledger
+      EVOLVER_PROMPT_VARIANTS: /data/prompt_variants.json  # registered challenger prompts
     ports: ["127.0.0.1:8000:8000"]   # localhost only
     volumes: ["evolver_data:/data"]
     depends_on: [redis, postgres]
@@ -56,6 +59,9 @@ services:
       EVOLVER_KILL: /data/kill.flag
       EVOLVER_STATE: /data/state.json
       EVOLVER_SIGNALS: /data/signals.jsonl
+      EVOLVER_SIM_CALIB: /data/sim_calibration.json      # measured-reality calibration (shadow writes)
+      EVOLVER_DECISIONS: /data/decisions.jsonl           # decision-attribution ledger
+      EVOLVER_PROMPT_VARIANTS: /data/prompt_variants.json  # registered challenger prompts
     volumes: ["evolver_data:/data"]
     depends_on: [redis, postgres]
     restart: unless-stopped
@@ -113,6 +119,11 @@ services:
     environment:
       EVOLVER_SHADOW2: /data/shadow_analyst_state.json
       EVOLVER_SHADOW2_LEDGER: /data/shadow_analyst_ledger.jsonl
+      EVOLVER_SIM_CALIB: /data/sim_calibration.json      # THE calibration writer (single writer)
+      EVOLVER_DECISIONS: /data/decisions.jsonl           # decision-attribution ledger (shared)
+      EVOLVER_PROMPT_VARIANTS: /data/prompt_variants.json
+      # Challenger A/B: clone this service with EVOLVER_ANALYST_VARIANT=<challenger> + its own
+      # EVOLVER_SHADOW2/_LEDGER paths; it measures on the same signals but never writes calibration.
     volumes: ["evolver_data:/data"]
     restart: unless-stopped
 

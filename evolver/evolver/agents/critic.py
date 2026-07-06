@@ -27,7 +27,11 @@ def reflect(kpis: dict, recent_fills: list, strategy: dict, llm=None) -> dict:
         user = json.dumps({"kpis": kpis, "strategy": strategy,
                            "recent": [getattr(f, "__dict__", f) for f in recent_fills[-20:]]})
         try:
-            return json.loads(llm.invoke([("system", sys), ("user", user)]).content)
+            out = json.loads(llm.invoke([("system", sys), ("user", user)]).content)
+            # valid JSON that isn't the contract (a bare string/list) must not crash the caller
+            if isinstance(out, dict) and isinstance(out.get("proposals", []), list):
+                return {"reflection": str(out.get("reflection", "")),
+                        "proposals": out.get("proposals", [])}
         except Exception:
             pass  # fall through to heuristic
 

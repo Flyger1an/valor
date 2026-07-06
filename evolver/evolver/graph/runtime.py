@@ -143,9 +143,14 @@ def apply_pending(thread_id: str, approved: bool):
     if prop is None:
         return None
     if approved:
+        from evolver.agents.critic import WHITELIST
+        # defense-in-depth: even a human-approved proposal may only touch whitelisted strategy
+        # params + the prompt-variant selector — never limits/reward keys smuggled into pending
+        allowed = set(WHITELIST) | {"analyst_prompt_variant"}
         strat = s.get("strategy") or {**DEFAULT_STRATEGY, "version": "v1"}
         for p in prop.get("proposals", []):
-            strat[p["param"]] = p["to"]
+            if p.get("param") in allowed:
+                strat[p["param"]] = p["to"]
         strat["version"] = prop.get("version", strat.get("version", "v1"))
         s["strategy"] = strat
     _atomic_write(STATE_PATH, s)

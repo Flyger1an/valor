@@ -6,12 +6,11 @@ human-gated outer loop). Both share graph.runtime state.
 """
 from __future__ import annotations
 
-import os
-
 from evolver.core.signal import Signal
 from evolver.core.risk import PaperResult
-from evolver.agents.analyst import decide, llm_decide, build_fast_llm
+from evolver.agents.analyst import decide_with_meta, build_fast_llm
 from evolver.graph import runtime as rt
+from evolver.obs.decisions import record_decision
 from evolver.obs.mlflow_log import log_cycle
 from evolver.safety import kill_switch, trip_circuit_breaker
 
@@ -25,11 +24,9 @@ def run_inner(signal_dict: dict) -> dict:
     rm, risk_params, strategy, _ = rt.load_state()   # shared book across all processes
 
     llm = build_fast_llm()                        # fast model when configured, else None
-    decision = (
-        llm_decide(sig, {"regime": sig.regime}, risk_params, rt.LIMITS, llm, strategy)
-        if llm is not None
-        else decide(sig, risk_params, rt.LIMITS, strategy)
-    )
+    decision, meta = decide_with_meta(
+        sig, {"regime": sig.regime}, risk_params, rt.LIMITS, llm, strategy)
+    record_decision("inner", signal_dict, decision, meta)   # attribution: full decision + provenance
     fill = rt.SIM.execute(sig, decision)
     rt.record_fill(fill, sig)
     new_risk_params = rm.update_from_paper_trade(
@@ -45,6 +42,8 @@ def run_inner(signal_dict: dict) -> dict:
     log_cycle(
         signal_dict, decision, fill.__dict__, kpis,
         strategy_version=strategy.get("version", "v1"),
-        model=(os.getenv("FAST_MODEL", "gpt-5-mini") if llm is not None else "deterministic"),
+        # HONEST label: meta knows whether the LLM actually answered — the old llm-configured
+        # check logged the model name even when llm_decide silently fell back to deterministic.
+        model=meta["model"],
     )
     return {"signal_id": sig.signal_id, "decision": decision, "fill": fill.__dict__, "kpis": kpis}

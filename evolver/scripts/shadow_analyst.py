@@ -32,11 +32,13 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
         _k, _v = _l.split("=", 1)
         os.environ.setdefault(_k.strip(), _v.strip())
 
-from evolver.agents.analyst import build_fast_llm, decide, llm_decide  # noqa: E402
+from evolver.agents.analyst import build_fast_llm, decide_with_meta  # noqa: E402
 from evolver.config import DEFAULT_LIMITS, DEFAULT_STRATEGY  # noqa: E402
+from evolver.core.calibration import compute_calibration, write_calibration  # noqa: E402
 from evolver.core.signal import Signal  # noqa: E402
-from evolver.core.sim import PerpPaperSim, TAKER_FEE_BPS  # noqa: E402
+from evolver.core.sim import PerpPaperSim, TAKER_FEE_BPS, predicted_p_converge  # noqa: E402
 from evolver.data.okx import half_life_hours, mean, okx_candles_ohlc, std  # noqa: E402
+from evolver.obs.decisions import record_decision  # noqa: E402
 
 CAP = DEFAULT_LIMITS.capital
 PAIRS = ([(a, "ETH") for a in ("SOL", "BNB", "AVAX", "LINK", "DOT", "ARB", "OP", "INJ",
@@ -52,6 +54,12 @@ FUNDING_BPS_PER_8H = float(os.getenv("SHADOW2_FUNDING_BPS_8H", "1.5"))  # net fu
 FEE_SLIP_RT = 4 * (TAKER_FEE_BPS + SHADOW2_SLIP_BPS) / 1e4              # 2 legs x (open + close)
 STATE = pathlib.Path(os.getenv("EVOLVER_SHADOW2", str(ROOT / ".shadow_analyst_state.json")))
 LEDGER = pathlib.Path(os.getenv("EVOLVER_SHADOW2_LEDGER", str(ROOT / "shadow_analyst_ledger.jsonl")))
+# Challenger-arm support: a SECOND shadow-analyst service with EVOLVER_ANALYST_VARIANT=<challenger>
+# (and its own STATE/LEDGER paths) runs an evolved prompt on the SAME signals — the paired forward
+# A/B that a prompt variant must win before a human promotes it to the live loop.
+STRAT = {**DEFAULT_STRATEGY,   # `or` (not getenv default): an EMPTY env value must mean incumbent,
+         "analyst_prompt_variant": (os.getenv("EVOLVER_ANALYST_VARIANT")   # or the calibration
+                                    or DEFAULT_STRATEGY.get("analyst_prompt_variant", "v1"))}  # writer guard desyncs
 HEARTBEAT_URL = os.getenv("EVOLVER_HEARTBEAT2_URL")
 SIM = PerpPaperSim(CAP)
 _LLM = None
@@ -148,7 +156,10 @@ def tick():
         pos = {"a": a, "b": b, "dir": p["dir"], "notional": p["notional"],
                "a_entry": raw[a][na][0], "b_entry": raw[b][nb][0], "entry_ts": entry_ts,
                "exit_ts": int(entry_ts + p["max_hold"] * 3.6e6), "entry_z": p["entry_z"],
-               "sim_pnl_pct": p["sim_pnl_pct"], "rationale": p["rationale"]}
+               "sim_pnl_pct": p["sim_pnl_pct"], "rationale": p["rationale"],
+               # provenance + the sim's own prediction flow through to the CLOSE record — closes
+               # are what calibration and the challenger A/B read (.get: old pendings lack these)
+               "src": p.get("src"), "variant": p.get("variant"), "sim_p": p.get("sim_p")}
         s["open"].append(pos)
         journal.append({"event": "fill", **pos})
         filled += 1
@@ -190,25 +201,38 @@ def tick():
         if key in busy or time.time() * 1000 - s["last_entry"].get(key, 0) < COOLDOWN_H * 3.6e6:
             continue
         sig, z = _signal(a, b, closes)
-        if sig is None or abs(z) < DEFAULT_STRATEGY.get("min_abs_zscore", 1.0):
+        if sig is None or abs(z) < STRAT.get("min_abs_zscore", 1.0):
             continue   # Valor only emits meaningful signals; pre-gate before spending an LLM call
-        dec = (llm_decide(sig, {"regime": sig.regime}, RISK_PARAMS, DEFAULT_LIMITS, _LLM, DEFAULT_STRATEGY)
-               if _LLM else decide(sig, RISK_PARAMS, DEFAULT_LIMITS, DEFAULT_STRATEGY))
-        if dec.get("action") in ("long", "short") and float(dec.get("size_usd", 0)) < CAP * 0.01:
-            dec["size_usd"] = round(CAP * RISK_PARAMS["new_pos_pct"], 2)   # LLM sometimes returns a fraction, not $
+        dec, meta = decide_with_meta(sig, {"regime": sig.regime}, RISK_PARAMS, DEFAULT_LIMITS,
+                                     _LLM or None, STRAT)
+        if dec.get("action") in ("long", "short") and 0 < float(dec.get("size_usd", 0)) < 1.0:
+            # a TRUE fraction-of-capital output (e.g. 0.08) — convert to calibrated dollars.
+            # (Review finding: the old `< CAP*0.01` threshold re-inflated calibration-shrunk
+            # dollar sizes up to ~9x — inverting the humility invariant exactly when the
+            # measured over-promising was worst. A fraction is < 1.0; dollars are not.)
+            dec["size_usd"] = round(CAP * RISK_PARAMS["new_pos_pct"] * meta.get("conv_scale", 1.0), 2)
+        record_decision("shadow", sig.__dict__, dec, meta)   # AFTER fixup: ledger = acted-on decision
         if dec.get("action") not in ("long", "short") or dec.get("size_usd", 0) <= 0:
             continue
         notional = float(dec["size_usd"]) * float(dec.get("leverage", 1.0))
         direction = 1.0 if dec["action"] == "long" else -1.0   # long_spread = long A / short B
         sim_fill = SIM.execute(sig, dec)                        # the heuristic ESTIMATE (fantasy side)
-        # LLM exit object is free-form (may omit max_hold_hours) — fall back to the convergence horizon
-        max_hold = float((dec.get("exit") or {}).get("max_hold_hours") or sig.expected_convergence_hours * 1.5)
+        # LLM exit object is free-form (may omit max_hold_hours) — fall back to the convergence
+        # horizon, and FLOOR at 1x the horizon: an ultra-short hold mechanically converts
+        # would-be convergences into timeouts, ratcheting the measured rate (and thus the
+        # calibration) downward from behavior rather than reality.
+        max_hold = max(float((dec.get("exit") or {}).get("max_hold_hours")
+                             or sig.expected_convergence_hours * 1.5),
+                       sig.expected_convergence_hours)
         common = sorted(set(raw.get(a, {})) & set(raw.get(b, {})))
         if not common:
             continue
         pend = {"a": a, "b": b, "dir": direction, "notional": round(notional, 2),
                 "signal_ts": common[-1], "max_hold": max_hold, "entry_z": round(z, 3),
-                "sim_pnl_pct": round(sim_fill.pnl_pct, 5), "rationale": dec.get("rationale", "")[:120]}
+                "sim_pnl_pct": round(sim_fill.pnl_pct, 5), "rationale": dec.get("rationale", "")[:120],
+                "src": meta["source"], "variant": meta.get("prompt_variant"),   # provenance -> closes
+                "sim_p": round(predicted_p_converge(sig), 4)}   # the sim's OWN prediction = the
+        # honest calibration denominator (realized ÷ sim_p), replacing the stated-confidence proxy
         s["pending"].append(pend)                          # fills at next bar's open, next tick
         s["last_entry"][key] = int(time.time() * 1000)
         journal.append({"event": "intent", **pend})
@@ -226,6 +250,16 @@ def tick():
         s["hb_day"] = today
     _ping2()
     save(s)
+    # 3) CLOSE THE MEASUREMENT LOOP (after save -> the doc never reflects unsaved closes): distil
+    #    the closed book into the calibration doc the sim and sizing consume. This tick is the
+    #    SINGLE writer; a challenger arm measures but never steers. Never crash a tick over it.
+    if STRAT["analyst_prompt_variant"] == DEFAULT_STRATEGY.get("analyst_prompt_variant", "v1"):
+        try:
+            calib = compute_calibration(s["closed"])
+            if calib:
+                write_calibration(calib)
+        except Exception:
+            pass
     with LEDGER.open("a") as f:        # commit ledger only AFTER state -> the two stay consistent on a crash
         for r in journal:
             f.write(json.dumps(r) + "\n")
