@@ -109,6 +109,41 @@ export class SqliteStateStore implements StateStore {
       if (existsSync(path)) db.exec(readFileSync(path, "utf8"));
     }
     this.ensureSignalEnrichmentColumns(db);
+    this.ensureBacktestSortinoNullable(db);
+  }
+
+  private ensureBacktestSortinoNullable(db: DatabaseSync) {
+    // sortino is genuinely null when a strategy has no downside deviation (commit 802231a made the
+    // app type number|null). The 0001 column was REAL NOT NULL, so persisting a null sortino aborted
+    // the whole BEGIN IMMEDIATE state write. SQLite can't DROP NOT NULL in place; rebuild the table
+    // once. Guarded on the current notnull flag so it stays idempotent (migrations re-exec every open).
+    const cols = db.prepare("PRAGMA table_info(backtest_runs)").all() as Array<{
+      name: string;
+      notnull: number;
+    }>;
+    const sortino = cols.find((col) => col.name === "sortino");
+    if (!sortino || sortino.notnull === 0) return; // table absent or already nullable — no-op
+    db.exec(`
+      CREATE TABLE backtest_runs_new (
+        id TEXT PRIMARY KEY, strategy_name TEXT NOT NULL, started_at TEXT NOT NULL,
+        ended_at TEXT NOT NULL, starting_cash_usd REAL NOT NULL, ending_equity_usd REAL NOT NULL,
+        total_return_pct REAL NOT NULL, max_drawdown_pct REAL NOT NULL, sharpe REAL NOT NULL,
+        sortino REAL, win_rate_pct REAL NOT NULL, exposure_avg_pct REAL NOT NULL,
+        turnover_usd REAL NOT NULL, total_fees_usd REAL NOT NULL, report_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      INSERT INTO backtest_runs_new (
+        id, strategy_name, started_at, ended_at, starting_cash_usd, ending_equity_usd,
+        total_return_pct, max_drawdown_pct, sharpe, sortino, win_rate_pct, exposure_avg_pct,
+        turnover_usd, total_fees_usd, report_json, created_at
+      ) SELECT
+        id, strategy_name, started_at, ended_at, starting_cash_usd, ending_equity_usd,
+        total_return_pct, max_drawdown_pct, sharpe, sortino, win_rate_pct, exposure_avg_pct,
+        turnover_usd, total_fees_usd, report_json, created_at
+      FROM backtest_runs;
+      DROP TABLE backtest_runs;
+      ALTER TABLE backtest_runs_new RENAME TO backtest_runs;
+    `);
   }
 
   private ensureSignalEnrichmentColumns(db: DatabaseSync) {

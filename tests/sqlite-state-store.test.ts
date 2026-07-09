@@ -81,6 +81,35 @@ describe("sqlite state store", () => {
       }),
     ).toBeInstanceOf(LocalStateStore);
   });
+
+  it("persists a backtest with a null sortino without aborting the state write", () => {
+    // 802231a made sortino number|null (undefined when there's no downside deviation), but the
+    // backtest_runs.sortino column was REAL NOT NULL, so a null sortino crashed the whole write.
+    const path = tempDbPath();
+    const state = buildState();
+    const withNull = { ...state, backtest: { ...state.backtest!, sortino: null } };
+    const store = new SqliteStateStore(path);
+    expect(() => store.write(withNull)).not.toThrow();
+
+    const db = new DatabaseSync(path);
+    const col = (
+      db.prepare("PRAGMA table_info(backtest_runs)").all() as Array<{
+        name: string;
+        notnull: number;
+      }>
+    ).find((c) => c.name === "sortino");
+    expect(col?.notnull).toBe(0); // migration made the column nullable
+    const row = db.prepare("SELECT sortino FROM backtest_runs").get() as {
+      sortino: number | null;
+    };
+    expect(row.sortino).toBeNull();
+    db.close();
+    store.close();
+
+    const restored = new SqliteStateStore(path);
+    expect(restored.read().backtest?.sortino).toBeNull(); // round-trips via report_json
+    restored.close();
+  });
 });
 
 function buildState(): ValorLocalState {

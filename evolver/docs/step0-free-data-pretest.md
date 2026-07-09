@@ -12,7 +12,9 @@ family uses.
 
 **Test (`scripts/pin_pretest.py`):** per month × coin, dominant expiry in a dte band → gap
 g=(max-pain − underlying)/underlying → return r to that expiry. Hit rate (sign r == sign g) vs
-50%, OLS beta of r on g, median |distance-to-pin| ratio.
+50%, OLS beta of r on g, median |distance-to-pin| ratio. **Reproduce the whole table below:**
+`python3 scripts/pin_pretest.py` (runs all three DTE bands; needs the harvested `.tardis_monthly_oi.pkl`).
+The hit-rate p-value assumes a 50% null that crypto drift breaks — lean on the OLS beta/t, not hit-p.
 
 ## Results
 

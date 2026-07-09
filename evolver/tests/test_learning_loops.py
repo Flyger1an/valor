@@ -173,6 +173,16 @@ def test_hostile_llm_output_is_sanitized():
                    '"leverage":"heaps","entry":{},"exit":{},"confidence":0.5,"rationale":"r"}')
     d, m = decide_with_meta(_sig(z=-2.4), {}, RISK, DEFAULT_LIMITS, bad)   # must not raise
     assert d["action"] in {"long", "short", "neutral"}
+    # review finding: a hostile `exit` (non-dict, or non-numeric max_hold_hours) crashed the shadow
+    # tick at exit.max_hold_hours. It must be coerced to a dict + finite/None hold at the source.
+    for hostile in ('"soon"', '["a"]', '{"max_hold_hours":"24h"}', '5'):
+        ex = _FakeLLM('{"action":"long","direction":"long_spread","size_usd":4000,"leverage":2,'
+                      '"confidence":0.6,"exit":' + hostile + ',"rationale":"r"}')
+        d, _ = decide_with_meta(_sig(z=-2.4), {}, RISK, DEFAULT_LIMITS, ex)
+        assert isinstance(d["exit"], dict)                       # always a dict now
+        mh = d["exit"].get("max_hold_hours")
+        assert mh is None or isinstance(mh, (int, float))        # never a raw string
+        float((d.get("exit") or {}).get("max_hold_hours") or 18.0)   # the shadow-tick expr can't raise
     return True
 
 

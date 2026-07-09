@@ -32,7 +32,9 @@ from evolver.optimize.options_flow import max_pain  # noqa: E402
 OI_PKL = ROOT / ".tardis_monthly_oi.pkl"
 PX_PKL = ROOT / ".binance_daily_closes.pkl"
 BURL = "https://data.binance.vision/data/spot/monthly/klines/{sym}/1d/{sym}-1d-{y}-{m:02d}.zip"
-DTE_LO, DTE_HI = 14.0, 45.0
+# The three DTE bands the doc reports — running this script reproduces its whole table (the headline
+# anti-pin lives in the 1.5-8d expiring-weekly band, NOT the default 14-45d monthly band).
+BANDS = [("14-45d monthly", 14.0, 45.0), ("8-14d mid", 8.0, 14.0), ("1.5-8d expiring-weekly", 1.5, 8.0)]
 
 
 def binance_daily_closes(coin: str, start=(2019, 4)) -> dict:
@@ -65,14 +67,14 @@ def binance_daily_closes(coin: str, start=(2019, 4)) -> dict:
     return out
 
 
-def collect_observations():
+def collect_observations(dte_lo, dte_hi):
     oi = pickle.loads(OI_PKL.read_bytes())
     px = {c: binance_daily_closes(c) for c in ("BTC", "ETH")}
     obs = []
     for date_iso in sorted(oi):
         for coin, book in oi[date_iso].items():
             cands = {e: v for e, v in book["by_expiry"].items()
-                     if DTE_LO <= v["dte"] <= DTE_HI and v["strikes"] and v["oi"] > 0}
+                     if dte_lo <= v["dte"] <= dte_hi and v["strikes"] and v["oi"] > 0}
             if not cands:
                 continue
             exp_ms, dom = max(cands.items(), key=lambda kv: kv[1]["oi"])
@@ -97,9 +99,9 @@ def _norm_cdf(x):
     return 0.5 * (1 + math.erf(x / math.sqrt(2)))
 
 
-def report(obs):
+def report(obs, band_label=""):
     n = len(obs)
-    print(f"pin pre-test: {n} month x coin observations "
+    print(f"[{band_label}] {n} month x coin observations "
           f"({sum(1 for o in obs if o['coin'] == 'BTC')} BTC / "
           f"{sum(1 for o in obs if o['coin'] == 'ETH')} ETH), "
           f"{min(o['date'] for o in obs)} .. {max(o['date'] for o in obs)}")
@@ -125,13 +127,20 @@ def report(obs):
         med_dr = drs[len(drs) // 2] if drs else float("nan")
         print(f"  {label:6} n={m:3d} | hit rate {hits}/{m} = {hits/m:.0%} (p={p_hit:.3f}) | "
               f"OLS beta {beta:+.2f} (t={tb:+.2f}) | median |dist-to-pin| ratio {med_dr:.2f}")
-    print("\n  read: hit>50% + beta>0 + ratio<1 TOGETHER would suggest pull toward the pin.")
-    print("  Caveats: month-start OI (weak form), BTC/ETH correlated, no fee/tradability claim.")
+    print("  read: beta>0 => spot pulled TOWARD pin, beta<0 => REPELLED. The hit-rate p uses a 50% "
+          "null that crypto positive drift + gap-sign asymmetry violate — lean on beta/t, not hit p.")
+    print("  caveats: month-start OI (weak form), BTC/ETH correlated (effective n < printed), no fee claim.")
 
 
 if __name__ == "__main__":
-    obs = collect_observations()
-    if not obs:
-        print("no observations — run scripts/tardis_free_snapshots.py first")
-    else:
-        report(obs)
+    if not OI_PKL.exists():
+        print("no OI dataset — run scripts/tardis_free_snapshots.py first")
+        sys.exit(1)
+    print("=== max-pain pin pre-test across DTE bands (reproduces docs/step0-free-data-pretest.md) ===\n")
+    for band_label, lo, hi in BANDS:
+        obs = collect_observations(lo, hi)
+        if obs:
+            report(obs, band_label)
+        else:
+            print(f"[{band_label}] no observations")
+        print()

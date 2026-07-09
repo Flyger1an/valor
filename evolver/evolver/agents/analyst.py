@@ -130,6 +130,15 @@ def _llm_raw_decide(sig: Signal, ctx: dict, risk_params: dict, limits: RiskLimit
                                limits.capital * limits.max_position_pct, 0.0)
         out["confidence"] = _num(out.get("confidence", 0.0), 0.0, 1.0, 0.0)
         out.setdefault("direction", "long_spread" if sig.zscore < 0 else "short_spread")
+        # the exit object is consumed downstream (shadow tick reads exit.max_hold_hours), so it is
+        # untrusted like the rest: coerce to a dict and its hold to a finite number (None -> caller
+        # falls back to the convergence horizon). A raw "exit":"soon" or {"max_hold_hours":"24h"}
+        # would otherwise crash the tick at the .get()/float() site.
+        ex = out.get("exit")
+        ex = ex if isinstance(ex, dict) else {}
+        if "max_hold_hours" in ex:
+            ex["max_hold_hours"] = _num(ex.get("max_hold_hours"), 0.0, 1e4, None)
+        out["exit"] = ex
     except Exception:
         return None   # ANY weirdness -> visible deterministic fallback, never a crashed tick
     return _apply_calibration(out, calib, sig.type)
