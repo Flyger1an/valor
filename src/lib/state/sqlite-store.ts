@@ -124,6 +124,7 @@ export class SqliteStateStore implements StateStore {
     const sortino = cols.find((col) => col.name === "sortino");
     if (!sortino || sortino.notnull === 0) return; // table absent or already nullable — no-op
     db.exec(`
+      DROP TABLE IF EXISTS backtest_runs_new;
       CREATE TABLE backtest_runs_new (
         id TEXT PRIMARY KEY, strategy_name TEXT NOT NULL, started_at TEXT NOT NULL,
         ended_at TEXT NOT NULL, starting_cash_usd REAL NOT NULL, ending_equity_usd REAL NOT NULL,

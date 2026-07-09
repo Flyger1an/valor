@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -109,6 +109,39 @@ describe("sqlite state store", () => {
     const restored = new SqliteStateStore(path);
     expect(restored.read().backtest?.sortino).toBeNull(); // round-trips via report_json
     restored.close();
+  });
+
+  it("recovers when the sortino migration temp table already exists", () => {
+    const path = tempDbPath();
+    const db = new DatabaseSync(path);
+    for (const migration of ["0001_initial.sql", "0002_durable_state.sql"]) {
+      db.exec(
+        readFileSync(
+          join(process.cwd(), "src", "db", "migrations", migration),
+          "utf8",
+        ),
+      );
+    }
+    db.exec("CREATE TABLE backtest_runs_new (id TEXT PRIMARY KEY)");
+    db.close();
+
+    const store = new SqliteStateStore(path);
+    expect(() => store.read()).not.toThrow();
+    store.close();
+
+    const migrated = new DatabaseSync(path);
+    const temp = migrated
+      .prepare("SELECT name FROM sqlite_master WHERE name = 'backtest_runs_new'")
+      .get();
+    const sortino = (
+      migrated.prepare("PRAGMA table_info(backtest_runs)").all() as Array<{
+        name: string;
+        notnull: number;
+      }>
+    ).find((col) => col.name === "sortino");
+    expect(temp).toBeUndefined();
+    expect(sortino?.notnull).toBe(0);
+    migrated.close();
   });
 });
 
