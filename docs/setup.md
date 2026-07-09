@@ -32,6 +32,7 @@ The MVP defaults to sample data. Leave `ENABLE_PUBLIC_MARKET_FETCH` absent or `f
 - `VALOR_SESSION_TTL_SECONDS`: Browser session lifetime. Defaults to 12 hours.
 - `VALOR_REQUIRE_BROWSER_AUTH`: Set to `true` to force browser login in local development.
 - `VALOR_PUBLIC_READ_APIS`: Defaults to protected read APIs in production. Set to `true` only behind private network controls when scripts must read health/status/evidence endpoints without the ops header.
+- `VALOR_EVOLVER_EVIDENCE_DIR`: Optional directory containing live Evolver soak ledgers, such as `shadow_analyst_ledger.jsonl`, `research_ledger.jsonl`, and `sim_calibration.json`. When set, v0.2 imports the soak as external evidence for readiness and `/api/ops/evolver-evidence`.
 - `ENABLE_PUBLIC_MARKET_FETCH`: `false`/absent uses sample fixtures; `coingecko` uses CoinGecko spot data; `true`/`public`/`live` uses the broader public connector.
 - `ENABLE_LIVE_TRADING`: Must be `true` before any future executor can even be evaluated.
 - `REQUIRE_MANUAL_LIVE_CONFIRMATION`: Defaults to `true`.

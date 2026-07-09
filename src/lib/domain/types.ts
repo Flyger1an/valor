@@ -551,6 +551,81 @@ export interface TinyLiveReadinessBlocker {
   evidence: string;
 }
 
+export type EvolverEvidenceStatus =
+  | "not_configured"
+  | "empty"
+  | "healthy"
+  | "watch"
+  | "blocked";
+
+export interface EvolverEvidenceIssue {
+  code: string;
+  severity: "info" | "warning" | "critical";
+  message: string;
+  evidence: string;
+}
+
+export interface EvolverResearchLoopSummary {
+  name: string;
+  cycleCount: number;
+  surfacedCount: number;
+  firstTimestamp?: string;
+  lastTimestamp?: string;
+  lastSummary?: string;
+  lastSurfacedSummary?: string;
+  familyCounts: Array<{
+    family: string;
+    count: number;
+  }>;
+}
+
+export interface EvolverShadowSummary {
+  eventCount: number;
+  closedTradeCount: number;
+  openPositionCount: number;
+  equityUsd?: number;
+  startingEquityUsd: number;
+  reportedPnlUsd?: number;
+  approximatedClosedPnlUsd: number;
+  approximatedSimPnlUsd: number;
+  winRatePct: number;
+  convergenceRatePct: number;
+  averageShadowPnlPct: number;
+  medianShadowPnlPct: number;
+  minimumShadowPnlPct: number;
+  maximumShadowPnlPct: number;
+  lastClosedAt?: string;
+}
+
+export interface EvolverCalibrationSummary {
+  sampleSize: number;
+  statedConfidenceMean?: number;
+  realizedConvergenceRate?: number;
+  meanDivergencePct?: number;
+  convergenceScale?: number;
+  version?: string;
+  updatedAt?: string;
+  status: "unknown" | "calibrated" | "overconfident";
+}
+
+export interface EvolverEvidenceReport {
+  id: string;
+  generatedAt: string;
+  status: EvolverEvidenceStatus;
+  configured: boolean;
+  sourceLabel: string;
+  summary: string;
+  evidenceDays: number;
+  firstTimestamp?: string;
+  lastTimestamp?: string;
+  totalResearchCycles: number;
+  surfacedCandidateCount: number;
+  shadow?: EvolverShadowSummary;
+  calibration?: EvolverCalibrationSummary;
+  researchLoops: EvolverResearchLoopSummary[];
+  issues: EvolverEvidenceIssue[];
+}
+
 export interface TinyLiveReadinessCandidate {
   kind: SignalKind;
   status: EdgeScoreboardStatus;

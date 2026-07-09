@@ -418,6 +418,7 @@ h3 {
 .alerts-grid,
 .analyst-grid,
 .scoreboard-grid,
+.evolver-grid,
 .execution-grid,
 .runbook-grid,
 .readiness-grid {
@@ -1152,6 +1153,7 @@ h3 {
     .alerts-grid,
     .analyst-grid,
     .scoreboard-grid,
+    .evolver-grid,
     .execution-grid,
     .runbook-grid,
     .readiness-grid,
@@ -1194,6 +1196,7 @@ h3 {
     .backtest-grid,
     .paper-grid,
     .scoreboard-grid,
+    .evolver-grid,
     .execution-grid,
     .runbook-grid,
     .readiness-grid,

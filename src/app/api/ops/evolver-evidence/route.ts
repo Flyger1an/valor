@@ -7,15 +7,21 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   const blocked = requireOpsAuth(request, {
     access: "read",
-    rateLimit: { scope: "ops.readiness", limit: 120, windowMs: 60_000 },
+    rateLimit: { scope: "ops.evolver-evidence", limit: 120, windowMs: 60_000 },
   });
   if (blocked) return blocked;
 
   const state = await buildDashboardState();
 
-  return NextResponse.json({
-    ok: true,
-    readiness: state.tinyLiveReadiness,
-    evolverEvidence: state.evolverEvidence,
-  });
+  return NextResponse.json(
+    {
+      ok: true,
+      evolverEvidence: state.evolverEvidence,
+    },
+    {
+      headers: {
+        "cache-control": "no-store",
+      },
+    },
+  );
 }

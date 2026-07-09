@@ -8,7 +8,12 @@ export type OperatorEvidenceDecision =
   | "candidate_review";
 
 export interface OperatorEvidenceBlocker {
-  source: "readiness" | "runbook" | "system_trust" | "execution";
+  source:
+    | "readiness"
+    | "runbook"
+    | "system_trust"
+    | "execution"
+    | "external_evidence";
   code: string;
   severity: "info" | "warning" | "critical";
   message: string;
@@ -44,6 +49,7 @@ export interface OperatorEvidencePacket {
   evidence: {
     paper: string;
     edgeScoreboard: string;
+    evolverSoak: string;
     topSignalFamilies: string[];
     backtest: string;
   };
@@ -93,6 +99,7 @@ export function buildOperatorEvidencePacket(
     evidence: {
       paper: `${state.paper.positions.length} open position(s), ${state.paper.trades.length} ledger event(s), daily PnL ${formatUsd(state.paper.dailyPnlUsd)}, weekly PnL ${formatUsd(state.paper.weeklyPnlUsd)}.`,
       edgeScoreboard: `${state.edgeScoreboard.rows.length} signal family row(s), ${state.edgeScoreboard.totals.ledgerEventCount} ledger event(s), total PnL ${formatUsd(state.edgeScoreboard.totals.totalPnlUsd)}.`,
+      evolverSoak: formatEvolverEvidence(state.evolverEvidence),
       topSignalFamilies: state.edgeScoreboard.rows
         .slice(0, 6)
         .map(formatScoreboardRow),
@@ -147,6 +154,7 @@ export function formatOperatorEvidenceMarkdown(
     "",
     `- Paper ledger: ${packet.evidence.paper}`,
     `- Edge scoreboard: ${packet.evidence.edgeScoreboard}`,
+    `- Evolver imported soak: ${packet.evidence.evolverSoak}`,
     `- Backtest: ${packet.evidence.backtest}`,
     "",
     "### Top Signal Families",
@@ -209,18 +217,28 @@ function collectBlockers(state: DashboardState): OperatorEvidenceBlocker[] {
       message: issue.message,
       evidence: issue.scope,
     }));
+  const externalEvidenceBlockers: OperatorEvidenceBlocker[] =
+    state.evolverEvidence.issues.map((issue) => ({
+      source: "external_evidence" as const,
+      code: issue.code,
+      severity: issue.severity,
+      message: issue.message,
+      evidence: issue.evidence,
+    }));
 
   return [
     ...readinessBlockers,
     ...runbookBlockers,
     ...trustBlockers,
     ...executionBlockers,
+    ...externalEvidenceBlockers,
   ].slice(0, 24);
 }
 
 function collectNextActions(state: DashboardState): string[] {
   const actions = [
     state.tinyLiveReadiness.memo.requiredNextEvidence,
+    evolverEvidenceAction(state),
     ...state.operationalRunbook.steps
       .filter((step) => step.status !== "ready")
       .slice(0, 5)
@@ -228,6 +246,34 @@ function collectNextActions(state: DashboardState): string[] {
   ];
 
   return uniqueNonEmpty(actions).slice(0, 8);
+}
+
+function formatEvolverEvidence(
+  report: DashboardState["evolverEvidence"],
+): string {
+  if (!report.configured) return report.summary;
+  const shadow = report.shadow
+    ? `${report.shadow.closedTradeCount} closed shadow trade(s), ${formatUsd(
+        report.shadow.reportedPnlUsd ??
+          report.shadow.approximatedClosedPnlUsd,
+      )} shadow PnL, ${report.shadow.winRatePct.toFixed(1)}% win rate`
+    : "no shadow book";
+
+  return `${report.status}: ${report.evidenceDays} imported day(s), ${shadow}, ${report.totalResearchCycles} research cycle(s), ${report.surfacedCandidateCount} surfaced candidate(s).`;
+}
+
+function evolverEvidenceAction(state: DashboardState): string {
+  const report = state.evolverEvidence;
+  if (!report.configured) {
+    return "Configure VALOR_EVOLVER_EVIDENCE_DIR on the v0.2 deployment to import live Evolver soak ledgers into readiness review.";
+  }
+  if (report.status === "blocked") {
+    return "Keep tiny-live blocked until imported Evolver shadow/calibration evidence recovers or the failed family is removed from promotion consideration.";
+  }
+  if (report.status === "watch") {
+    return "Review imported Evolver soak warnings before any candidate-review memo.";
+  }
+  return "";
 }
 
 function decisionFromReadiness(

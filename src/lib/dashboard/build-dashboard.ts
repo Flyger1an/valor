@@ -13,6 +13,7 @@ import { evaluateDataQuality } from "@/lib/data/quality";
 import type { AuditEvent } from "@/lib/domain/types";
 import { applyEdgeScoreboardPolicy } from "@/lib/edge/policy";
 import { reconcileDryRunAttempts } from "@/lib/execution/dry-run-executor";
+import { loadEvolverEvidenceReport } from "@/lib/evidence/evolver-import";
 import {
   evaluateLiveTradeRequest,
   readLiveTradingSettings,
@@ -70,6 +71,10 @@ export async function buildDashboardState() {
     label: connector.label,
   });
   const edgeScoreboard = edgePolicy.scoreboard;
+  const evolverEvidence = loadEvolverEvidenceReport(
+    undefined,
+    new Date(data.generatedAt),
+  );
   const systemTrust = evaluateSystemTrust({
     dataQuality,
     risk,
@@ -109,6 +114,7 @@ export async function buildDashboardState() {
     paper,
     executionReconciliation,
     operationalRunbook,
+    evolverEvidence,
     now: new Date(data.generatedAt),
   });
   const alertEvents =
@@ -190,6 +196,7 @@ export async function buildDashboardState() {
       },
     ],
     edgeScoreboard,
+    evolverEvidence,
     edgePolicy: edgePolicy.decision,
     systemTrust,
     liveSettings,

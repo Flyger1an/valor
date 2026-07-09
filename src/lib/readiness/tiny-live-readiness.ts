@@ -2,6 +2,7 @@ import type {
   DataQualityReport,
   EdgeScoreboard,
   EdgeScoreboardRow,
+  EvolverEvidenceReport,
   ExecutionReconciliationReport,
   OperationalRunbookReport,
   PaperPortfolio,
@@ -23,6 +24,7 @@ export function evaluateTinyLiveReadiness(input: {
   paper: PaperPortfolio;
   executionReconciliation: ExecutionReconciliationReport;
   operationalRunbook: OperationalRunbookReport;
+  evolverEvidence?: EvolverEvidenceReport;
   now?: Date;
 }): TinyLiveReadinessReport {
   const generatedAt = (input.now ?? new Date()).toISOString();
@@ -37,6 +39,7 @@ export function evaluateTinyLiveReadiness(input: {
     input.executionReconciliation,
     input.operationalRunbook,
   );
+  addEvolverEvidenceBlockers(blockers, input.evolverEvidence);
 
   const candidate = candidateRow ? candidateFromRow(candidateRow) : undefined;
   const criticalBlockerCount = blockers.filter(
@@ -72,6 +75,33 @@ export function evaluateTinyLiveReadiness(input: {
       requiredNextEvidence: requiredNextEvidence(status, blockers),
     },
   };
+}
+
+function addEvolverEvidenceBlockers(
+  blockers: TinyLiveReadinessBlocker[],
+  evolverEvidence: EvolverEvidenceReport | undefined,
+) {
+  if (!evolverEvidence?.configured) return;
+
+  if (evolverEvidence.status === "empty") {
+    blockers.push({
+      code: "evolver-evidence-empty",
+      severity: "warning",
+      message: "Configured Evolver evidence import has no usable soak records.",
+      evidence: evolverEvidence.summary,
+    });
+    return;
+  }
+
+  for (const issue of evolverEvidence.issues) {
+    if (issue.severity === "info") continue;
+    blockers.push({
+      code: issue.code,
+      severity: issue.severity,
+      message: issue.message,
+      evidence: issue.evidence,
+    });
+  }
 }
 
 function addTrustBlockers(

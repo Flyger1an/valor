@@ -5,6 +5,7 @@ import type {
   DataQualityReport,
   EdgeScoreboard,
   EdgeScoreboardRow,
+  EvolverEvidenceReport,
   MarketRiskState,
   PaperPortfolio,
   PaperTrade,
@@ -88,6 +89,33 @@ describe("tiny-live readiness", () => {
     expect(report.status).toBe("candidate_review");
     expect(report.candidate?.kind).toBe("funding_carry");
     expect(report.memo.conclusion).toContain("not execution approval");
+  });
+
+  it("blocks candidate review when imported Evolver soak is negative", () => {
+    const paper = paperWithClosedTrades(24);
+    const dataQuality = healthyDataQuality();
+    const report = evaluateTinyLiveReadiness({
+      dataQuality,
+      systemTrust: evaluateSystemTrust({
+        dataQuality,
+        risk: healthyRisk(),
+        paper,
+        now,
+      }),
+      edgeScoreboard: scoreboardWithCandidate(),
+      paper,
+      executionReconciliation: reconcileDryRunAttempts([], now),
+      operationalRunbook: readyRunbook(dataQuality, paper),
+      evolverEvidence: blockedEvolverEvidence(),
+      now,
+    });
+
+    expect(report.status).toBe("no_go");
+    expect(
+      report.blockers.some(
+        (blocker) => blocker.code === "evolver-shadow-negative-pnl",
+      ),
+    ).toBe(true);
   });
 });
 
@@ -229,5 +257,57 @@ function tradeAtDay(day: number, index: number): PaperTrade {
     reason: "readiness fixture",
     realizedPnlUsd: 24,
     fundingUsd: 4,
+  };
+}
+
+function blockedEvolverEvidence(): EvolverEvidenceReport {
+  return {
+    id: "evolver-evidence:test",
+    generatedAt: now.toISOString(),
+    status: "blocked",
+    configured: true,
+    sourceLabel: "test-evolver",
+    summary: "blocked imported evidence",
+    evidenceDays: 15,
+    firstTimestamp: "2026-06-24T16:44:00.000Z",
+    lastTimestamp: "2026-07-09T12:31:00.000Z",
+    totalResearchCycles: 355,
+    surfacedCandidateCount: 0,
+    shadow: {
+      eventCount: 73,
+      closedTradeCount: 73,
+      openPositionCount: 6,
+      equityUsd: 95_277,
+      startingEquityUsd: 100_000,
+      reportedPnlUsd: -4_723,
+      approximatedClosedPnlUsd: -1_620,
+      approximatedSimPnlUsd: 2_411,
+      winRatePct: 43.84,
+      convergenceRatePct: 39.73,
+      averageShadowPnlPct: -0.0647,
+      medianShadowPnlPct: -0.077,
+      minimumShadowPnlPct: -1.764,
+      maximumShadowPnlPct: 1.07,
+      lastClosedAt: "2026-07-09T07:20:00.000Z",
+    },
+    calibration: {
+      sampleSize: 73,
+      statedConfidenceMean: 0.7906,
+      realizedConvergenceRate: 0.3973,
+      meanDivergencePct: -0.2097,
+      convergenceScale: 0.6474,
+      version: "calib-test",
+      updatedAt: "2026-07-09T07:20:00.000Z",
+      status: "overconfident",
+    },
+    researchLoops: [],
+    issues: [
+      {
+        code: "evolver-shadow-negative-pnl",
+        severity: "critical",
+        message: "Imported shadow evidence is net negative.",
+        evidence: "-$4,723.00 PnL across 73 closed shadow trade(s).",
+      },
+    ],
   };
 }

@@ -91,6 +91,10 @@ export default async function Home() {
             <LineChart size={16} aria-hidden="true" />
             Edge Scoreboard
           </a>
+          <a href="#evolver">
+            <Activity size={16} aria-hidden="true" />
+            Evolver Soak
+          </a>
           <a href="#execution">
             <ClipboardCheck size={16} aria-hidden="true" />
             Dry Run
@@ -299,6 +303,15 @@ export default async function Home() {
             subtitle={`${state.edgeScoreboard.rows.length} signal families; ${state.edgeScoreboard.totals.underperformingCount} underperforming`}
           />
           <EdgeScoreboardPanel scoreboard={state.edgeScoreboard} />
+        </section>
+
+        <section className="section-band" id="evolver">
+          <SectionHeader
+            icon={<Activity size={18} aria-hidden="true" />}
+            title="Evolver Soak"
+            subtitle={`${state.evolverEvidence.status}; ${state.evolverEvidence.evidenceDays} imported day${state.evolverEvidence.evidenceDays === 1 ? "" : "s"}; ${state.evolverEvidence.totalResearchCycles} research cycles`}
+          />
+          <EvolverEvidencePanel report={state.evolverEvidence} />
         </section>
 
         <section className="section-band" id="execution">
@@ -736,6 +749,165 @@ function EdgeScoreboardPanel({ scoreboard }: { scoreboard: EdgeScoreboard }) {
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function EvolverEvidencePanel({
+  report,
+}: {
+  report: Awaited<ReturnType<typeof buildDashboardState>>["evolverEvidence"];
+}) {
+  const shadowPnl =
+    report.shadow?.reportedPnlUsd ??
+    report.shadow?.approximatedClosedPnlUsd ??
+    0;
+  const calibration = report.calibration;
+
+  return (
+    <div className="evolver-grid">
+      <div className="panel">
+        <h3>
+          <Activity size={15} aria-hidden="true" />
+          Import Status
+        </h3>
+        <p className="risk-explanation">{report.summary}</p>
+        <div className="mini-metrics">
+          <div className="mini-metric">
+            <span>Status</span>
+            <strong className={evolverEvidenceStatusClass(report.status)}>
+              {report.status.replaceAll("_", " ")}
+            </strong>
+          </div>
+          <div className="mini-metric">
+            <span>Window</span>
+            <strong>{report.evidenceDays}d</strong>
+          </div>
+          <div className="mini-metric">
+            <span>Cycles</span>
+            <strong>{report.totalResearchCycles}</strong>
+          </div>
+          <div className="mini-metric">
+            <span>Surfaced</span>
+            <strong>{report.surfacedCandidateCount}</strong>
+          </div>
+        </div>
+      </div>
+      <div className="panel">
+        <h3>Shadow Book</h3>
+        {report.shadow ? (
+          <div className="status-list">
+            <LimitRow label="Closed" value={report.shadow.closedTradeCount.toString()} />
+            <LimitRow label="Open" value={report.shadow.openPositionCount.toString()} />
+            <LimitRow label="Equity" value={money(report.shadow.equityUsd ?? report.shadow.startingEquityUsd)} />
+            <LimitRow label="PnL" value={signedMoney(shadowPnl)} />
+            <LimitRow label="Win Rate" value={`${report.shadow.winRatePct.toFixed(1)}%`} />
+            <LimitRow
+              label="Convergence"
+              value={`${report.shadow.convergenceRatePct.toFixed(1)}%`}
+            />
+          </div>
+        ) : (
+          <p className="muted">No imported shadow book.</p>
+        )}
+      </div>
+      <div className="panel">
+        <h3>Calibration</h3>
+        {calibration ? (
+          <div className="status-list">
+            <LimitRow label="Status" value={calibration.status} />
+            <LimitRow label="Sample" value={calibration.sampleSize.toString()} />
+            <LimitRow
+              label="Stated"
+              value={
+                calibration.statedConfidenceMean === undefined
+                  ? "n/a"
+                  : `${(calibration.statedConfidenceMean * 100).toFixed(1)}%`
+              }
+            />
+            <LimitRow
+              label="Realized"
+              value={
+                calibration.realizedConvergenceRate === undefined
+                  ? "n/a"
+                  : `${(calibration.realizedConvergenceRate * 100).toFixed(1)}%`
+              }
+            />
+            <LimitRow
+              label="Scale"
+              value={
+                calibration.convergenceScale === undefined
+                  ? "n/a"
+                  : calibration.convergenceScale.toFixed(3)
+              }
+            />
+          </div>
+        ) : (
+          <p className="muted">No imported calibration file.</p>
+        )}
+      </div>
+      <div className="panel full-width">
+        <h3>Research Loops</h3>
+        {report.researchLoops.length === 0 ? (
+          <p className="muted">No imported research loops.</p>
+        ) : (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Loop</th>
+                  <th>Cycles</th>
+                  <th>Surfaced</th>
+                  <th>Last</th>
+                  <th>Families</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.researchLoops.map((loop) => (
+                  <tr key={loop.name}>
+                    <td className="mono strong">{loop.name}</td>
+                    <td>{loop.cycleCount}</td>
+                    <td>{loop.surfacedCount}</td>
+                    <td>{loop.lastSummary ?? "n/a"}</td>
+                    <td>
+                      {loop.familyCounts
+                        .slice(0, 4)
+                        .map((family) => `${family.family}:${family.count}`)
+                        .join(" / ") || "n/a"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      <div className="panel full-width">
+        <h3>Bridge Issues</h3>
+        {report.issues.length === 0 ? (
+          <p className="muted">No imported-evidence issues.</p>
+        ) : (
+          <div className="runbook-steps">
+            {report.issues.slice(0, 8).map((issue) => (
+              <article
+                key={issue.code}
+                className={`runbook-step runbook-step-${issue.severity}`}
+              >
+                <div className="runbook-step-header">
+                  <div>
+                    <span className="tag">{issue.severity}</span>
+                    <h3>{issue.code.replaceAll("_", " ")}</h3>
+                  </div>
+                </div>
+                <div className="runbook-step-body">
+                  <RunbookField label="Issue" value={issue.message} />
+                  <RunbookField label="Evidence" value={issue.evidence} />
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1506,6 +1678,17 @@ function readinessStatusClass(
   if (status === "candidate_review") return "good-text";
   if (status === "watchlist") return "severity-pill-watch";
   return "bad-text";
+}
+
+function evolverEvidenceStatusClass(
+  status: Awaited<
+    ReturnType<typeof buildDashboardState>
+  >["evolverEvidence"]["status"],
+): string {
+  if (status === "healthy") return "good-text";
+  if (status === "watch") return "severity-pill-watch";
+  if (status === "blocked") return "bad-text";
+  return "muted";
 }
 
 function riskTone(state: RiskState): "good" | "bad" | "warn" | "info" | "neutral" {

@@ -32,6 +32,13 @@ Scheduler and soak containers read `VALOR_OPS_SECRET` from `.env` and send it
 as `X-Valor-Ops-Secret`; browser-triggered operator actions use the session
 cookie after login.
 
+To let v0.2 score the older Evolver soak, mount the live Evolver evidence
+directory read-only into the app container and set `VALOR_EVOLVER_EVIDENCE_DIR`
+to that in-container path. The importer looks for files such as
+`shadow_analyst_ledger.jsonl`, `research_ledger.jsonl`,
+`gate_research_ledger.jsonl`, `fx_research_ledger.jsonl`,
+`vol_research_ledger.jsonl`, and `sim_calibration.json`.
+
 ## Health
 
 ```bash
