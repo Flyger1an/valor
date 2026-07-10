@@ -49,6 +49,7 @@ from evolver.optimize.funding_session import run_funding_session as RFS  # noqa:
 from evolver.optimize.fx_carry import run_fx_carry as RFC  # noqa: E402
 from evolver.optimize.fx_session import run_fx_session as RFXS  # noqa: E402
 from evolver.optimize.liquidation_print import run_liquidation_print as RLP  # noqa: E402
+from evolver.optimize.intraday_reversion import run_intraday_reversion as RIR  # noqa: E402
 from evolver.optimize.liquidation_reversion import (LIQ_SLIP_BPS,  # noqa: E402
                                                     run_liquidation_reversion as RLR)
 from evolver.optimize.oi_reversion import run_oi_reversion as ROI  # noqa: E402
@@ -462,6 +463,12 @@ SPACE_LIQ = {"wick_atr": (2.5, 4.5, float), "hold_hours": (3.0, 18.0, int), "bod
 # funding-conditioned variant: funding_min=0 recovers base liquidation, so the search can only match-
 # or-beat it in-sample; the OOS gate + DSR (the extra DOF costs a trial) judge if conditioning earns it.
 SPACE_LIQ_FUND = {**SPACE_LIQ, "funding_min": (0.0, 0.003, float)}
+# intraday reversion: fade a coin's own lb-hour move on hourly bars. Higher-frequency than the daily
+# families, so the 2x-cost stress is the binding test (the intraday fee wall). entry_z CAPPED at 1.6
+# (like SPACE_OI's threshold cap): a 2sigma+ fade is too RARE to fill the 28% holdout (n<min_n), so the
+# family must fade MODERATE moves to be gate-testable — which also correctly maximizes fee exposure.
+SPACE_IR = {"lookback": (3.0, 8.0, int), "entry_z": (1.0, 1.6, float),
+            "hold_hours": (2.0, 6.0, int), "vol_window": (72.0, 240.0, int)}
 # holding capped at 15: on ~3yr of DAILY data a longer hold leaves too few OOS rebalances to validate
 # (the search otherwise picks a 36-day hold for low turnover -> n=5 holdout -> meaningless). Faster
 # trend only, but that's the honest limit of what daily history can confirm.
@@ -515,6 +522,11 @@ CRYPTO_FAMILIES = [
      "slip": LIQ_SLIP_BPS, "stab": ("wick_atr", "hold_hours", "atr_window"), "min_cov": 24 * 60},
     {"name": "liquidation_funding", "refresh": refresh_hourly_funding, "bt": RLR, "space": SPACE_LIQ_FUND,
      "fee": 8.0, "slip": LIQ_SLIP_BPS, "stab": ("wick_atr", "hold_hours", "funding_min"), "min_cov": 24 * 60},
+    # intraday_reversion (day-trading-lite, #6): fade the coin's own sharp N-hour move on hourly OHLC.
+    # Trades hours not days -> min_n is easy, but the 2x-cost stress is brutal — the honest fee-wall test
+    # for whether an intraday retail edge survives frictions. Reuses refresh_hourly (OKX/Gate hourly).
+    {"name": "intraday_reversion", "refresh": refresh_hourly, "bt": RIR, "space": SPACE_IR, "fee": 5.0,
+     "slip": 6.0, "stab": ("lookback", "entry_z", "hold_hours"), "min_cov": 24 * 60, "min_n": 30},
     # stability tests only CONTINUOUS params — entry_phase is a categorical selector (a seasonality
     # edge legitimately lives at one phase), so perturbing it would wrongly fail the robustness check.
     {"name": "funding_session", "refresh": refresh_hourly_funding, "bt": RFS, "space": SPACE_FSESS,
