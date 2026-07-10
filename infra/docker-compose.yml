@@ -2,13 +2,20 @@
 # evolver-api / -loop / -bot / dashboard share one `evolver_data` volume so the ledger,
 # audit log, and kill-switch flag are visible across all processes (the kill switch MUST
 # be shared, or /kill in the bot won't halt the loop).
+# bound container stdout logs — no rotation existed anywhere (latent disk-fill risk, audited 2026-07-10)
+x-logging: &default-logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "3"}
+
 services:
   redis:
+    logging: *default-logging
     image: redis:7-alpine
     ports: ["127.0.0.1:6379:6379"]   # localhost only — never expose an unauthenticated datastore
     restart: unless-stopped
 
   postgres:
+    logging: *default-logging
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: valor
@@ -19,6 +26,7 @@ services:
     restart: unless-stopped
 
   mlflow:
+    logging: *default-logging
     image: ghcr.io/mlflow/mlflow:v2.16.2
     command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:////mlflow/mlflow.db
     ports: ["127.0.0.1:5001:5000"]   # localhost only (MLflow has public-RCE history); tunnel to view
@@ -26,6 +34,7 @@ services:
     restart: unless-stopped
 
   evolver-api:
+    logging: *default-logging
     build: { context: .., dockerfile: infra/Dockerfile.evolver }
     env_file: [../evolver/.env]
     environment:
@@ -46,6 +55,7 @@ services:
     restart: unless-stopped
 
   evolver-loop:            # Redis Streams consumer -> inner loop
+    logging: *default-logging
     build: { context: .., dockerfile: infra/Dockerfile.evolver }
     command: ["python", "-m", "evolver.bus.redis_stream"]
     working_dir: /app/evolver
@@ -67,6 +77,7 @@ services:
     restart: unless-stopped
 
   evolver-bot:             # Telegram Ops + Observer
+    logging: *default-logging
     build: { context: .., dockerfile: infra/Dockerfile.evolver }
     command: ["python", "-m", "evolver.telegram.bot"]
     working_dir: /app/evolver
@@ -88,6 +99,7 @@ services:
     restart: unless-stopped
 
   dashboard:
+    logging: *default-logging
     build: { context: .., dockerfile: infra/Dockerfile.evolver }
     # package is at /app/evolver/evolver/... so cwd must be /app/evolver for this rel path
     command: ["streamlit", "run", "evolver/dashboard/app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false"]
@@ -101,6 +113,7 @@ services:
     restart: unless-stopped
 
   shadow-runner:           # forward PAPER validation of the liquidation basket — ZERO orders
+    logging: *default-logging
     build: { context: .., dockerfile: infra/Dockerfile.evolver }
     command: ["python", "scripts/shadow_runner.py", "--loop", "3600"]   # tick hourly
     working_dir: /app/evolver
@@ -112,6 +125,7 @@ services:
     restart: unless-stopped           # auto-recover on crash AND on host reboot
 
   shadow-analyst:          # v2 — shadow the ANALYST LOOP's live decisions vs the sim. ZERO orders
+    logging: *default-logging
     build: { context: .., dockerfile: infra/Dockerfile.evolver }
     command: ["python", "scripts/shadow_analyst.py", "--loop", "3600"]   # tick hourly
     working_dir: /app/evolver
@@ -128,6 +142,7 @@ services:
     restart: unless-stopped
 
   research-runner:         # autonomous gated DISCOVERY loop — PROPOSES candidates, promotes NOTHING
+    logging: *default-logging
     build: { context: .., dockerfile: infra/Dockerfile.evolver }
     command: ["python", "scripts/research_tick.py", "--loop", "3600"]     # hourly (CONFIRM gate still
     working_dir: /app/evolver                                              # requires N-cycle survival)
@@ -150,6 +165,7 @@ services:
     restart: unless-stopped           # first cycle backfills OKX (~2-3min), then refreshes incrementally
 
   crypto-shadow-runner:    # forward track record of PROMOTED crypto candidates — ZERO orders
+    logging: *default-logging
     build: { context: .., dockerfile: infra/Dockerfile.evolver }
     command: ["python", "scripts/crypto_shadow.py", "--loop", "3600"]
     working_dir: /app/evolver
@@ -167,6 +183,7 @@ services:
     restart: unless-stopped
 
   gate-research-runner:    # SECOND crypto venue (Gate.io) — SAME engine + crypto families, separate
+    logging: *default-logging
     build: { context: .., dockerfile: infra/Dockerfile.evolver }   # state/queue/multiplicity (cross-venue)
     command: ["python", "scripts/research_tick.py", "--loop", "3600"]
     working_dir: /app/evolver
@@ -190,6 +207,7 @@ services:
     restart: unless-stopped
 
   gate-shadow-runner:      # forward track of PROMOTED Gate candidates — ZERO orders
+    logging: *default-logging
     build: { context: .., dockerfile: infra/Dockerfile.evolver }
     command: ["python", "scripts/crypto_shadow.py", "--loop", "3600"]
     working_dir: /app/evolver
@@ -207,6 +225,7 @@ services:
     restart: unless-stopped
 
   fx-research-runner:      # FX hunt — SAME engine + gate, separate registry/state so its cross-family
+    logging: *default-logging
     build: { context: .., dockerfile: infra/Dockerfile.evolver }   # multiplicity is counted on its own
     command: ["python", "scripts/research_tick.py", "--loop", "3600"]
     working_dir: /app/evolver
@@ -227,6 +246,7 @@ services:
     restart: unless-stopped           # first cycle backfills OANDA history, then refreshes incrementally
 
   fx-shadow-runner:        # forward track record of PROMOTED FX candidates — ZERO orders
+    logging: *default-logging
     build: { context: .., dockerfile: infra/Dockerfile.evolver }
     command: ["python", "scripts/fx_shadow.py", "--loop", "3600"]
     working_dir: /app/evolver
@@ -239,6 +259,7 @@ services:
     restart: unless-stopped
 
   deribit-research-runner: # Deribit options hunt — two families, own multiplicity universe. vol_premium
+    logging: *default-logging
     build: { context: .., dockerfile: infra/Dockerfile.evolver }   # (#4) REJECTED on 2.7yr history, soaks
     command: ["python", "scripts/research_tick.py", "--loop", "3600"]   # forward; options_pin (#5) max-pain
     working_dir: /app/evolver                              # forced-flow forward-ACCUMULATES daily snapshots
@@ -257,6 +278,7 @@ services:
     restart: unless-stopped
 
   signal-feed:             # LIVE RV signals -> Redis -> evolver-loop (runs the inner analyst loop for real)
+    logging: *default-logging
     build: { context: .., dockerfile: infra/Dockerfile.evolver }
     command: ["python", "scripts/signal_feed.py", "--loop", "1800"]   # emit every 30 min, 26 pairs
     working_dir: /app/evolver

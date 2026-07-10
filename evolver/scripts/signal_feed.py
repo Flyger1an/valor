@@ -24,8 +24,8 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
         _k, _v = _l.split("=", 1)
         os.environ.setdefault(_k.strip(), _v.strip())
 
-from evolver.data.okx import half_life_hours, mean, okx_candles_ohlc, std  # noqa: E402
-from evolver.data.stats import augmented_dickey_fuller_test  # noqa: E402
+from evolver.core.pair_signal import build_pair_signal  # noqa: E402  (single source: no drift vs shadow/calibration)
+from evolver.data.okx import okx_candles_ohlc  # noqa: E402
 
 STREAM = os.getenv("SIGNAL_STREAM", "valor.signals")
 EMIT_Z = float(os.getenv("FEED_EMIT_Z", "1.5"))      # emit when |z| >= this; analyst gates ~2.1σ to trade
@@ -48,36 +48,15 @@ def _now():
 
 
 def gen(a, b, closes):
-    """Live stat-arb-pair signal dict (locked contract) from the A/B ratio."""
-    ts = sorted(set(closes.get(a, {})) & set(closes.get(b, {})))
-    if len(ts) < WINDOW + 2:
-        return None
-    ratio = [closes[a][t] / closes[b][t] for t in ts if closes[b][t]]
-    win = ratio[-WINDOW:]
-    m, sd = mean(win), std(win)
-    if sd <= 0 or m <= 0:
-        return None
-    z = (ratio[-1] - m) / sd
-    rr = [win[i] / win[i - 1] - 1 for i in range(1, len(win)) if win[i - 1]]
-    vol = std(rr)
-    adf = augmented_dickey_fuller_test(win, ADF_SIGNIFICANCE)
-    stationary = adf.is_stationary
-    if REQUIRE_STATIONARY and not stationary:
-        return None
-    return {
-        "signal_id": f"{a}{b}-{ts[-1]}", "timestamp": _now(), "type": "stat_arb_pair",
-        "assets": [a, b], "zscore": round(z, 3), "spread_value": round(ratio[-1] / m - 1, 5),
-        "expected_convergence_hours": round(half_life_hours(win, 1.0, 48.0), 1),
-        "risk_score": round(min(max(vol * 25, 0.05), 0.95), 3),
-        "confidence": round(min(max(abs(z) / 3, 0.1), 0.95), 3),
-        "regime": "high_vol" if vol > 0.03 else "low_vol",
-        "metadata": {
-            "spread_stationary": stationary,
-            "adf_test_statistic": adf.test_statistic,
-            "adf_confidence": adf.confidence,
-            "feed_require_stationary": REQUIRE_STATIONARY,
-        },
-    }
+    """Live stat-arb-pair signal dict (locked contract) — delegates to the SHARED builder
+    (evolver/core/pair_signal.py) so the feed, the shadow book, and the calibration denominator
+    can never drift apart again."""
+    sig, _z = build_pair_signal(a, b, closes, window=WINDOW,
+                                adf_significance=ADF_SIGNIFICANCE,
+                                require_stationary=REQUIRE_STATIONARY)
+    if sig:
+        sig["metadata"]["feed_require_stationary"] = REQUIRE_STATIONARY
+    return sig
 
 
 def emit_pass():

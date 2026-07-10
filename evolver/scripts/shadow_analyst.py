@@ -35,9 +35,10 @@ for _l in ((ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() 
 from evolver.agents.analyst import build_fast_llm, decide_with_meta  # noqa: E402
 from evolver.config import DEFAULT_LIMITS, DEFAULT_STRATEGY  # noqa: E402
 from evolver.core.calibration import compute_calibration, write_calibration  # noqa: E402
+from evolver.core.pair_signal import build_pair_signal  # noqa: E402  (SHARED with signal_feed)
 from evolver.core.signal import Signal  # noqa: E402
 from evolver.core.sim import PerpPaperSim, TAKER_FEE_BPS, predicted_p_converge  # noqa: E402
-from evolver.data.okx import half_life_hours, mean, okx_candles_ohlc, std  # noqa: E402
+from evolver.data.okx import okx_candles_ohlc  # noqa: E402
 from evolver.obs.decisions import record_decision  # noqa: E402
 
 CAP = DEFAULT_LIMITS.capital
@@ -104,27 +105,13 @@ def _ping2():
 
 
 def _signal(a, b, closes):
-    """Build a live stat-arb-pair Signal from the A/B price ratio (z-score + OU half-life)."""
-    ts = sorted(set(closes.get(a, {})) & set(closes.get(b, {})))
-    if len(ts) < WINDOW + 2:
-        return None, None
-    ratio = [closes[a][t] / closes[b][t] for t in ts if closes[b][t]]
-    win = ratio[-WINDOW:]
-    m, sd = mean(win), std(win)
-    if sd <= 0 or m <= 0:
-        return None, None
-    z = (ratio[-1] - m) / sd
-    rr = [win[i] / win[i - 1] - 1 for i in range(1, len(win)) if win[i - 1]]
-    vol = std(rr)
-    d = {
-        "signal_id": f"{a}{b}-{ts[-1]}", "timestamp": _now(), "type": "stat_arb_pair",
-        "assets": (a, b), "zscore": round(z, 3), "spread_value": round(ratio[-1] / m - 1, 5),
-        "expected_convergence_hours": round(half_life_hours(win, 1.0, 48.0), 1),
-        "risk_score": round(min(max(vol * 25, 0.05), 0.95), 3),
-        "confidence": round(min(max(abs(z) / 3, 0.1), 0.95), 3),
-        "regime": "high_vol" if vol > 0.03 else "low_vol",
-    }
-    return Signal.from_dict(d), z
+    """Live stat-arb-pair Signal — delegates to the SHARED builder with the SAME ADF-stationarity
+    gate as the live signal feed. (Drift fix, audited 2026-07-10: this copy previously skipped the
+    ADF gate, so the shadow book — which writes the sim calibration — was measuring a different
+    signal population than the loop trades.) z is returned even when gated, so exit/convergence
+    checks on already-open positions keep working when a pair turns non-stationary mid-hold."""
+    d, z = build_pair_signal(a, b, closes, window=WINDOW)
+    return (Signal.from_dict(d) if d else None), z
 
 
 def tick():

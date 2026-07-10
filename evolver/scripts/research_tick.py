@@ -305,7 +305,12 @@ def refresh_liq_print():
             lq = V.liquidations(c)                       # contract_stats by-side (gate) / instFamily (okx)
         except Exception:
             return c, cache.get(c, {})
-        prev, merged = cache.get(c, {}), {}
+        prev = cache.get(c, {})
+        # ACCUMULATE for real: start from EVERYTHING previously captured, then overlay the fresh
+        # window. (Audited 2026-07-10: the old code rebuilt only from the current ~2000h fetch
+        # window, so hours older than the window were dropped each cycle and depth sat pinned at
+        # ~83-87d forever — the docstring's "accumulates" was broken.)
+        merged = {ts: v for ts, v in prev.items() if isinstance(v, tuple) and len(v) >= 3}
         for ts, close in cl.items():
             if ts in lq:
                 ll, sl = lq[ts]                          # fresh liquidation data this cycle
@@ -314,6 +319,9 @@ def refresh_liq_print():
             else:
                 ll, sl = 0.0, 0.0
             merged[ts] = (close, ll, sl)
+        if merged:                                       # same rolling cap as refresh_hourly (~15mo)
+            cut = max(merged) - MONTHS * 30 * 24 * 3_600_000
+            merged = {t: v for t, v in merged.items() if t >= cut}
         return c, merged
 
     with ThreadPoolExecutor(max_workers=2) as ex:

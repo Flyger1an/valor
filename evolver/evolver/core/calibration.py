@@ -50,10 +50,10 @@ _cache: dict = {}     # path -> (mtime, doc)
 _frozen: list = []    # freeze() stack — long computations pin one calibration for comparability
 
 
-def stated_confidence(entry_z: float) -> float:
-    """The signal confidence implied by |entry z| — same formula the shadow's signal builder uses
-    (shadow closes don't persist the decision's confidence, but it's reconstructable from z)."""
-    return min(max(abs(entry_z) / 3.0, 0.1), 0.95)
+# The signal confidence implied by |entry z| (legacy calibration denominator — shadow closes don't
+# persist the decision's confidence, but it's reconstructable from z). Imported from the SHARED
+# pair-signal module so the emitter, shadow book, and this denominator can never drift apart.
+from evolver.core.pair_signal import stated_confidence  # noqa: E402,F401
 
 
 def compute_calibration(closes: list, min_n: int = MIN_N, prior_weight: int = PRIOR_WEIGHT) -> dict | None:
