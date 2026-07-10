@@ -32,6 +32,34 @@ def _fetch_csv(url: str):
     return list(csv.reader(io.StringIO(z.read(z.namelist()[0]).decode())))
 
 
+def metrics_oi_day(symbol: str, date_iso: str):
+    """(close_price, oi_contracts) for one UTC day from the free daily METRICS dump (5-min rows,
+    published since 2020-09). oi = the day's LAST row's sum_open_interest (base contracts — the
+    honest positioning measure; USD value conflates price moves with position changes). close is
+    derived from the SAME row as sum_open_interest_value / sum_open_interest = the mark price at
+    ~23:55 UTC — same venue, same file, no kline fetch, sources never mixed.
+    Returns None on 404 (symbol not listed yet / dump not published) or unusable rows."""
+    url = f"{_BASE}/futures/um/daily/metrics/{symbol}/{symbol}-metrics-{date_iso}.zip"
+    try:
+        rows = _fetch_csv(url)
+    except Exception:
+        return None
+    best = None
+    for r in rows[1:]:
+        # columns: create_time, symbol, sum_open_interest, sum_open_interest_value, ...
+        if len(r) >= 4 and r[0].startswith(date_iso):
+            best = r
+    if not best:
+        return None
+    try:
+        qty, val = float(best[2]), float(best[3])
+    except ValueError:
+        return None
+    if qty <= 0 or val <= 0:
+        return None
+    return (val / qty, qty)
+
+
 def funding_history(symbol: str = "ETHUSDT", months: int = 18) -> dict:
     """{calc_time_ms: 8h_rate} of futures (UM) funding over the last `months`."""
     out = {}

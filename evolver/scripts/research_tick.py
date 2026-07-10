@@ -102,6 +102,9 @@ OI_DATA = pathlib.Path(os.getenv("EVOLVER_RESEARCH_OI", str(ROOT / ".okx_oi_data
 FUND_CARRY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_FUND_CARRY", str(ROOT / ".okx_fund_carry_dataset.pkl")))
 LIQ_PRINT = pathlib.Path(os.getenv("EVOLVER_RESEARCH_LIQ_PRINT", str(ROOT / ".okx_liq_print_dataset.pkl")))
 LIQ_DAILY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_LIQ_DAILY", str(ROOT / ".okx_liq_daily_dataset.pkl")))
+OI_DEEP = pathlib.Path(os.getenv("EVOLVER_RESEARCH_OI_DEEP", str(ROOT / ".binance_oi_deep_dataset.pkl")))
+OI_DEEP_CHUNK = int(os.getenv("EVOLVER_OI_DEEP_CHUNK", "45"))   # backfill days per selection
+OI_DEEP_FLOOR = "2020-09-01"                                    # metrics dumps begin here
 VOL_DATA = pathlib.Path(os.getenv("EVOLVER_RESEARCH_VOL", str(ROOT / ".deribit_vol_dataset.pkl")))
 OPT_FLOW = pathlib.Path(os.getenv("EVOLVER_OPT_FLOW", str(ROOT / ".deribit_optflow_dataset.pkl")))
 FX_HOURLY = pathlib.Path(os.getenv("EVOLVER_FX_HOURLY", str(ROOT / ".fx_hourly_dataset.pkl")))
@@ -342,6 +345,61 @@ def refresh_liq_print():
                 cache[c] = d
     _save(LIQ_PRINT, cache)
     return cache
+
+
+def refresh_oi_deep():
+    """DEEP daily (close, oi_contracts) from Binance's free public METRICS dumps (since 2020-09,
+    ~5.8yr) for oi_reversion_deep — vs OKX's ~180d native OI lookback. One small zip per
+    (coin, day), so the backfill is CHUNKED + RESUMABLE: each selection extends history BACKWARD by
+    OI_DEEP_CHUNK days per coin (parallel fetches) and tops up recent days. A coin whose whole
+    backfill chunk 404s gets a floor marker (listing date reached) and stops probing. Close and OI
+    come from the same file/venue (close = oi_value/oi_qty = Binance mark) — sources never mixed."""
+    cache = pickle.loads(OI_DEEP.read_bytes()) if OI_DEEP.exists() else {}
+    from evolver.data.binance_dumps import metrics_oi_day
+
+    floors = cache.setdefault("_floors", {})
+    today = dt.datetime.now(dt.timezone.utc).date()
+    floor_day = dt.date.fromisoformat(OI_DEEP_FLOOR)
+    jobs = []                                        # (coin, date, kind) — kind: back | fwd
+    for c in UNIVERSE:
+        have = cache.get(c, {})
+        days = sorted(have)
+        if days:
+            hi = dt.datetime.utcfromtimestamp(days[-1] / 1000).date()
+            for i in range(1, min((today - hi).days, 20)):            # top-up forward
+                jobs.append((c, hi + dt.timedelta(days=i), "fwd"))
+            if c not in floors:
+                lo = dt.datetime.utcfromtimestamp(days[0] / 1000).date()
+                for i in range(1, OI_DEEP_CHUNK + 1):                  # extend backward
+                    d = lo - dt.timedelta(days=i)
+                    if d >= floor_day:
+                        jobs.append((c, d, "back"))
+        else:
+            for i in range(1, OI_DEEP_CHUNK + 1):                      # fresh coin: recent chunk
+                jobs.append((c, today - dt.timedelta(days=i), "back"))
+
+    def one(job):
+        c, d, kind = job
+        return c, d, kind, metrics_oi_day(f"{c}USDT", d.isoformat())
+
+    back_hits, back_asked = {}, {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for c, d, kind, row in ex.map(one, jobs):
+            if kind == "back":
+                back_asked[c] = back_asked.get(c, 0) + 1
+            if row:
+                ts = int(dt.datetime(d.year, d.month, d.day,
+                                     tzinfo=dt.timezone.utc).timestamp() * 1000)
+                cache.setdefault(c, {})[ts] = row
+                if kind == "back":
+                    back_hits[c] = back_hits.get(c, 0) + 1
+    for c in UNIVERSE:                                # entire backward chunk 404'd -> listing floor:
+        if cache.get(c) and back_asked.get(c) and not back_hits.get(c) and c not in floors:
+            floors[c] = min(cache[c])                 # stop re-probing pre-listing dates forever
+    _save(OI_DEEP, cache)
+    # families must only see coin timeseries (not _floors) with enough depth; young coins keep
+    # accruing in the cache and join once past min_cov
+    return {c: v for c, v in cache.items() if c != "_floors" and len(v) >= 400}
 
 
 def refresh_liq_daily():
@@ -615,6 +673,12 @@ CRYPTO_FAMILIES = [
      "stab": ("lookback", "holding", "oi_thresh"), "min_cov": 60, "min_n": 12},
     # funding carry: a cross-sectional RISK PREMIUM (funding credited as P&L), on the 8h funding grid.
     # OKX funding history is ~95 days = 285 8h-bars (verified live); min_cov=150 (8h bars ~50d), accrues.
+    # oi_reversion_deep: the SAME OI-reversion thesis on Binance's free metrics dumps — ~5.8yr of
+    # daily OI (contracts) vs OKX's ~180d native lookback. Chunked backward backfill (OI_DEEP_CHUNK
+    # days per selection), so depth grows every time the bandit picks it. Same space/gate as
+    # oi_reversion; separate venue/instrument, never mixed with the OKX series.
+    {"name": "oi_reversion_deep", "refresh": refresh_oi_deep, "bt": ROI, "space": SPACE_OI,
+     "fee": 5.0, "slip": 5.0, "stab": ("lookback", "holding", "oi_thresh"), "min_cov": 400, "min_n": 12},
     # liq_print_daily (#7): the liquidation-print thesis on Coinalyze's ~4.1yr DAILY by-side series
     # (free tier; observe-first probe 2026-07-10) — YEARS of forced-flow history vs the hourly
     # capture's ~87d. Daily bars -> min_n=12 like the other daily families; needs COINALYZE_API_KEY.

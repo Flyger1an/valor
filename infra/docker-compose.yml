@@ -158,6 +158,7 @@ services:
       EVOLVER_RESEARCH_FUND_CARRY: /data/okx_fund_carry_dataset.pkl   # cross-sectional funding carry
       EVOLVER_RESEARCH_LIQ_PRINT: /data/okx_liq_print_dataset.pkl     # liquidation prints (accumulates)
       EVOLVER_RESEARCH_LIQ_DAILY: /data/okx_liq_daily_dataset.pkl     # Coinalyze ~4.1yr daily liq-by-side
+      EVOLVER_RESEARCH_OI_DEEP: /data/binance_oi_deep_dataset.pkl     # Binance metrics ~5.8yr daily OI (chunked backfill)
       EVOLVER_FWD_SNAPSHOT: /data/crypto_shadow_state.json   # forward-feedback: learn the gate's real decay
       EVOLVER_RESEARCH_MONTHS: "15"
       EVOLVER_RESEARCH_CONFIRM: "2"   # surface only after a region survives N separate cycles
