@@ -101,6 +101,7 @@ DAILY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_DAILY", str(ROOT / ".okx_daily_
 OI_DATA = pathlib.Path(os.getenv("EVOLVER_RESEARCH_OI", str(ROOT / ".okx_oi_dataset.pkl")))
 FUND_CARRY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_FUND_CARRY", str(ROOT / ".okx_fund_carry_dataset.pkl")))
 LIQ_PRINT = pathlib.Path(os.getenv("EVOLVER_RESEARCH_LIQ_PRINT", str(ROOT / ".okx_liq_print_dataset.pkl")))
+LIQ_DAILY = pathlib.Path(os.getenv("EVOLVER_RESEARCH_LIQ_DAILY", str(ROOT / ".okx_liq_daily_dataset.pkl")))
 VOL_DATA = pathlib.Path(os.getenv("EVOLVER_RESEARCH_VOL", str(ROOT / ".deribit_vol_dataset.pkl")))
 OPT_FLOW = pathlib.Path(os.getenv("EVOLVER_OPT_FLOW", str(ROOT / ".deribit_optflow_dataset.pkl")))
 FX_HOURLY = pathlib.Path(os.getenv("EVOLVER_FX_HOURLY", str(ROOT / ".fx_hourly_dataset.pkl")))
@@ -343,6 +344,44 @@ def refresh_liq_print():
     return cache
 
 
+def refresh_liq_daily():
+    """DAILY (close, long_liq_usd, short_liq_usd) for liq_print_daily — Coinalyze's ~4.1yr daily
+    liquidation-by-side history (free tier; probe 2026-07-10) joined with OKX daily closes. The
+    hourly capture stays untouched: Coinalyze hourly is shallow AND measures differently (probe:
+    non-constant divergence vs our live aggregates), so sources are never blended — this is a
+    SEPARATE, deeper, coarser instrument. First selection backfills ~1500d x 19 coins (~1 call/coin
+    at ~1.6s pacing); later selections top up incrementally. No-op without COINALYZE_API_KEY."""
+    cache = pickle.loads(LIQ_DAILY.read_bytes()) if LIQ_DAILY.exists() else {}
+    if not os.getenv("COINALYZE_API_KEY"):
+        return cache
+    from evolver.data import coinalyze as CA
+
+    for c in UNIVERSE:                    # sequential: Coinalyze free tier is rate-limited
+        try:
+            ex = cache.get(c, {})
+            days = 1600 if len(ex) < 300 else 30          # deep backfill once, then top-up
+            lq = CA.liquidation_daily(c, days=days)
+            if not lq:
+                continue
+            cl = V.daily_closes(c, min(1200, max(400, days)))
+            merged = dict(ex)
+            for ts, close in cl.items():
+                ll, sl = lq.get(ts, (None, None))
+                if ll is None:
+                    prev = ex.get(ts)
+                    ll, sl = (prev[1], prev[2]) if isinstance(prev, tuple) and len(prev) >= 3 else (0.0, 0.0)
+                merged[ts] = (close, ll, sl)
+            if merged:
+                cache[c] = merged
+        except Exception:
+            continue
+    _save(LIQ_DAILY, cache)
+    # cov is min-over-coins at the tick gate, so a newly-listed coin (SEI: 238d) must not
+    # data-thin the whole family: exclude coins still below the family's min_cov from the
+    # RETURNED universe — they keep accruing in the saved cache and join once deep enough.
+    return {c: v for c, v in cache.items() if len(v) >= 400}
+
+
 def refresh_vol_premium():
     """LIVE Deribit daily (close, DVOL) for the vol-premium family (BTC + ETH). {coin:{day:(close,dvol)}}.
     Deribit gives ~2.7yr of DVOL + price, so this is data-rich immediately. Accumulates across cycles."""
@@ -518,6 +557,17 @@ SPACE_FUND_CARRY = {"lookback": (3.0, 30.0, int), "holding": (3.0, 6.0, int),
 SPACE_LIQ_PRINT = {"liq_mult": (3.0, 12.0, float), "lookback": (24.0, 168.0, int),
                    "hold_hours": (2.0, 24.0, int), "cooldown_h": (2.0, 24.0, int),
                    "trade_dir": (-1.0, 1.0, float)}
+# liq_print_daily: same forced-flow thesis on Coinalyze's ~4.1yr DAILY series — bars are DAYS
+# (lookback 14-60d, hold 1-5d; liq_mult capped at 8 so genomes can't starve the holdout).
+SPACE_LIQ_DAILY = {"liq_mult": (2.0, 8.0, float), "lookback": (14.0, 60.0, int),
+                   "hold_hours": (1.0, 5.0, int), "cooldown_h": (1.0, 5.0, int),
+                   "trade_dir": (-1.0, 1.0, float)}
+
+
+def run_liq_print_daily(universe, params=None, limits=DEFAULT_LIMITS, lo=None, hi=None):
+    """liquidation_print on DAILY bars: identical index-stepping backtest, with the funding drag
+    charged for the true wall-clock hold (bar_hours=24)."""
+    return RLP(universe, {**(params or {}), "bar_hours": 24.0}, limits, lo=lo, hi=hi)
 # vol-premium (Deribit): delta-hedged short straddles. tenor<=14 + iv_rank<=0.5 keep enough holdout
 # trades to clear min_n (n-starvation guard, same as the daily spot families).
 SPACE_VOL = {"tenor_days": (5.0, 14.0, int), "iv_rank_min": (0.0, 0.5, float), "lookback": (30.0, 90.0, int)}
@@ -565,6 +615,12 @@ CRYPTO_FAMILIES = [
      "stab": ("lookback", "holding", "oi_thresh"), "min_cov": 60, "min_n": 12},
     # funding carry: a cross-sectional RISK PREMIUM (funding credited as P&L), on the 8h funding grid.
     # OKX funding history is ~95 days = 285 8h-bars (verified live); min_cov=150 (8h bars ~50d), accrues.
+    # liq_print_daily (#7): the liquidation-print thesis on Coinalyze's ~4.1yr DAILY by-side series
+    # (free tier; observe-first probe 2026-07-10) — YEARS of forced-flow history vs the hourly
+    # capture's ~87d. Daily bars -> min_n=12 like the other daily families; needs COINALYZE_API_KEY.
+    {"name": "liq_print_daily", "refresh": refresh_liq_daily, "bt": run_liq_print_daily,
+     "space": SPACE_LIQ_DAILY, "fee": 8.0, "slip": LIQ_SLIP_BPS,
+     "stab": ("liq_mult", "hold_hours", "lookback"), "min_cov": 400, "min_n": 12},
     # LOW-SHARPE/dollar-neutral, so the PBO test keeps it conservative (its flat optimum + price noise
     # read ~0.5): it surfaces only STRONG-carry regimes over repeated cycles (correct for a crash-prone
     # premium), never on noise.

@@ -8,6 +8,11 @@ long liquidations are forced SELLS (price pushed down -> fade UP); short liquida
 
 universe: {coin: {hour_ms: (close, long_liq_notional, short_liq_notional)}}.
 Returns [(entry_ts, net_return), ...] pooled. Next-bar fill; honest round_trip_cost shared with shadow.
+
+BAR-AGNOSTIC: the loop steps by bar INDEX, so lookback/hold/cooldown are in BARS. The only
+wall-clock assumption is the funding drag — pass bar_hours (default 1.0; 24.0 for a daily
+universe like the Coinalyze-backfilled liq_print_daily family) so the hold's funding cost is
+charged for its true duration.
 """
 from __future__ import annotations
 
@@ -29,7 +34,8 @@ def run_liquidation_print(universe, params=None, limits: RiskLimits = DEFAULT_LI
     p = {**DEFAULT_PARAMS, **(params or {})}
     mult, lb, hold, cd = p["liq_mult"], int(p["lookback"]), int(p["hold_hours"]), int(p["cooldown_h"])
     sgn = 1.0 if p["trade_dir"] >= 0 else -1.0
-    cost = round_trip_cost(p["fee_bps"], hold, p["slip_bps"], p["funding_bps_8h"])
+    cost = round_trip_cost(p["fee_bps"], hold * p.get("bar_hours", 1.0),
+                           p["slip_bps"], p["funding_bps_8h"])
     out = []
     for coin in universe:
         ts = sorted(universe[coin])
