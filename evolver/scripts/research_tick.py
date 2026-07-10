@@ -72,6 +72,17 @@ CONFIRM = int(os.getenv("EVOLVER_RESEARCH_CONFIRM", "2"))
 # a confirmation only counts if the data window advanced this many days since the last one — so the
 # CONFIRM passes are on materially DIFFERENT data, not correlated re-tests of one lucky window.
 CONFIRM_GAP_MS = int(float(os.getenv("EVOLVER_CONFIRM_GAP_DAYS", "7")) * 86_400_000)
+# Chronic-rejecter cooldown (audit 2026-07-10): a family that rejected this many INFORMATIVE cycles
+# in a row is retested only every Kth rotation slot — fresh data still gets judged regularly, but a
+# settled verdict stops burning a full 40-genome search every hour (vol_premium was being
+# re-rejected ~12x/day after already rejecting on 2.7yr of history). Any surfaced candidate resets
+# the streak instantly. Accumulating refreshes still run on cooldown-skipped slots (no data loss).
+COOLDOWN_AFTER = int(os.getenv("EVOLVER_COOLDOWN_AFTER", "24"))   # 0 disables
+COOLDOWN_EVERY = int(os.getenv("EVOLVER_COOLDOWN_EVERY", "4"))    # retest on every Kth slot
+
+
+def _cooldown_active(streak: int, rotation: int) -> bool:
+    return bool(COOLDOWN_AFTER) and streak >= COOLDOWN_AFTER and rotation % COOLDOWN_EVERY != 0
 # SHADOW BAR (docs/scope-gate-calibration.md) — a calibration MEASUREMENT, not a relaxation. Each cycle we
 # recompute the verdict with ONLY the two decision-theoretic α knobs relaxed; the "marginal band" (passes
 # relaxed, fails strict) is logged so forward CONFIRM can later adjudicate whether the strict α is
@@ -632,6 +643,22 @@ def cycle(fam, data, fwd_decay=1.0):
     def run(p, lo=None):
         return [v for _, v in fam["bt"](data, {**p, "fee_bps": fam["fee"]}, DEFAULT_LIMITS, lo=lo)]
 
+    # ZERO-INFORMATION GUARD (audit 2026-07-10): some families pass min_cov (BARS) yet cannot put
+    # min_n TRADES in the holdout for ANY genome (rare-event families on short windows) — the old
+    # behavior burned a full 40-genome search to earn a guaranteed n<min_n rejection (gate/
+    # liquidation: median OOS n=1 across 37/37 cycles; ~25-30 slots/week fleet-wide). Probe the
+    # space's corners + midpoint on the holdout; if even the densest probe can't reach min_n, the
+    # cycle is unwinnable for every genome — skip honestly and let the rotation move on. The guard
+    # can only skip cycles the gate would have rejected on n anyway (never creates a candidate).
+    guard_min_n = fam.get("min_n", 20)
+    probes = ({k: v[2](v[0]) for k, v in fam["space"].items()},
+              {k: v[2](v[1]) for k, v in fam["space"].items()},
+              {k: v[2]((v[0] + v[1]) / 2) for k, v in fam["space"].items()})
+    probe_n = max(len(run(g, lo=split)) for g in probes)
+    if probe_n < guard_min_n:
+        return (f"{fam['name']}: holdout-starved (densest probe n={probe_n} < min_n "
+                f"{guard_min_n}) — skip + rotate", None)
+
     r = evolve(lambda p, lo, hi: fam["bt"](data, {**p, "fee_bps": fam["fee"]}, DEFAULT_LIMITS, lo=allts[0], hi=split),
                fam["space"], fam["name"], generations=4, pop=8, seed=rng.randint(1, 99999),
                use_llm=USE_LLM, log=lambda *_: None)
@@ -691,6 +718,9 @@ def cycle(fam, data, fwd_decay=1.0):
     summ = (f"{fam['name']}: OOS {osr:+.2f}{fwd_tag} (p {op:.3f}, DSR {dho:.2f}, n {on}) | "
             f"2x-cost {o2:+.2f} | stable {npos}/{len(nb)} | "
             f"pbo {'-' if r.pbo is None else round(r.pbo, 2)} | "
+            # llm x/y = LLM-proposed genomes / total evaluated — was computed by the engine but never
+            # surfaced, making the OPRO share of the search unauditable (audit 2026-07-10)
+            f"llm {getattr(r, 'used_llm', 0)}/{getattr(r, 'n_evaluated', 0)} | "
             f"{'PASS' if passed else 'below bar'}{'  ·shadow-marginal·' if marginal else ''}")
     cand = None
     if passed:
@@ -716,6 +746,11 @@ def tick():
     if len(data) < fam.get("min_coins", 10) or cov < fam["min_cov"]:    # vol_premium: only BTC+ETH exist
         Q.update(lambda s: s.update(rotation=s.get("rotation", 0) + 1))   # atomic rotate
         return f"[{_now()}] {fam['name']}: data thin ({len(data)} coins, min {cov} bars) — skip + rotate"
+    streak = s0.get("reject_streaks", {}).get(fam["name"], 0)
+    if _cooldown_active(streak, s0.get("rotation", 0)):   # after refresh: accumulators still captured
+        Q.update(lambda s: s.update(rotation=s.get("rotation", 0) + 1))
+        return (f"[{_now()}] {fam['name']}: cooldown ({streak} consecutive rejections; retests every "
+                f"{COOLDOWN_EVERY}th slot) — skip + rotate")
     rgm, vol_ref = AL.regime(AL.universe_vol(data), s0.get("vol_ref"))    # self-calibrated vol regime
     fwd_decay = 1.0                                 # forward-feedback: this family's learned decay
     if FWD_SNAPSHOT and FWD_SNAPSHOT.exists():
@@ -737,6 +772,11 @@ def tick():
         out["cyc"] = s["cycles"]
         s["regime"], s["vol_ref"] = rgm, vol_ref         # store regime + self-calibrating vol ref
         AL.update(s, fam["name"], rgm, osr)              # learn this family's promise in this regime
+        rs = s.setdefault("reject_streaks", {})          # chronic-rejecter cooldown bookkeeping:
+        if cand:                                          # a candidate instantly clears the streak;
+            rs[fam["name"]] = 0                           # starved cycles carry no information so
+        elif "holdout-starved" not in summ:               # they neither extend nor reset it
+            rs[fam["name"]] = rs.get(fam["name"], 0) + 1
         with LEDGER.open("a") as f:
             f.write(json.dumps({"cycle": s["cycles"], "family": fam["name"], "ts": _now(),
                                 "summary": summ, "surfaced": bool(cand)}) + "\n")
