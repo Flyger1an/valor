@@ -309,5 +309,33 @@ function blockedEvolverEvidence(): EvolverEvidenceReport {
         evidence: "-$4,723.00 PnL across 73 closed shadow trade(s).",
       },
     ],
+    recoveryPlan: {
+      status: "blocked",
+      summary:
+        "blocked: $4724.00 shadow PnL recovery, +6.2 pp win rate, +10.3 pp convergence before imported Evolver blockers clear. Bench shadow_analyst.",
+      minimumEvidenceDays: 21,
+      additionalEvidenceDays: 6,
+      minimumClosedTrades: 30,
+      additionalClosedTrades: 0,
+      minimumWinRatePct: 50,
+      winRateGapPct: 6.2,
+      minimumConvergenceRatePct: 50,
+      convergenceRateGapPct: 10.3,
+      requiredPnlRecoveryUsd: 4724,
+      confidenceHaircutPct: 49.7,
+      benchCandidates: ["shadow_analyst"],
+      actions: [
+        {
+          code: "recover-shadow-pnl",
+          severity: "critical",
+          title: "Recover shadow PnL",
+          current: "-$4723.00",
+          target: "$1.00 or better",
+          gap: "$4724.00 net recovery",
+          rationale:
+            "Negative imported shadow PnL blocks promotion even when local v0.2 paper evidence improves.",
+        },
+      ],
+    },
   };
 }

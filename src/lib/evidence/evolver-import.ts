@@ -5,6 +5,8 @@ import type {
   EvolverEvidenceIssue,
   EvolverEvidenceReport,
   EvolverEvidenceStatus,
+  EvolverRecoveryAction,
+  EvolverRecoveryPlan,
   EvolverResearchLoopSummary,
   EvolverShadowSummary,
 } from "@/lib/domain/types";
@@ -17,6 +19,11 @@ const RESEARCH_LEDGER_FILES = [
 ] as const;
 
 const STARTING_EQUITY_USD = 100_000;
+const MIN_IMPORTED_EVIDENCE_DAYS = 21;
+const MIN_SHADOW_CLOSED_TRADES = 30;
+const MIN_SHADOW_WIN_RATE_PCT = 50;
+const MIN_SHADOW_CONVERGENCE_RATE_PCT = 50;
+const MIN_POSITIVE_SHADOW_PNL_USD = 1;
 
 type JsonObject = Record<string, unknown>;
 
@@ -70,6 +77,22 @@ export function loadEvolverEvidenceReport(
     researchLoops,
     totalResearchCycles,
   });
+  const summary = summaryFor(status, {
+    evidenceDays,
+    shadow,
+    totalResearchCycles,
+    surfacedCandidateCount,
+    issues,
+  });
+  const recoveryPlan = buildRecoveryPlan({
+    status,
+    evidenceDays,
+    totalResearchCycles,
+    surfacedCandidateCount,
+    shadow,
+    calibration,
+    researchLoops,
+  });
 
   return {
     id: `evolver-evidence:${generatedAt}`,
@@ -77,13 +100,7 @@ export function loadEvolverEvidenceReport(
     status,
     configured: true,
     sourceLabel,
-    summary: summaryFor(status, {
-      evidenceDays,
-      shadow,
-      totalResearchCycles,
-      surfacedCandidateCount,
-      issues,
-    }),
+    summary,
     evidenceDays,
     firstTimestamp,
     lastTimestamp,
@@ -93,6 +110,7 @@ export function loadEvolverEvidenceReport(
     calibration,
     researchLoops,
     issues,
+    recoveryPlan,
   };
 }
 
@@ -115,6 +133,10 @@ function emptyReport(input: {
     surfacedCandidateCount: 0,
     researchLoops: [],
     issues: [],
+    recoveryPlan: unavailableRecoveryPlan({
+      status: input.status,
+      summary: input.summary,
+    }),
   };
 }
 
@@ -263,22 +285,25 @@ function collectIssues(input: {
     return issues;
   }
 
-  if (input.evidenceDays > 0 && input.evidenceDays < 21) {
+  if (
+    input.evidenceDays > 0 &&
+    input.evidenceDays < MIN_IMPORTED_EVIDENCE_DAYS
+  ) {
     issues.push({
       code: "evolver-evidence-window-short",
       severity: "warning",
       message: "Imported Evolver evidence is shorter than the v0.2 readiness window.",
-      evidence: `${input.evidenceDays} imported evidence day(s), minimum 21 for tiny-live review.`,
+      evidence: `${input.evidenceDays} imported evidence day(s), minimum ${MIN_IMPORTED_EVIDENCE_DAYS} for tiny-live review.`,
     });
   }
 
   if (input.shadow) {
-    if (input.shadow.closedTradeCount < 30) {
+    if (input.shadow.closedTradeCount < MIN_SHADOW_CLOSED_TRADES) {
       issues.push({
         code: "evolver-shadow-sample-small",
         severity: "warning",
         message: "Imported shadow evidence has too few closed trades for stable inference.",
-        evidence: `${input.shadow.closedTradeCount} closed shadow trade(s), target at least 30.`,
+        evidence: `${input.shadow.closedTradeCount} closed shadow trade(s), target at least ${MIN_SHADOW_CLOSED_TRADES}.`,
       });
     }
 
@@ -293,7 +318,10 @@ function collectIssues(input: {
       });
     }
 
-    if (input.shadow.closedTradeCount >= 10 && input.shadow.winRatePct < 50) {
+    if (
+      input.shadow.closedTradeCount >= 10 &&
+      input.shadow.winRatePct < MIN_SHADOW_WIN_RATE_PCT
+    ) {
       issues.push({
         code: "evolver-shadow-win-rate-low",
         severity: "warning",
@@ -304,7 +332,7 @@ function collectIssues(input: {
 
     if (
       input.shadow.closedTradeCount >= 10 &&
-      input.shadow.convergenceRatePct < 50
+      input.shadow.convergenceRatePct < MIN_SHADOW_CONVERGENCE_RATE_PCT
     ) {
       issues.push({
         code: "evolver-shadow-convergence-low",
@@ -377,6 +405,337 @@ function summaryFor(
       : `${input.issues.length} imported-evidence issue(s)`;
 
   return `${status}: ${input.evidenceDays}d imported window, ${shadowText}, ${input.totalResearchCycles} research cycle(s), ${input.surfacedCandidateCount} surfaced candidate(s), ${issueText}.`;
+}
+
+function unavailableRecoveryPlan(input: {
+  status: EvolverEvidenceStatus;
+  summary: string;
+}): EvolverRecoveryPlan {
+  const action: EvolverRecoveryAction =
+    input.status === "not_configured"
+      ? {
+          code: "configure-evolver-evidence-dir",
+          severity: "warning",
+          title: "Configure Evolver evidence import",
+          current: "VALOR_EVOLVER_EVIDENCE_DIR unset",
+          target: "Mounted live soak ledger directory",
+          gap: "No imported evidence can be scored yet.",
+          rationale:
+            "v0.2 cannot quantify recovery until the Evolver ledgers are mounted.",
+        }
+      : {
+          code: "restore-evolver-ledgers",
+          severity: "warning",
+          title: "Restore Evolver soak ledgers",
+          current: "Configured directory has no usable ledgers",
+          target: "Shadow and research ledgers present",
+          gap: "Need at least one usable soak ledger.",
+          rationale:
+            "The bridge needs shadow or research records before it can clear imported evidence.",
+        };
+
+  return {
+    status: input.status === "empty" ? "empty" : "not_configured",
+    summary: input.summary,
+    minimumEvidenceDays: MIN_IMPORTED_EVIDENCE_DAYS,
+    additionalEvidenceDays:
+      input.status === "empty" ? MIN_IMPORTED_EVIDENCE_DAYS : 0,
+    minimumClosedTrades: MIN_SHADOW_CLOSED_TRADES,
+    additionalClosedTrades:
+      input.status === "empty" ? MIN_SHADOW_CLOSED_TRADES : 0,
+    minimumWinRatePct: MIN_SHADOW_WIN_RATE_PCT,
+    winRateGapPct: 0,
+    minimumConvergenceRatePct: MIN_SHADOW_CONVERGENCE_RATE_PCT,
+    convergenceRateGapPct: 0,
+    requiredPnlRecoveryUsd: 0,
+    benchCandidates: [],
+    actions: [action],
+  };
+}
+
+function buildRecoveryPlan(input: {
+  status: EvolverEvidenceStatus;
+  evidenceDays: number;
+  totalResearchCycles: number;
+  surfacedCandidateCount: number;
+  shadow?: EvolverShadowSummary;
+  calibration?: EvolverCalibrationSummary;
+  researchLoops: EvolverResearchLoopSummary[];
+}): EvolverRecoveryPlan {
+  if (input.status === "empty") {
+    return unavailableRecoveryPlan({
+      status: "empty",
+      summary:
+        "Restore Evolver soak ledgers before imported evidence can recover.",
+    });
+  }
+
+  const shadowPnl =
+    input.shadow?.reportedPnlUsd ?? input.shadow?.approximatedClosedPnlUsd;
+  const additionalEvidenceDays = Math.max(
+    0,
+    MIN_IMPORTED_EVIDENCE_DAYS - input.evidenceDays,
+  );
+  const additionalClosedTrades = Math.max(
+    0,
+    MIN_SHADOW_CLOSED_TRADES - (input.shadow?.closedTradeCount ?? 0),
+  );
+  const requiredPnlRecoveryUsd =
+    shadowPnl === undefined
+      ? 0
+      : roundMoney(Math.max(0, MIN_POSITIVE_SHADOW_PNL_USD - shadowPnl));
+  const winRateGapPct = roundPct(
+    Math.max(0, MIN_SHADOW_WIN_RATE_PCT - (input.shadow?.winRatePct ?? 0)),
+  );
+  const convergenceRateGapPct = roundPct(
+    Math.max(
+      0,
+      MIN_SHADOW_CONVERGENCE_RATE_PCT -
+        (input.shadow?.convergenceRatePct ?? 0),
+    ),
+  );
+  const confidenceHaircutPct = confidenceHaircut(input.calibration);
+  const benchCandidates = collectBenchCandidates({
+    researchLoops: input.researchLoops,
+    surfacedCandidateCount: input.surfacedCandidateCount,
+    shadowNeedsRecovery:
+      requiredPnlRecoveryUsd > 0 ||
+      winRateGapPct > 0 ||
+      convergenceRateGapPct > 0,
+  });
+  const actions: EvolverRecoveryAction[] = [];
+
+  if (!input.shadow) {
+    actions.push({
+      code: "restore-shadow-book",
+      severity: "critical",
+      title: "Restore shadow book evidence",
+      current: "No imported shadow book",
+      target: `${MIN_SHADOW_CLOSED_TRADES} closed shadow trades with positive PnL`,
+      gap: "shadow_analyst_ledger.jsonl or shadow_analyst_state.json is missing.",
+      rationale:
+        "Shadow performance is the bridge's main evidence for whether Evolver output can be trusted.",
+    });
+  }
+
+  if (additionalEvidenceDays > 0) {
+    actions.push({
+      code: "extend-evidence-window",
+      severity: "warning",
+      title: "Extend imported soak window",
+      current: `${input.evidenceDays} imported day(s)`,
+      target: `${MIN_IMPORTED_EVIDENCE_DAYS} imported day(s)`,
+      gap: `${additionalEvidenceDays} additional day(s) of usable evidence`,
+      rationale:
+        "The imported soak needs a full multi-week window before it can stop contributing a readiness warning.",
+    });
+  }
+
+  if (input.shadow && additionalClosedTrades > 0) {
+    actions.push({
+      code: "collect-shadow-closes",
+      severity: "warning",
+      title: "Collect more closed shadow trades",
+      current: `${input.shadow.closedTradeCount} closed shadow trade(s)`,
+      target: `${MIN_SHADOW_CLOSED_TRADES} closed shadow trade(s)`,
+      gap: `${additionalClosedTrades} additional close(s)`,
+      rationale:
+        "The shadow book needs enough closes to make win-rate and convergence checks meaningful.",
+    });
+  }
+
+  if (shadowPnl !== undefined && requiredPnlRecoveryUsd > 0) {
+    actions.push({
+      code: "recover-shadow-pnl",
+      severity: "critical",
+      title: "Recover shadow PnL",
+      current: formatUsd(shadowPnl),
+      target: `${formatUsd(MIN_POSITIVE_SHADOW_PNL_USD)} or better`,
+      gap: `${formatUsd(requiredPnlRecoveryUsd)} net recovery`,
+      rationale:
+        "Negative imported shadow PnL blocks promotion even when local v0.2 paper evidence improves.",
+    });
+  }
+
+  if (input.shadow && winRateGapPct > 0) {
+    actions.push({
+      code: "repair-shadow-win-rate",
+      severity: "warning",
+      title: "Repair shadow win rate",
+      current: `${input.shadow.winRatePct.toFixed(1)}%`,
+      target: `${MIN_SHADOW_WIN_RATE_PCT.toFixed(1)}% or better`,
+      gap: `+${winRateGapPct.toFixed(1)} percentage point(s)`,
+      rationale:
+        "The imported shadow book needs at least break-even hit-rate posture before the bridge stops warning.",
+    });
+  }
+
+  if (input.shadow && convergenceRateGapPct > 0) {
+    actions.push({
+      code: "repair-shadow-convergence",
+      severity: "warning",
+      title: "Repair shadow convergence",
+      current: `${input.shadow.convergenceRatePct.toFixed(1)}%`,
+      target: `${MIN_SHADOW_CONVERGENCE_RATE_PCT.toFixed(1)}% or better`,
+      gap: `+${convergenceRateGapPct.toFixed(1)} percentage point(s)`,
+      rationale:
+        "Low realized convergence means the simulator and shadow book are not yet agreeing often enough.",
+    });
+  }
+
+  if (confidenceHaircutPct !== undefined && confidenceHaircutPct > 0) {
+    const stated = input.calibration?.statedConfidenceMean ?? 0;
+    const realized = input.calibration?.realizedConvergenceRate ?? 0;
+    actions.push({
+      code: "haircut-calibration-confidence",
+      severity:
+        input.calibration?.status === "overconfident"
+          ? "critical"
+          : "warning",
+      title: "Haircut calibration confidence",
+      current: `Stated ${(stated * 100).toFixed(1)}%, realized ${(realized * 100).toFixed(1)}%`,
+      target: "Stated confidence no higher than realized convergence",
+      gap: `Apply about ${confidenceHaircutPct.toFixed(1)}% confidence haircut`,
+      rationale:
+        "Overconfident calibration can make weak candidates look promotable before realized convergence supports them.",
+    });
+  }
+
+  if (benchCandidates.length > 0) {
+    actions.push({
+      code: "bench-unsurfaced-families",
+      severity: input.surfacedCandidateCount === 0 ? "info" : "warning",
+      title: "Bench unsurfaced families",
+      current: `${input.surfacedCandidateCount} surfaced candidate(s) across ${input.totalResearchCycles} research cycle(s)`,
+      target: "At least one gated surfaced candidate before promotion consideration",
+      gap: benchCandidates.join(", "),
+      rationale:
+        "Families that repeatedly fail research gates should remain out of promotion consideration while the bridge is blocked.",
+    });
+  }
+
+  const planStatus = input.status === "healthy" ? "clear" : input.status;
+
+  return {
+    status: planStatus,
+    summary: recoverySummary({
+      status: planStatus,
+      additionalEvidenceDays,
+      additionalClosedTrades,
+      requiredPnlRecoveryUsd,
+      winRateGapPct,
+      convergenceRateGapPct,
+      confidenceHaircutPct,
+      benchCandidates,
+      actions,
+    }),
+    minimumEvidenceDays: MIN_IMPORTED_EVIDENCE_DAYS,
+    additionalEvidenceDays,
+    minimumClosedTrades: MIN_SHADOW_CLOSED_TRADES,
+    additionalClosedTrades,
+    minimumWinRatePct: MIN_SHADOW_WIN_RATE_PCT,
+    winRateGapPct,
+    minimumConvergenceRatePct: MIN_SHADOW_CONVERGENCE_RATE_PCT,
+    convergenceRateGapPct,
+    requiredPnlRecoveryUsd,
+    confidenceHaircutPct,
+    benchCandidates,
+    actions,
+  };
+}
+
+function confidenceHaircut(
+  calibration: EvolverCalibrationSummary | undefined,
+): number | undefined {
+  const stated = calibration?.statedConfidenceMean;
+  const realized = calibration?.realizedConvergenceRate;
+  if (
+    stated === undefined ||
+    realized === undefined ||
+    stated <= 0 ||
+    realized >= stated
+  ) {
+    return undefined;
+  }
+
+  return roundPct(((stated - realized) / stated) * 100);
+}
+
+function collectBenchCandidates(input: {
+  researchLoops: EvolverResearchLoopSummary[];
+  surfacedCandidateCount: number;
+  shadowNeedsRecovery: boolean;
+}): string[] {
+  const counts = new Map<string, number>();
+  for (const loop of input.researchLoops) {
+    for (const family of loop.familyCounts) {
+      counts.set(family.family, (counts.get(family.family) ?? 0) + family.count);
+    }
+  }
+
+  const families = Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([family]) => family)
+    .slice(0, 8);
+
+  if (families.length > 0 && input.surfacedCandidateCount === 0) {
+    return families;
+  }
+  if (families.length > 0 && input.shadowNeedsRecovery) {
+    return families;
+  }
+  return input.shadowNeedsRecovery ? ["shadow_analyst"] : [];
+}
+
+function recoverySummary(input: {
+  status: EvolverRecoveryPlan["status"];
+  additionalEvidenceDays: number;
+  additionalClosedTrades: number;
+  requiredPnlRecoveryUsd: number;
+  winRateGapPct: number;
+  convergenceRateGapPct: number;
+  confidenceHaircutPct?: number;
+  benchCandidates: string[];
+  actions: EvolverRecoveryAction[];
+}): string {
+  if (input.status === "clear") {
+    return "Imported Evolver evidence has no recovery gaps against the v0.2 bridge thresholds.";
+  }
+
+  const gaps = [
+    input.requiredPnlRecoveryUsd > 0
+      ? `${formatUsd(input.requiredPnlRecoveryUsd)} shadow PnL recovery`
+      : undefined,
+    input.additionalEvidenceDays > 0
+      ? `${input.additionalEvidenceDays} additional evidence day(s)`
+      : undefined,
+    input.additionalClosedTrades > 0
+      ? `${input.additionalClosedTrades} additional shadow close(s)`
+      : undefined,
+    input.winRateGapPct > 0
+      ? `+${input.winRateGapPct.toFixed(1)} pp win rate`
+      : undefined,
+    input.convergenceRateGapPct > 0
+      ? `+${input.convergenceRateGapPct.toFixed(1)} pp convergence`
+      : undefined,
+    input.confidenceHaircutPct !== undefined && input.confidenceHaircutPct > 0
+      ? `${input.confidenceHaircutPct.toFixed(1)}% confidence haircut`
+      : undefined,
+  ].filter((value): value is string => Boolean(value));
+
+  const recoveryText =
+    gaps.length > 0
+      ? gaps.join(", ")
+      : input.actions
+          .slice(0, 3)
+          .map((action) => action.title.toLowerCase())
+          .join(", ");
+  const benchText =
+    input.benchCandidates.length > 0
+      ? ` Bench ${input.benchCandidates.join(", ")}.`
+      : "";
+
+  return `${input.status}: ${recoveryText || "review imported evidence"} before imported Evolver blockers clear.${benchText}`;
 }
 
 function collectReportTimestamps(
@@ -512,4 +871,12 @@ function median(values: number[]): number {
 function formatUsd(value: number): string {
   const sign = value < 0 ? "-" : "";
   return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function roundPct(value: number): number {
+  return Math.round(value * 10) / 10;
 }

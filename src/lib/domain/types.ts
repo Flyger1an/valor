@@ -565,6 +565,33 @@ export interface EvolverEvidenceIssue {
   evidence: string;
 }
 
+export interface EvolverRecoveryAction {
+  code: string;
+  severity: "info" | "warning" | "critical";
+  title: string;
+  current: string;
+  target: string;
+  gap: string;
+  rationale: string;
+}
+
+export interface EvolverRecoveryPlan {
+  status: "not_configured" | "empty" | "blocked" | "watch" | "clear";
+  summary: string;
+  minimumEvidenceDays: number;
+  additionalEvidenceDays: number;
+  minimumClosedTrades: number;
+  additionalClosedTrades: number;
+  minimumWinRatePct: number;
+  winRateGapPct: number;
+  minimumConvergenceRatePct: number;
+  convergenceRateGapPct: number;
+  requiredPnlRecoveryUsd: number;
+  confidenceHaircutPct?: number;
+  benchCandidates: string[];
+  actions: EvolverRecoveryAction[];
+}
+
 export interface EvolverResearchLoopSummary {
   name: string;
   cycleCount: number;
@@ -624,6 +651,7 @@ export interface EvolverEvidenceReport {
   calibration?: EvolverCalibrationSummary;
   researchLoops: EvolverResearchLoopSummary[];
   issues: EvolverEvidenceIssue[];
+  recoveryPlan: EvolverRecoveryPlan;
 }
 
 export interface TinyLiveReadinessCandidate {

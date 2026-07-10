@@ -50,6 +50,7 @@ export interface OperatorEvidencePacket {
     paper: string;
     edgeScoreboard: string;
     evolverSoak: string;
+    evolverRecoveryPlan: string;
     topSignalFamilies: string[];
     backtest: string;
   };
@@ -100,6 +101,7 @@ export function buildOperatorEvidencePacket(
       paper: `${state.paper.positions.length} open position(s), ${state.paper.trades.length} ledger event(s), daily PnL ${formatUsd(state.paper.dailyPnlUsd)}, weekly PnL ${formatUsd(state.paper.weeklyPnlUsd)}.`,
       edgeScoreboard: `${state.edgeScoreboard.rows.length} signal family row(s), ${state.edgeScoreboard.totals.ledgerEventCount} ledger event(s), total PnL ${formatUsd(state.edgeScoreboard.totals.totalPnlUsd)}.`,
       evolverSoak: formatEvolverEvidence(state.evolverEvidence),
+      evolverRecoveryPlan: formatEvolverRecoveryPlan(state.evolverEvidence),
       topSignalFamilies: state.edgeScoreboard.rows
         .slice(0, 6)
         .map(formatScoreboardRow),
@@ -155,6 +157,7 @@ export function formatOperatorEvidenceMarkdown(
     `- Paper ledger: ${packet.evidence.paper}`,
     `- Edge scoreboard: ${packet.evidence.edgeScoreboard}`,
     `- Evolver imported soak: ${packet.evidence.evolverSoak}`,
+    `- Evolver recovery plan: ${packet.evidence.evolverRecoveryPlan}`,
     `- Backtest: ${packet.evidence.backtest}`,
     "",
     "### Top Signal Families",
@@ -239,6 +242,12 @@ function collectNextActions(state: DashboardState): string[] {
   const actions = [
     state.tinyLiveReadiness.memo.requiredNextEvidence,
     evolverEvidenceAction(state),
+    ...state.evolverEvidence.recoveryPlan.actions
+      .slice(0, 4)
+      .map(
+        (action) =>
+          `${action.title}: ${action.gap}. ${action.rationale}`,
+      ),
     ...state.operationalRunbook.steps
       .filter((step) => step.status !== "ready")
       .slice(0, 5)
@@ -260,6 +269,18 @@ function formatEvolverEvidence(
     : "no shadow book";
 
   return `${report.status}: ${report.evidenceDays} imported day(s), ${shadow}, ${report.totalResearchCycles} research cycle(s), ${report.surfacedCandidateCount} surfaced candidate(s).`;
+}
+
+function formatEvolverRecoveryPlan(
+  report: DashboardState["evolverEvidence"],
+): string {
+  const plan = report.recoveryPlan;
+  const actions = plan.actions
+    .slice(0, 3)
+    .map((action) => `${action.title} (${action.gap})`)
+    .join("; ");
+
+  return `${plan.status}: ${plan.summary}${actions ? ` Actions: ${actions}.` : ""}`;
 }
 
 function evolverEvidenceAction(state: DashboardState): string {

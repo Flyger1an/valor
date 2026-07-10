@@ -11,6 +11,10 @@ describe("Evolver evidence import bridge", () => {
     expect(report.configured).toBe(false);
     expect(report.status).toBe("not_configured");
     expect(report.summary).toContain("VALOR_EVOLVER_EVIDENCE_DIR");
+    expect(report.recoveryPlan.status).toBe("not_configured");
+    expect(report.recoveryPlan.actions[0]?.code).toBe(
+      "configure-evolver-evidence-dir",
+    );
   });
 
   it("summarizes live soak ledgers and flags negative shadow evidence", () => {
@@ -78,6 +82,27 @@ describe("Evolver evidence import bridge", () => {
     expect(report.shadow?.openPositionCount).toBe(2);
     expect(report.shadow?.reportedPnlUsd).toBeLessThan(0);
     expect(report.calibration?.status).toBe("overconfident");
+    expect(report.recoveryPlan.status).toBe("blocked");
+    expect(report.recoveryPlan.requiredPnlRecoveryUsd).toBeGreaterThan(4700);
+    expect(report.recoveryPlan.additionalEvidenceDays).toBeGreaterThan(0);
+    expect(report.recoveryPlan.additionalClosedTrades).toBe(18);
+    expect(report.recoveryPlan.winRateGapPct).toBe(25);
+    expect(report.recoveryPlan.convergenceRateGapPct).toBeCloseTo(16.7, 1);
+    expect(report.recoveryPlan.confidenceHaircutPct).toBeCloseTo(49.7, 1);
+    expect(report.recoveryPlan.benchCandidates).toEqual(
+      expect.arrayContaining(["funding_carry", "fx_trend", "liquidation"]),
+    );
+    expect(report.recoveryPlan.actions.map((action) => action.code)).toEqual(
+      expect.arrayContaining([
+        "extend-evidence-window",
+        "collect-shadow-closes",
+        "recover-shadow-pnl",
+        "repair-shadow-win-rate",
+        "repair-shadow-convergence",
+        "haircut-calibration-confidence",
+        "bench-unsurfaced-families",
+      ]),
+    );
     expect(report.issues.map((issue) => issue.code)).toEqual(
       expect.arrayContaining([
         "evolver-shadow-negative-pnl",

@@ -764,6 +764,7 @@ function EvolverEvidencePanel({
     report.shadow?.approximatedClosedPnlUsd ??
     0;
   const calibration = report.calibration;
+  const recoveryPlan = report.recoveryPlan;
 
   return (
     <div className="evolver-grid">
@@ -845,6 +846,79 @@ function EvolverEvidencePanel({
           </div>
         ) : (
           <p className="muted">No imported calibration file.</p>
+        )}
+      </div>
+      <div className="panel full-width">
+        <h3>Path To Unblock</h3>
+        <p className="risk-explanation">{recoveryPlan.summary}</p>
+        <div className="mini-metrics">
+          <div className="mini-metric">
+            <span>PnL Recovery</span>
+            <strong>{money(recoveryPlan.requiredPnlRecoveryUsd)}</strong>
+          </div>
+          <div className="mini-metric">
+            <span>Days Gap</span>
+            <strong>
+              {recoveryPlan.additionalEvidenceDays}/{recoveryPlan.minimumEvidenceDays}
+            </strong>
+          </div>
+          <div className="mini-metric">
+            <span>Closes Gap</span>
+            <strong>
+              {recoveryPlan.additionalClosedTrades}/{recoveryPlan.minimumClosedTrades}
+            </strong>
+          </div>
+          <div className="mini-metric">
+            <span>Win Gap</span>
+            <strong>{percentPointGap(recoveryPlan.winRateGapPct)}</strong>
+          </div>
+          <div className="mini-metric">
+            <span>Convergence Gap</span>
+            <strong>{percentPointGap(recoveryPlan.convergenceRateGapPct)}</strong>
+          </div>
+          <div className="mini-metric">
+            <span>Confidence Haircut</span>
+            <strong>
+              {recoveryPlan.confidenceHaircutPct === undefined
+                ? "n/a"
+                : `${recoveryPlan.confidenceHaircutPct.toFixed(1)}%`}
+            </strong>
+          </div>
+        </div>
+        <div className="status-list">
+          <LimitRow
+            label="Bench"
+            value={
+              recoveryPlan.benchCandidates.length
+                ? recoveryPlan.benchCandidates.join(", ")
+                : "none"
+            }
+          />
+        </div>
+        {recoveryPlan.actions.length === 0 ? (
+          <p className="muted">No imported-evidence recovery actions.</p>
+        ) : (
+          <div className="runbook-steps">
+            {recoveryPlan.actions.slice(0, 6).map((action) => (
+              <article
+                key={action.code}
+                className={`runbook-step runbook-step-${action.severity}`}
+              >
+                <div className="runbook-step-header">
+                  <div>
+                    <span className="tag">{action.severity}</span>
+                    <h3>{action.title}</h3>
+                  </div>
+                </div>
+                <div className="runbook-step-body">
+                  <RunbookField label="Current" value={action.current} />
+                  <RunbookField label="Target" value={action.target} />
+                  <RunbookField label="Gap" value={action.gap} />
+                  <RunbookField label="Why" value={action.rationale} />
+                </div>
+              </article>
+            ))}
+          </div>
         )}
       </div>
       <div className="panel full-width">
@@ -1596,6 +1670,10 @@ function money(value: number): string {
 function signedMoney(value: number): string {
   const formatted = money(Math.abs(value));
   return `${value >= 0 ? "+" : "-"}${formatted}`;
+}
+
+function percentPointGap(value: number): string {
+  return value > 0 ? `+${value.toFixed(1)} pp` : "0.0 pp";
 }
 
 function formatDateTime(value: string): string {
