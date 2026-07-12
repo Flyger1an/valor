@@ -1,5 +1,7 @@
 # Valor Vol-Premium (Deribit Options) — Build Roadmap
 
+_Updated 2026-07-10._
+
 **Goal:** harvest the **variance risk premium** (realized vol persistently below implied vol) via
 **delta-hedged short-vol on Deribit**, judged by the SAME honest gate as every other family — and never
 place a live order. The premium is the most-documented, most-persistent edge in finance, but it is
@@ -124,7 +126,7 @@ invest the executor/deploy effort in a family the data rejects. User's call.
 - Testnet-locked, verified — no implementation can reach the live venue.
 - `--selftest` passes.
 
-## Phase 5 — Deploy as a parallel hunt + forward shadow ✅ (wired; deploying)
+## Phase 5 — Deploy as a parallel hunt + forward shadow ✅ (deployed)
 **Purpose:** run it as an independent hunt (separate state / queue / multiplicity), exactly like the
 Gate venue — never disturbing the running OKX / Gate / FX soak.
 **Work:**
@@ -136,13 +138,16 @@ Gate venue — never disturbing the running OKX / Gate / FX soak.
 - The existing hunts are untouched (separate runner, separate multiplicity).
 
 **✅ Done (2026-06-29):** `research_tick` now has a `vol` family set (`EVOLVER_FAMILIES=vol` →
-`vol_premium`), a `refresh_vol_premium` (live Deribit DVOL+price for BTC+ETH, ~1000 days, accumulates),
-and a `deribit-research-runner` compose service with its own state/queue/datasets (separate
-multiplicity). Verified end-to-end locally: registry selects, refresh pulls 1000d/coin, the gate runs on
-real data and REJECTS (as expected). The per-candidate forward shadow is deferred until something
-promotes — the runner CONFIRM-gates and Telegram-alerts on a hit, which is the soak-forward net.
+`VOL_FAMILIES = [vol_premium, options_pin]`), a `refresh_vol_premium` (live Deribit DVOL+price for
+BTC+ETH, ~1000 days, accumulates), and a `deribit-research-runner` compose service with its own
+state/queue/datasets (separate multiplicity). Verified end-to-end locally: registry selects, refresh
+pulls 1000d/coin, the gate runs on real data and REJECTS (as expected). The per-candidate forward shadow
+is deferred until something promotes — the runner CONFIRM-gates and Telegram-alerts on a hit, which is
+the soak-forward net. *(2026-07-10: the vol hunt also carries `options_pin` — the max-pain forced-flow
+family — which forward-accumulates daily Deribit OI-by-strike snapshots; Deribit serves no history, so
+it stays data-thin/skip until ~60 days accrue and its gate opens ~2026-08-28.)*
 
-## Phase 6 — Soak + readiness (human gate) ⬜
+## Phase 6 — Soak + readiness (human gate) 🔄 (soaking)
 **Purpose:** give the vol premium a fair, honest test across regimes, and decide go/no-go — no real capital.
 **Work:**
 - Run unattended; accumulate the delta-hedged track record across a **vol regime change** (calm AND a

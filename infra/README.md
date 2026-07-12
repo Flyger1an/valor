@@ -1,11 +1,13 @@
 # Infra & cost
 
+*Updated 2026-07-10.*
+
 ## Local
 ```bash
 cp evolver/.env.example evolver/.env   # fill keys
 docker compose -f infra/docker-compose.yml up --build
 ```
-API :8000 · Streamlit :8501 · MLflow :5000 · Redis :6379 · Postgres :5432
+API :8000 · Streamlit :8501 · MLflow :5001 · Redis :6379 · Postgres :5432 (all bound to 127.0.0.1)
 
 ## Cloud — cheapest scalable (target < $70/mo)
 

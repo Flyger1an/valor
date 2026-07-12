@@ -1,5 +1,7 @@
 # Valor Evolver 🧬
 
+*Updated 2026-07-10.*
+
 Perpetual, self-optimizing **closed-loop** engine for the Valor RV + Risk platform.
 Polyglot sibling: **Valor (TS)** stays the signal/risk engine; **Evolver (Python)**
 ingests the locked signal contract, paper-trades, evaluates, and (human-gated)
@@ -32,23 +34,33 @@ Observed on the 5 sample signals:
 
 | Path | Role |
 |---|---|
-| `evolver/core/` | **dep-light, verified**: `signal` (locked contract), `risk` (AdaptiveRiskManager v2), `sim` (perp paper sim), `kpis` |
-| `evolver/agents/` | `analyst` (fast model + deterministic fallback), `critic` (strong model reflection) |
-| `evolver/graph/` | LangGraph `state` / `nodes` / `build` (+ `runtime` shared state) |
-| `evolver/optimize/` | `backtest` (reuses core sim), `optuna_study` (walk-forward), `promotion` (OOS + significance + risk gate) |
-| `evolver/safety.py` | kill-switch, drawdown circuit breaker, RBAC, audit log |
-| `evolver/loop.py` | dep-light inner-loop orchestrator (used by API + bus) |
-| `evolver/api.py` | FastAPI ingest (`/ingest`, `/kpis`, `/health`) |
+| `evolver/core/` | **dep-light, verified**: `signal` (locked contract), `risk` (AdaptiveRiskManager v2), `sim` (perp paper sim), `kpis`, `pair_signal` (unified pair-signal builder), `calibration` (measured conv_scale from the shadow book) |
+| `evolver/agents/` | `analyst` (fast model + deterministic fallback), `critic` (strong model reflection), `prompts` (versioned prompts + challenger arm) |
+| `evolver/data/` | venue + dataset connectors: `okx`, `gate`, `deribit`, `fx` (OANDA), `fred`, `coinalyze` (~4.1yr daily liq-by-side), `binance_dumps` (~5.8yr daily OI), `hyperliquid`, `defillama`, `stats`, `sources`, `venue` |
+| `evolver/evolve/` | **the live outer loop**: `engine` (evolutionary search), `mutate` (incl. LLM mutation), `fitness`, `confirm` (multi-cycle CONFIRM gate), `feedback` (forward-feedback), `allocate`, `archive`, `candidate_shadow`, `evoprompt` |
+| `evolver/optimize/` | per-family backtests (`liquidation_reversion`, `oi_reversion`, `funding_carry`, `trend_following`, `vol_premium`, `options_flow`, …) + `promotion` (OOS + significance + risk gate) |
+| `evolver/execution/` | `okx_executor` (demo-locked, not wired into any service), `oanda_executor` (practice) |
+| `evolver/obs/` | `mlflow_log`, `decisions` (decision-attribution ledger: LLM-vs-fallback provenance) |
+| `evolver/research/` | `queue` (candidate queue shared with the bot) |
+| `evolver/graph/` | `runtime.py` only — shared file-backed state (one book across api/loop/bot/dashboard) + the human-gated `apply_pending` (the bot's `/approve` path) |
 | `evolver/bus/` | Redis Streams consumer (TS↔Python) |
 | `evolver/telegram/` | Ops + Observer bot (PTB v21) |
 | `evolver/dashboard/` | Streamlit cockpit |
+| `evolver/safety.py` | kill-switch, drawdown circuit breaker, RBAC, audit log |
+| `evolver/loop.py` | dep-light inner-loop orchestrator (used by API + bus) |
+| `evolver/api.py` | FastAPI ingest (`/ingest`, `/kpis`, `/health`) |
+| `scripts/` | highlights: `research_tick.py` (the discovery loop — bandit family selection + gate), `shadow_runner.py`, `shadow_analyst.py`, `crypto_shadow.py`, `fx_shadow.py`, `signal_feed.py`, plus per-family thesis-test / probe scripts |
+| `tests/` | safety invariants + guards (`test_core`, `test_cycle_guards`, `test_learning_loops`, `test_stats`, …) |
 
 ## Run the full stack (Docker)
 
 ```bash
 cp evolver/.env.example evolver/.env     # fill keys
-docker compose -f infra/docker-compose.yml up --build
-# API :8000  · Streamlit :8501  · MLflow :5000
+docker compose -f infra/docker-compose.yml up --build   # brings up 17 services
+# API :8000 · Streamlit :8501 · MLflow 127.0.0.1:5001 · redis · postgres — all localhost-only
+# plus the runners: research-runner (OKX), gate-/fx-/deribit-research-runner,
+# shadow-runner, shadow-analyst, crypto-/gate-/fx-shadow-runner, signal-feed,
+# evolver-api, evolver-loop, evolver-bot, dashboard
 curl -X POST localhost:8000/ingest -H 'content-type: application/json' \
   -d @shared/sample_signals_one.json     # or POST any signal matching shared/signal.schema.json
 ```

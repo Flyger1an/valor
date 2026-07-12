@@ -30,3 +30,6 @@ evolver/*_ledger.jsonl
 
 # stray local clone: never nest the repo inside itself
 /valor/
+
+# TypeScript incremental-build cache (regenerated every build; never track)
+tsconfig.tsbuildinfo

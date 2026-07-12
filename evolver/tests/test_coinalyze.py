@@ -56,7 +56,8 @@ def test_refresh_liq_daily_join_and_merge():
     finally:
         rt.LIQ_DAILY, rt.V, rt.UNIVERSE = saved
         CA.liquidation_daily = savedCA
-    d = out["BTC"]
+    assert "BTC" not in out            # young coin (<400d) filtered from the RETURNED universe...
+    d = pickle.loads(tmp.read_bytes())["BTC"]   # ...but fully accrued in the saved cache
     assert d[BASE] == (100.0, 5e6, 1e5)                      # joined close + liq
     assert d[BASE + D] == (101.0, 0.0, 0.0)                  # close without liq -> zeros
     assert d[old_day] == (90.0, 7e6, 0.0)                    # prior capture preserved

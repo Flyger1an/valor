@@ -1,5 +1,7 @@
 # Scope — is the gate mis-calibrated for our (retail) regime?
 
+_Updated 2026-07-10._
+
 **The worry (from the user):** our gate is calibrated for institutional-grade confidence, and may be
 systematically rejecting small-but-real, capacity-constrained edges that are exactly the retail niche.
 
@@ -9,7 +11,7 @@ risk-free **measurement** — never a production relaxation.
 
 ---
 
-## The actual gate (grounded in `scripts/research_tick.py:636`)
+## The actual gate (grounded in `scripts/research_tick.py` — the `passed =` clause, ~line 822; the line drifts as the file grows)
 
 Seven clauses must ALL hold, plus `CONFIRM=2` across non-overlapping windows ≥7 days apart:
 
@@ -90,3 +92,6 @@ depth/volume), not a loosening. Deferred — we have zero candidates to size.
   production surface-rate unchanged, clean cycles on the box (no crash). Caught + fixed an env-name
   collision (`EVOLVER_CALIB_LEDGER`, not the liquidation book's `EVOLVER_SHADOW_LEDGER`). Now accumulating
   the marginal band for Phase B/C (forward adjudication in ~1–2 months).
+- 2026-07-10 — **Phase A interim reading:** 0 marginal-band rows after 800+ gated evaluations since
+  2026-06-30 — early evidence AGAINST the over-rejection hypothesis; the closest thing to a marginal case
+  (fx_carry, positive 88/88 cycles) dies on PBO — a sacrosanct clause — not on the two α knobs.

@@ -37,7 +37,9 @@ Every refresh now produces a data-quality report with connector mode, bundle age
 
 ## Manual CSV Import
 
-`parseMarketCsv` in `src/lib/data/csv-import.ts` supports fallback imports. Required columns are `timestamp`, `venue`, `base`, `quote`, `instrumentType`, `price`, and `volume24hUsd`.
+Removed (2026-07-10 dead-code sweep): `src/lib/data/csv-import.ts` had no code path or test — the
+live connectors + fixture fallback cover every ingestion route. Recover it from git history if a
+manual import route is ever actually wired.
 
 ## Data Limitations
 

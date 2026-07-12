@@ -5,8 +5,9 @@ Models direction, convergence capture, fees, slippage, and funding with the righ
 reproducible.
 
 HONEST CAVEAT: this is a heuristic execution model for the loop's mechanics, NOT a
-substitute for live fidelity. Upgrade path = nautilus_trader (event-driven, real
-perp funding/liquidation, backtest==live code). See README.
+substitute for live fidelity. The shipped fidelity upgrade is measured shadow
+calibration (core/calibration.py): conv_scale is derived from the shadow book's
+measured fills, and each Fill is stamped with the calib_version applied.
 """
 from __future__ import annotations
 

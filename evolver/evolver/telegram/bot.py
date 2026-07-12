@@ -210,8 +210,8 @@ async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE) -> None:
         audit("research.reject", {"id": tid}, actor=actor)
         return await q.edit_message_text(f"🗑 {tid} rejected (audit-logged)")
     approved = action == "promote"                             # original analyst-loop proposal
-    # In the full LangGraph runtime this also resumes the interrupt:
-    #   graph.invoke(None, config={"configurable": {"thread_id": tid}})
+    # THE human gate: whitelist-checked apply of the pending proposal (graph/ LangGraph variant
+    # was removed 2026-07-10 — it never ran; this direct path was always the live one).
     rt.apply_pending(tid, approved=approved)
     await q.edit_message_text(("🚀 promoted" if approved else "🗑 rejected") + " (audit-logged)")
 

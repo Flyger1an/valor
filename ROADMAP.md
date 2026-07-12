@@ -21,12 +21,20 @@ Legend: ✅ done · ⬜ todo · 🔒 human-authorization gate
 ---
 
 ## You are here
-**Gates 0 & 1 ✅ CLOSED.** Phase-2 honest backtest + OOS search built and run. **Verdict: no
-out-of-sample edge in the naive daily pair-z-score** (TRAIN +44% → VALID +1.9%, overfit). The
-infra, safety, optimizer, and OOS gate are all proven — the open problem is now **ALPHA** (a
-research endeavor), not engineering. The machine is ready to test ideas rigorously + safely.
-**Next: signal research (intraday, cointegration/ADF tests, funding-aware, more pairs) →
-re-run `oos_search.py` until something survives OOS; only then does advancing toward live make sense.**
+*Updated 2026-07-10.*
+**Gates 0 & 1 ✅ CLOSED; the autonomous alpha hunt is live.** The full 17-service stack has been
+Up on the droplet for weeks. `research_tick.py` searches **18 signal families across 4 hunts**
+(12 crypto on OKX + a Gate.io second venue, 4 FX, 2 Deribit options), each behind the honest
+gate (walk-forward OOS + DSR + block bootstrap/PBO + stability + CONFIRM), with bandit family
+selection, chronic-rejecter cooldown, and a zero-information holdout guard. The learning loops
+are closed: shadow-measured calibration feeds the sim + sizing, a decision-attribution ledger
+tracks LLM-vs-fallback provenance, and versioned prompts run a forward-A/B challenger arm.
+Deep free datasets extend the history (Coinalyze ~4.1yr daily liq-by-side, Binance dumps
+~5.8yr daily OI, monthly Tardis snapshots). **Zero candidates have surfaced — the honest
+expected outcome**: every real-data verdict so far is a rejection (vol_premium 2.7yr,
+options_pin classic-pin pre-test, intraday_reversion fee wall, liq_print_daily 3.6yr,
+oi_reversion_deep 3.6yr). **Next scheduled verdicts:** options_pin's forward snapshots reach
+the gate ~2026-08-28; gate-calibration Phase C adjudicates the marginal band ~Aug–Sep 2026.
 
 ---
 
@@ -36,15 +44,16 @@ Goal: the whole loop runs locally, not just the core.
   ingested, `/kpis` honest, bad `risk_score` → HTTP 422, ledger wrote 5 rows. *(2026-06-23,
   py3.9 + fastapi/pydantic/uvicorn subset.)*
 - ✅ `/health` + `/kpis` OK
-- ⬜ Full `docker compose -f infra/docker-compose.yml up --build` (redis, postgres, mlflow,
-  bot, dashboard, langgraph worker) — **needs a Docker + Python 3.11 host** (this dev box is
-  3.9 / no Docker). ~5 min on your machine.
+- ✅ Full `docker compose -f infra/docker-compose.yml up --build` — **all 17 services** (redis,
+  postgres, mlflow, api, loop, bot, dashboard, signal-feed, shadow + research runners) Up on
+  the droplet for weeks. *(done long ago; ticked 2026-07-10)*
 - ✅ **Telegram creds + outbound alerts verified** — bot `@Va10r_Bot`, admin chat set in
   `evolver/.env` (gitignored), test message delivered via the `notify.py` path. *(2026-06-23)*
-- ⬜ Streamlit dashboard (:8501) renders — needs host
-- ⬜ Interactive bot polling (`/status` `/approve` …) — needs the PTB process on the host
-**GATE 0:** API → loop → ledger ✅ · Telegram creds + alerts ✅. Dashboard + interactive bot
-polling pending a Docker/3.11 host (env task, not code).
+- ✅ Streamlit dashboard (:8501) renders — running in the stack *(ticked 2026-07-10)*
+- ✅ Interactive bot polling (`/status` `/approve` …) — the `evolver-bot` service runs it
+  *(ticked 2026-07-10)*
+**GATE 0:** ✅ **CLOSED** — API → loop → ledger, Telegram creds + alerts, dashboard, and
+interactive bot polling all live in the Docker stack.
 
 ## Phase 1 — Real signals, paper on live  ·  ~3–5 days
 Goal: Valor's *live* signals drive the loop with the real analyst.
@@ -56,8 +65,9 @@ Goal: Valor's *live* signals drive the loop with the real analyst.
 - ✅ **Redis bus end-to-end** — `XADD valor.signals` → consumer → live gpt-5-mini → shared
   ledger, verified in the running Docker stack. (Valor still HTTP-forwards via `/ingest`;
   switching its emitter to `XADD` is a one-liner when wanted.) *(2026-06-23)*
-- ✅ **LLM analyst live** — `run_inner` (FastAPI + Redis bus) and the graph node use the fast
-  model (`gpt-5-mini`) via `build_fast_llm()` (temperature=1 for gpt-5.x, JSON mode), with a
+- ✅ **LLM analyst live** — `run_inner` (FastAPI + Redis bus) uses the fast
+  model (`gpt-5-mini`) via `build_fast_llm()` (temperature=1 for gpt-5.x, JSON mode; the
+  LangGraph-node variant was removed as dead code 2026-07-10), with a
   deterministic fallback. **Verified live**: all 5 sample signals → valid `TradeDecision`s,
   correct directions, neutral on defensive regimes. Caught + fixed a prompt enum bug
   (`"enter"`→`"long"`). Dep-light fallback verified. *(2026-06-23)*
@@ -83,8 +93,10 @@ Goal: a paper record you'd actually believe.
   work is optimizer OOS search + signal research until the *honest* backtest shows genuine
   out-of-sample edge.
 - ⬜ Accumulate a meaningful sample: **≥200 closed paper trades across ≥2 regimes**
-- ⬜ Outer loop (Optuna) fires; exercise the **full promotion path once** (proposal →
-  `/approve` → versioned bump) on Telegram
+- ⬜ Exercise the **full promotion path once** (proposal → `/approve` → versioned bump) on
+  Telegram — the outer loop is now `research_tick`'s evolve engine (Optuna removed 2026-07-10)
+  and the human gate is `rt.apply_pending` via the bot; it runs every cycle but no candidate
+  has yet surfaced to promote.
 **GATE 2:** over the sample — paper Sharpe (per-trade) positive + **stable out-of-sample**,
 maxDD inside `max_dd_kill`, PF > 1.2. **Status (2026-06-23): NOT met** — `oos_search.py`
 shows the best-tuned config overfits (TRAIN Sharpe 0.47 / +44% → VALID Sharpe 0.07 / +1.9%).
@@ -144,13 +156,14 @@ dislocation is being **arbitraged away in real time** (alpha decay), (2) the thi
 survive intraday basis + 4-leg execution (worst MAE only −1.5% — basis never blew out; structural
 thesis held, it was edge−costs, not risk). KEY LESSON: passed every standard test (OOS,
 significance, breadth, economic logic, strengthened on more data) yet still **not tradeable** —
-"real in an 18mo backtest" ≠ "alive today." Disposition: NOT promotable; keep `cross_venue_oos.py`
-as a **live monitor** — if a new venue/regime re-widens the dislocation, the signal fires again.
+"real in an 18mo backtest" ≠ "alive today." Disposition: NOT promotable; `cross_venue_oos.py` is
+kept as a **manual research script (not scheduled)** — re-run it by hand if a new venue/regime
+re-widens the dislocation.
 The carry + cross-venue arc proves the gate works: it kills decayed/uneconomic edges for free.
 
 **Net of the research arc:** spread reversion (daily+intraday) and funding carry (daily→intraday→
 basis-managed) are dead OOS; cross-venue dislocation was real for 18mo but is decaying + execution-
-killed (kept as a monitor). Zero promotable edges — but the honest gate is proven, and now
+killed (kept as a manual research script). Zero promotable edges — but the honest gate is proven, and now
 automated (below). The infra is the asset; the alpha hunt continues — the honest norm in quant.
 
 ## Evolutionary search engine (`evolver/evolve/`)  ·  built 2026-06-23
