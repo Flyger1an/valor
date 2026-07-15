@@ -19,6 +19,9 @@ describe("operator evidence packet", () => {
     expect(packet.evidence.evolverRecoveryPlan).toContain(
       state.evolverEvidence.recoveryPlan.status,
     );
+    expect(packet.evidence.evolverRecoveryWatchdog).toContain(
+      state.evolverRecoveryWatchdog.posture,
+    );
     expect(packet.attestations.some((item) => item.includes("No live exchange executor"))).toBe(true);
   });
 
@@ -32,6 +35,7 @@ describe("operator evidence packet", () => {
     expect(markdown).toContain("## Controls");
     expect(markdown).toContain("## Next Actions");
     expect(markdown).toContain("Evolver recovery plan");
+    expect(markdown).toContain("Evolver recovery watchdog");
     expect(markdown).toContain(packet.decision);
     expect(markdown).toContain("not live execution approval");
   });

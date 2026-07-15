@@ -9,6 +9,7 @@ import type {
   AuditEvent,
   BacktestReport,
   DataQualityReport,
+  EvolverRecoverySnapshot,
   LiveTradeAttempt,
   MarketDataBundle,
   MarketRiskState,
@@ -33,6 +34,7 @@ export interface ValorLocalState {
   alertRouterState: AlertRouterState;
   auditEvents: AuditEvent[];
   killSwitch?: KillSwitchState;
+  evolverRecoverySnapshots: EvolverRecoverySnapshot[];
   schedulerStatus: SchedulerStatus;
   actionLog: Array<{
     id: string;
@@ -84,6 +86,7 @@ export const INITIAL_STATE: ValorLocalState = {
     acknowledgedAlertIds: [],
   },
   auditEvents: [],
+  evolverRecoverySnapshots: [],
   schedulerStatus: {
     running: false,
     cycleCount: 0,

@@ -15,6 +15,10 @@ import { applyEdgeScoreboardPolicy } from "@/lib/edge/policy";
 import { reconcileDryRunAttempts } from "@/lib/execution/dry-run-executor";
 import { loadEvolverEvidenceReport } from "@/lib/evidence/evolver-import";
 import {
+  appendEvolverRecoverySnapshot,
+  evaluateEvolverRecoveryWatchdog,
+} from "@/lib/evidence/evolver-watchdog";
+import {
   evaluateLiveTradeRequest,
   readLiveTradingSettings,
 } from "@/lib/live/live-trading";
@@ -74,6 +78,30 @@ export async function buildDashboardState() {
   const evolverEvidence = loadEvolverEvidenceReport(
     undefined,
     new Date(data.generatedAt),
+  );
+  const recoverySnapshotUpdate = appendEvolverRecoverySnapshot(
+    persisted.evolverRecoverySnapshots,
+    evolverEvidence,
+  );
+  let evolverRecoverySnapshots = recoverySnapshotUpdate.snapshots;
+  if (recoverySnapshotUpdate.appended) {
+    const nextPersisted = {
+      ...persisted,
+      evolverRecoverySnapshots,
+    };
+    try {
+      store.write(nextPersisted);
+      persisted = nextPersisted;
+    } catch {
+      evolverRecoverySnapshots = [
+        recoverySnapshotUpdate.current,
+        ...(persisted.evolverRecoverySnapshots ?? []),
+      ].slice(0, 72);
+    }
+  }
+  const evolverRecoveryWatchdog = evaluateEvolverRecoveryWatchdog(
+    evolverEvidence,
+    evolverRecoverySnapshots,
   );
   const systemTrust = evaluateSystemTrust({
     dataQuality,
@@ -197,6 +225,7 @@ export async function buildDashboardState() {
     ],
     edgeScoreboard,
     evolverEvidence,
+    evolverRecoveryWatchdog,
     edgePolicy: edgePolicy.decision,
     systemTrust,
     liveSettings,

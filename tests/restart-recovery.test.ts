@@ -107,6 +107,7 @@ function buildRestartState(): ValorLocalState {
       acknowledgedAlertIds: [],
     },
     auditEvents,
+    evolverRecoverySnapshots: [],
     schedulerStatus: {
       running: false,
       cycleCount: 2,

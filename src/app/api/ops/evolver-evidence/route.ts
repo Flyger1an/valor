@@ -17,6 +17,7 @@ export async function GET(request: Request) {
     {
       ok: true,
       evolverEvidence: state.evolverEvidence,
+      evolverRecoveryWatchdog: state.evolverRecoveryWatchdog,
     },
     {
       headers: {

@@ -17,5 +17,6 @@ export async function GET(request: Request) {
     ok: true,
     readiness: state.tinyLiveReadiness,
     evolverEvidence: state.evolverEvidence,
+    evolverRecoveryWatchdog: state.evolverRecoveryWatchdog,
   });
 }

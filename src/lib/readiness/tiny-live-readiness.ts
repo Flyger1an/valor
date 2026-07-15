@@ -6,11 +6,13 @@ import type {
   ExecutionReconciliationReport,
   OperationalRunbookReport,
   PaperPortfolio,
+  SignalKind,
   SystemTrustVerdict,
   TinyLiveReadinessBlocker,
   TinyLiveReadinessCandidate,
   TinyLiveReadinessReport,
 } from "@/lib/domain/types";
+import { benchedSignalKindsFromEvidence } from "@/lib/evidence/evolver-watchdog";
 
 const MIN_EVIDENCE_DAYS = 21;
 const MIN_CLOSED_TRADES_PER_FAMILY = 10;
@@ -29,11 +31,22 @@ export function evaluateTinyLiveReadiness(input: {
 }): TinyLiveReadinessReport {
   const generatedAt = (input.now ?? new Date()).toISOString();
   const evidence = evidenceWindow(input.paper);
-  const candidateRow = bestCandidateRow(input.edgeScoreboard);
+  const benchedSignalKinds = benchedSignalKindsFromEvidence(
+    input.evolverEvidence,
+  );
+  const benchedCandidateRows = qualifiedBenchedRows(
+    input.edgeScoreboard,
+    benchedSignalKinds,
+  );
+  const candidateRow = bestCandidateRow(
+    input.edgeScoreboard,
+    benchedSignalKinds,
+  );
   const blockers: TinyLiveReadinessBlocker[] = [];
 
   addTrustBlockers(blockers, input.dataQuality, input.systemTrust);
   addEvidenceBlockers(blockers, evidence.days, candidateRow);
+  addBenchGuardBlockers(blockers, benchedCandidateRows);
   addControlBlockers(
     blockers,
     input.executionReconciliation,
@@ -102,6 +115,27 @@ function addEvolverEvidenceBlockers(
       evidence: issue.evidence,
     });
   }
+}
+
+function addBenchGuardBlockers(
+  blockers: TinyLiveReadinessBlocker[],
+  benchedCandidateRows: EdgeScoreboardRow[],
+) {
+  if (benchedCandidateRows.length === 0) return;
+  blockers.push({
+    code: "evolver-bench-guard-active",
+    severity: "critical",
+    message:
+      "Imported Evolver recovery plan benches a v0.2 signal family that otherwise qualifies for candidate review.",
+    evidence: benchedCandidateRows
+      .map(
+        (row) =>
+          `${row.kind}: ${row.closedCount} close(s), ${row.winRatePct.toFixed(
+            1,
+          )}% win rate, $${row.totalPnlUsd.toFixed(2)} total PnL`,
+      )
+      .join("; "),
+  });
 }
 
 function addTrustBlockers(
@@ -213,21 +247,39 @@ function addControlBlockers(
   }
 }
 
-function bestCandidateRow(scoreboard: EdgeScoreboard): EdgeScoreboardRow | undefined {
+function bestCandidateRow(
+  scoreboard: EdgeScoreboard,
+  benchedSignalKinds: SignalKind[] = [],
+): EdgeScoreboardRow | undefined {
+  const benched = new Set(benchedSignalKinds);
   return scoreboard.rows
-    .filter(
-      (row) =>
-        row.status === "proving" &&
-        row.closedCount >= MIN_CLOSED_TRADES_PER_FAMILY &&
-        row.totalPnlUsd >= MIN_TOTAL_PNL_USD &&
-        row.winRatePct >= MIN_WIN_RATE_PCT,
-    )
+    .filter((row) => !benched.has(row.kind) && rowQualifiesForCandidate(row))
     .sort(
       (a, b) =>
         b.totalPnlUsd - a.totalPnlUsd ||
         b.closedCount - a.closedCount ||
         b.winRatePct - a.winRatePct,
     )[0];
+}
+
+function qualifiedBenchedRows(
+  scoreboard: EdgeScoreboard,
+  benchedSignalKinds: SignalKind[],
+): EdgeScoreboardRow[] {
+  if (benchedSignalKinds.length === 0) return [];
+  const benched = new Set(benchedSignalKinds);
+  return scoreboard.rows.filter(
+    (row) => benched.has(row.kind) && rowQualifiesForCandidate(row),
+  );
+}
+
+function rowQualifiesForCandidate(row: EdgeScoreboardRow): boolean {
+  return (
+    row.status === "proving" &&
+    row.closedCount >= MIN_CLOSED_TRADES_PER_FAMILY &&
+    row.totalPnlUsd >= MIN_TOTAL_PNL_USD &&
+    row.winRatePct >= MIN_WIN_RATE_PCT
+  );
 }
 
 function candidateFromRow(row: EdgeScoreboardRow): TinyLiveReadinessCandidate {

@@ -592,6 +592,68 @@ export interface EvolverRecoveryPlan {
   actions: EvolverRecoveryAction[];
 }
 
+export type EvolverRecoveryTrendPosture =
+  | "unavailable"
+  | "new"
+  | "improving"
+  | "flat"
+  | "deteriorating"
+  | "clear";
+
+export interface EvolverRecoverySnapshot {
+  id: string;
+  generatedAt: string;
+  sourceLabel: string;
+  evidenceStatus: EvolverEvidenceStatus;
+  recoveryStatus: EvolverRecoveryPlan["status"];
+  requiredPnlRecoveryUsd: number;
+  additionalEvidenceDays: number;
+  additionalClosedTrades: number;
+  winRateGapPct: number;
+  convergenceRateGapPct: number;
+  confidenceHaircutPct?: number;
+  gapScore: number;
+  benchCandidates: string[];
+  actionCodes: string[];
+  signature: string;
+}
+
+export interface EvolverRecoveryMetricTrend {
+  key:
+    | "gap_score"
+    | "required_pnl_recovery_usd"
+    | "additional_evidence_days"
+    | "additional_closed_trades"
+    | "win_rate_gap_pct"
+    | "convergence_rate_gap_pct"
+    | "confidence_haircut_pct";
+  label: string;
+  unit: "score" | "usd" | "days" | "trades" | "pp" | "pct";
+  current: number;
+  previous?: number;
+  delta?: number;
+  direction: "new" | "improved" | "flat" | "deteriorated";
+}
+
+export interface EvolverBenchGuardReport {
+  active: boolean;
+  benchedCandidates: string[];
+  matchingSignalKinds: SignalKind[];
+  summary: string;
+}
+
+export interface EvolverRecoveryWatchdogReport {
+  id: string;
+  generatedAt: string;
+  posture: EvolverRecoveryTrendPosture;
+  summary: string;
+  snapshotCount: number;
+  current?: EvolverRecoverySnapshot;
+  previous?: EvolverRecoverySnapshot;
+  metrics: EvolverRecoveryMetricTrend[];
+  benchGuard: EvolverBenchGuardReport;
+}
+
 export interface EvolverResearchLoopSummary {
   name: string;
   cycleCount: number;

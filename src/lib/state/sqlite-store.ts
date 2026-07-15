@@ -20,7 +20,11 @@ import {
 } from "@/lib/state/local-store";
 
 const SNAPSHOT_KEY = "valor-local-state";
-const MIGRATIONS = ["0001_initial.sql", "0002_durable_state.sql"];
+const MIGRATIONS = [
+  "0001_initial.sql",
+  "0002_durable_state.sql",
+  "0004_evolver_recovery.sql",
+];
 
 export class SqliteStateStore implements StateStore {
   private db: DatabaseSync | null = null;
@@ -81,6 +85,7 @@ export class SqliteStateStore implements StateStore {
       this.writeAlertDeliveries(db, state.alertDeliveries);
       this.writeAuditEvents(db, state.auditEvents);
       this.writeActionLog(db, state.actionLog);
+      this.writeEvolverRecoverySnapshots(db, state.evolverRecoverySnapshots);
       if (state.killSwitch) this.writeKillSwitch(db, state.killSwitch, now);
       db.exec("COMMIT");
     } catch (error) {
@@ -98,6 +103,7 @@ export class SqliteStateStore implements StateStore {
     if (!this.db) {
       mkdirSync(dirname(this.path), { recursive: true });
       this.db = new DatabaseSync(this.path);
+      this.db.exec("PRAGMA busy_timeout = 5000");
       this.applyMigrations(this.db);
     }
     return this.db;
@@ -481,6 +487,43 @@ export class SqliteStateStore implements StateStore {
         entry.action,
         entry.status,
         entry.message,
+      );
+    }
+  }
+
+  private writeEvolverRecoverySnapshots(
+    db: DatabaseSync,
+    snapshots: ValorLocalState["evolverRecoverySnapshots"],
+  ) {
+    db.exec("DELETE FROM evolver_recovery_snapshots");
+
+    const statement = db.prepare(
+      `INSERT OR REPLACE INTO evolver_recovery_snapshots (
+        id, generated_at, source_label, evidence_status, recovery_status,
+        required_pnl_recovery_usd, additional_evidence_days,
+        additional_closed_trades, win_rate_gap_pct, convergence_rate_gap_pct,
+        confidence_haircut_pct, gap_score, bench_candidates_json,
+        action_codes_json, signature
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    for (const snapshot of snapshots) {
+      statement.run(
+        snapshot.id,
+        snapshot.generatedAt,
+        snapshot.sourceLabel,
+        snapshot.evidenceStatus,
+        snapshot.recoveryStatus,
+        snapshot.requiredPnlRecoveryUsd,
+        snapshot.additionalEvidenceDays,
+        snapshot.additionalClosedTrades,
+        snapshot.winRateGapPct,
+        snapshot.convergenceRateGapPct,
+        snapshot.confidenceHaircutPct ?? null,
+        snapshot.gapScore,
+        JSON.stringify(snapshot.benchCandidates),
+        JSON.stringify(snapshot.actionCodes),
+        snapshot.signature,
       );
     }
   }

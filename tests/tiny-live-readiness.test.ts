@@ -117,6 +117,34 @@ describe("tiny-live readiness", () => {
       ),
     ).toBe(true);
   });
+
+  it("blocks candidate review when Evolver recovery plan benches the candidate family", () => {
+    const paper = paperWithClosedTrades(24);
+    const dataQuality = healthyDataQuality();
+    const report = evaluateTinyLiveReadiness({
+      dataQuality,
+      systemTrust: evaluateSystemTrust({
+        dataQuality,
+        risk: healthyRisk(),
+        paper,
+        now,
+      }),
+      edgeScoreboard: scoreboardWithCandidate(),
+      paper,
+      executionReconciliation: reconcileDryRunAttempts([], now),
+      operationalRunbook: readyRunbook(dataQuality, paper),
+      evolverEvidence: benchedEvolverEvidence("funding_carry"),
+      now,
+    });
+
+    expect(report.status).toBe("no_go");
+    expect(report.candidate).toBeUndefined();
+    expect(
+      report.blockers.some(
+        (blocker) => blocker.code === "evolver-bench-guard-active",
+      ),
+    ).toBe(true);
+  });
 });
 
 function readyRunbook(dataQuality: DataQualityReport, paper: PaperPortfolio) {
@@ -336,6 +364,39 @@ function blockedEvolverEvidence(): EvolverEvidenceReport {
             "Negative imported shadow PnL blocks promotion even when local v0.2 paper evidence improves.",
         },
       ],
+    },
+  };
+}
+
+function benchedEvolverEvidence(benchCandidate: string): EvolverEvidenceReport {
+  return {
+    id: "evolver-evidence:bench-test",
+    generatedAt: now.toISOString(),
+    status: "healthy",
+    configured: true,
+    sourceLabel: "test-evolver",
+    summary: "healthy imported evidence with bench guard",
+    evidenceDays: 21,
+    firstTimestamp: "2026-06-01T00:00:00.000Z",
+    lastTimestamp: "2026-06-21T00:00:00.000Z",
+    totalResearchCycles: 42,
+    surfacedCandidateCount: 1,
+    researchLoops: [],
+    issues: [],
+    recoveryPlan: {
+      status: "clear",
+      summary: "clear imported evidence with explicit bench guard",
+      minimumEvidenceDays: 21,
+      additionalEvidenceDays: 0,
+      minimumClosedTrades: 30,
+      additionalClosedTrades: 0,
+      minimumWinRatePct: 50,
+      winRateGapPct: 0,
+      minimumConvergenceRatePct: 50,
+      convergenceRateGapPct: 0,
+      requiredPnlRecoveryUsd: 0,
+      benchCandidates: [benchCandidate],
+      actions: [],
     },
   };
 }

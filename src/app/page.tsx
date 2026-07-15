@@ -311,7 +311,10 @@ export default async function Home() {
             title="Evolver Soak"
             subtitle={`${state.evolverEvidence.status}; ${state.evolverEvidence.evidenceDays} imported day${state.evolverEvidence.evidenceDays === 1 ? "" : "s"}; ${state.evolverEvidence.totalResearchCycles} research cycles`}
           />
-          <EvolverEvidencePanel report={state.evolverEvidence} />
+          <EvolverEvidencePanel
+            report={state.evolverEvidence}
+            watchdog={state.evolverRecoveryWatchdog}
+          />
         </section>
 
         <section className="section-band" id="execution">
@@ -756,8 +759,12 @@ function EdgeScoreboardPanel({ scoreboard }: { scoreboard: EdgeScoreboard }) {
 
 function EvolverEvidencePanel({
   report,
+  watchdog,
 }: {
   report: Awaited<ReturnType<typeof buildDashboardState>>["evolverEvidence"];
+  watchdog: Awaited<
+    ReturnType<typeof buildDashboardState>
+  >["evolverRecoveryWatchdog"];
 }) {
   const shadowPnl =
     report.shadow?.reportedPnlUsd ??
@@ -920,6 +927,80 @@ function EvolverEvidencePanel({
             ))}
           </div>
         )}
+      </div>
+      <div className="panel full-width">
+        <h3>Recovery Watchdog</h3>
+        <p className="risk-explanation">{watchdog.summary}</p>
+        <div className="mini-metrics">
+          <div className="mini-metric">
+            <span>Posture</span>
+            <strong className={watchdogPostureClass(watchdog.posture)}>
+              {watchdog.posture}
+            </strong>
+          </div>
+          <div className="mini-metric">
+            <span>Snapshots</span>
+            <strong>{watchdog.snapshotCount}</strong>
+          </div>
+          <div className="mini-metric">
+            <span>Gap Score</span>
+            <strong>{watchdog.current?.gapScore.toFixed(1) ?? "n/a"}</strong>
+          </div>
+          <div className="mini-metric">
+            <span>Prior Score</span>
+            <strong>{watchdog.previous?.gapScore.toFixed(1) ?? "n/a"}</strong>
+          </div>
+          <div className="mini-metric">
+            <span>Bench Matches</span>
+            <strong>{watchdog.benchGuard.matchingSignalKinds.length}</strong>
+          </div>
+          <div className="mini-metric">
+            <span>Bench Guard</span>
+            <strong>{watchdog.benchGuard.active ? "active" : "inactive"}</strong>
+          </div>
+        </div>
+        <div className="status-list">
+          <LimitRow
+            label="Matching Signal Kinds"
+            value={
+              watchdog.benchGuard.matchingSignalKinds.length
+                ? watchdog.benchGuard.matchingSignalKinds.join(", ")
+                : "none"
+            }
+          />
+          <LimitRow
+            label="Last Snapshot"
+            value={
+              watchdog.current?.generatedAt
+                ? formatDateTime(watchdog.current.generatedAt)
+                : "n/a"
+            }
+          />
+        </div>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th>Current</th>
+                <th>Delta</th>
+                <th>Direction</th>
+              </tr>
+            </thead>
+            <tbody>
+              {watchdog.metrics.slice(0, 7).map((metric) => (
+                <tr key={metric.key}>
+                  <td>{metric.label}</td>
+                  <td>{formatWatchdogMetric(metric.current, metric.unit)}</td>
+                  <td>{formatWatchdogDelta(metric.delta, metric.unit)}</td>
+                  <td className={metricDirectionClass(metric.direction)}>
+                    {metric.direction}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
       <div className="panel full-width">
         <h3>Research Loops</h3>
@@ -1676,6 +1757,36 @@ function percentPointGap(value: number): string {
   return value > 0 ? `+${value.toFixed(1)} pp` : "0.0 pp";
 }
 
+function formatWatchdogMetric(
+  value: number,
+  unit: Awaited<
+    ReturnType<typeof buildDashboardState>
+  >["evolverRecoveryWatchdog"]["metrics"][number]["unit"],
+): string {
+  if (unit === "usd") return money(value);
+  if (unit === "days") return `${value.toFixed(0)}d`;
+  if (unit === "trades") return value.toFixed(0);
+  if (unit === "pp") return `${value.toFixed(1)} pp`;
+  if (unit === "pct") return `${value.toFixed(1)}%`;
+  return value.toFixed(1);
+}
+
+function formatWatchdogDelta(
+  value: number | undefined,
+  unit: Awaited<
+    ReturnType<typeof buildDashboardState>
+  >["evolverRecoveryWatchdog"]["metrics"][number]["unit"],
+): string {
+  if (value === undefined) return "n/a";
+  const sign = value > 0 ? "+" : "";
+  if (unit === "usd") return `${sign}${money(value)}`;
+  if (unit === "days") return `${sign}${value.toFixed(0)}d`;
+  if (unit === "trades") return `${sign}${value.toFixed(0)}`;
+  if (unit === "pp") return `${sign}${value.toFixed(1)} pp`;
+  if (unit === "pct") return `${sign}${value.toFixed(1)}%`;
+  return `${sign}${value.toFixed(1)}`;
+}
+
 function formatDateTime(value: string): string {
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
@@ -1766,6 +1877,28 @@ function evolverEvidenceStatusClass(
   if (status === "healthy") return "good-text";
   if (status === "watch") return "severity-pill-watch";
   if (status === "blocked") return "bad-text";
+  return "muted";
+}
+
+function watchdogPostureClass(
+  posture: Awaited<
+    ReturnType<typeof buildDashboardState>
+  >["evolverRecoveryWatchdog"]["posture"],
+): string {
+  if (posture === "clear" || posture === "improving") return "good-text";
+  if (posture === "flat" || posture === "new") return "severity-pill-watch";
+  if (posture === "deteriorating") return "bad-text";
+  return "muted";
+}
+
+function metricDirectionClass(
+  direction: Awaited<
+    ReturnType<typeof buildDashboardState>
+  >["evolverRecoveryWatchdog"]["metrics"][number]["direction"],
+): string {
+  if (direction === "improved") return "good-text";
+  if (direction === "deteriorated") return "bad-text";
+  if (direction === "flat") return "severity-pill-watch";
   return "muted";
 }
 

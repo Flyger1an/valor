@@ -51,6 +51,7 @@ export interface OperatorEvidencePacket {
     edgeScoreboard: string;
     evolverSoak: string;
     evolverRecoveryPlan: string;
+    evolverRecoveryWatchdog: string;
     topSignalFamilies: string[];
     backtest: string;
   };
@@ -102,6 +103,7 @@ export function buildOperatorEvidencePacket(
       edgeScoreboard: `${state.edgeScoreboard.rows.length} signal family row(s), ${state.edgeScoreboard.totals.ledgerEventCount} ledger event(s), total PnL ${formatUsd(state.edgeScoreboard.totals.totalPnlUsd)}.`,
       evolverSoak: formatEvolverEvidence(state.evolverEvidence),
       evolverRecoveryPlan: formatEvolverRecoveryPlan(state.evolverEvidence),
+      evolverRecoveryWatchdog: formatEvolverRecoveryWatchdog(state),
       topSignalFamilies: state.edgeScoreboard.rows
         .slice(0, 6)
         .map(formatScoreboardRow),
@@ -158,6 +160,7 @@ export function formatOperatorEvidenceMarkdown(
     `- Edge scoreboard: ${packet.evidence.edgeScoreboard}`,
     `- Evolver imported soak: ${packet.evidence.evolverSoak}`,
     `- Evolver recovery plan: ${packet.evidence.evolverRecoveryPlan}`,
+    `- Evolver recovery watchdog: ${packet.evidence.evolverRecoveryWatchdog}`,
     `- Backtest: ${packet.evidence.backtest}`,
     "",
     "### Top Signal Families",
@@ -242,6 +245,7 @@ function collectNextActions(state: DashboardState): string[] {
   const actions = [
     state.tinyLiveReadiness.memo.requiredNextEvidence,
     evolverEvidenceAction(state),
+    evolverWatchdogAction(state),
     ...state.evolverEvidence.recoveryPlan.actions
       .slice(0, 4)
       .map(
@@ -283,6 +287,18 @@ function formatEvolverRecoveryPlan(
   return `${plan.status}: ${plan.summary}${actions ? ` Actions: ${actions}.` : ""}`;
 }
 
+function formatEvolverRecoveryWatchdog(state: DashboardState): string {
+  const watchdog = state.evolverRecoveryWatchdog;
+  const current = watchdog.current;
+  const previous = watchdog.previous;
+  const score = current
+    ? `gap score ${current.gapScore.toFixed(1)}`
+    : "no current gap score";
+  const prior = previous ? ` prior ${previous.gapScore.toFixed(1)}.` : ".";
+
+  return `${watchdog.posture}: ${score}, ${watchdog.snapshotCount} snapshot(s), ${watchdog.benchGuard.summary}${prior}`;
+}
+
 function evolverEvidenceAction(state: DashboardState): string {
   const report = state.evolverEvidence;
   if (!report.configured) {
@@ -293,6 +309,20 @@ function evolverEvidenceAction(state: DashboardState): string {
   }
   if (report.status === "watch") {
     return "Review imported Evolver soak warnings before any candidate-review memo.";
+  }
+  return "";
+}
+
+function evolverWatchdogAction(state: DashboardState): string {
+  const watchdog = state.evolverRecoveryWatchdog;
+  if (watchdog.posture === "deteriorating") {
+    return "Pause candidate advancement and inspect Evolver recovery inputs; the imported recovery gap is deteriorating versus the prior distinct snapshot.";
+  }
+  if (watchdog.benchGuard.matchingSignalKinds.length > 0) {
+    return `Keep benched v0.2 signal kind(s) out of candidate review: ${watchdog.benchGuard.matchingSignalKinds.join(", ")}.`;
+  }
+  if (watchdog.posture === "new") {
+    return "Let the Evolver recovery watchdog collect another distinct snapshot before interpreting recovery trend.";
   }
   return "";
 }

@@ -80,7 +80,7 @@ Do not commit either value. Keep `VALOR_OPS_SECRET` separate from `VALOR_SESSION
 
 ## Local Persistence
 
-Valor now uses a SQLite-backed state store for local file URLs such as `file:./valor.sqlite`. If `DATABASE_URL` is absent, it defaults to `.valor/valor.sqlite`. The store writes a dashboard snapshot plus normalized rows for market snapshots, signals, risk states, data-quality reports, backtests, paper trades/positions, live/dry-run attempts, alerts, audit events, kill-switch state, and action log entries.
+Valor now uses a SQLite-backed state store for local file URLs such as `file:./valor.sqlite`. If `DATABASE_URL` is absent, it defaults to `.valor/valor.sqlite`. The store writes a dashboard snapshot plus normalized rows for market snapshots, signals, risk states, data-quality reports, backtests, paper trades/positions, live/dry-run attempts, alerts, audit events, kill-switch state, Evolver recovery snapshots, and action log entries.
 
 Postgres URLs currently fall back to the JSON store until a Postgres adapter is added. Use `VALOR_STATE_BACKEND=json` when you explicitly want the old local JSON behavior.
 

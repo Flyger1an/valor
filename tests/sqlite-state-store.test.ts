@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createAuditTrail } from "@/lib/audit/audit-log";
 import { sampleMarketData } from "@/lib/data/sample-market-data";
 import { evaluateDataQuality } from "@/lib/data/quality";
-import type { LiveTradeAttempt } from "@/lib/domain/types";
+import type { EvolverRecoverySnapshot, LiveTradeAttempt } from "@/lib/domain/types";
 import { computeFromData } from "@/lib/ops/recompute";
 import { LocalStateStore, type ValorLocalState } from "@/lib/state/local-store";
 import { getStateStore } from "@/lib/state/store-factory";
@@ -39,6 +39,7 @@ describe("sqlite state store", () => {
     expect(restored.backtest?.strategyName).toBe(state.backtest?.strategyName);
     expect(restored.paper?.positions.length).toBe(state.paper?.positions.length);
     expect(restored.auditEvents.length).toBeGreaterThan(0);
+    expect(restored.evolverRecoverySnapshots).toHaveLength(1);
   });
 
   it("upserts normalized rows without duplicating logical refresh state", () => {
@@ -55,6 +56,7 @@ describe("sqlite state store", () => {
     const marketCount = countRows(db, "market_snapshots");
     const qualityCount = countRows(db, "data_quality_reports");
     const liveAttemptCount = countRows(db, "live_trade_attempts");
+    const evolverRecoveryCount = countRows(db, "evolver_recovery_snapshots");
     const snapshotCount = countRows(db, "app_state");
     db.close();
 
@@ -62,6 +64,7 @@ describe("sqlite state store", () => {
     expect(marketCount).toBe(sampleMarketData.markets.length);
     expect(qualityCount).toBe(1);
     expect(liveAttemptCount).toBe(state.liveTradeAttempts.length);
+    expect(evolverRecoveryCount).toBe(state.evolverRecoverySnapshots.length);
     expect(snapshotCount).toBe(1);
   });
 
@@ -178,6 +181,7 @@ function buildState(): ValorLocalState {
       acknowledgedAlertIds: [],
     },
     auditEvents,
+    evolverRecoverySnapshots: [evolverRecoverySnapshot()],
     schedulerStatus: {
       running: false,
       cycleCount: 0,
@@ -193,6 +197,26 @@ function buildState(): ValorLocalState {
         message: "Test refresh.",
       },
     ],
+  };
+}
+
+function evolverRecoverySnapshot(): EvolverRecoverySnapshot {
+  return {
+    id: "evolver-recovery:test",
+    generatedAt: sampleMarketData.generatedAt,
+    sourceLabel: "test-evolver",
+    evidenceStatus: "blocked",
+    recoveryStatus: "blocked",
+    requiredPnlRecoveryUsd: 4478.76,
+    additionalEvidenceDays: 5,
+    additionalClosedTrades: 0,
+    winRateGapPct: 4.7,
+    convergenceRateGapPct: 10,
+    confidenceHaircutPct: 49.4,
+    gapScore: 6478.76,
+    benchCandidates: ["funding_carry"],
+    actionCodes: ["recover-shadow-pnl"],
+    signature: "test-signature",
   };
 }
 
