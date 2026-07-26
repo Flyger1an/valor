@@ -33,3 +33,7 @@ evolver/*_ledger.jsonl
 
 # TypeScript incremental-build cache (regenerated every build; never track)
 tsconfig.tsbuildinfo
+
+# secrets hygiene: env backups + secret drops must never be stageable (defense in depth)
+.env.backup-*
+.secrets/
