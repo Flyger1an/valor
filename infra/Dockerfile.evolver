@@ -4,10 +4,18 @@ FROM python:3.11-slim
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 
-# Copy source BEFORE the editable install (it needs the package present).
+# LAYER 1 — dependencies only, keyed to pyproject.toml. (Fix 2026-07: the old order COPY'd all
+# of evolver/ before `pip install -e`, so EVERY source edit invalidated the ~1.1GB dependency
+# layer and every deploy re-downloaded the full set. Deps now rebuild only when pyproject changes.)
+COPY evolver/pyproject.toml /tmp/deps/pyproject.toml
+RUN python -c "import tomllib, subprocess, sys; \
+    deps = tomllib.load(open('/tmp/deps/pyproject.toml', 'rb'))['project']['dependencies']; \
+    sys.exit(subprocess.call([sys.executable, '-m', 'pip', 'install', *deps]))"
+
+# LAYER 2 — source + a fast no-deps editable install (seconds; deps already satisfied above).
 COPY evolver /app/evolver
 COPY shared /app/shared
-RUN pip install -e /app/evolver
+RUN pip install -e /app/evolver --no-deps
 
 # Default = API; compose overrides `command` per service (bot, loop, dashboard).
 EXPOSE 8000
