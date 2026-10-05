@@ -33,6 +33,24 @@ export type ExperimentStatus = {
   halt?: string;
   strategy?: string;
   evidenceBlocks?: number;
+  captureFresh?: boolean;
+  marksFresh?: boolean;
+  frames?: number;
+  evidencePolicy?: string;
+  evidenceQuality?: {
+    day: string;
+    completeSoFar: boolean;
+    invalidReasons: string[];
+    firstFullDay?: string;
+    observations: number;
+    freshPairFraction?: number;
+    staleByAsset: { symbol: string; count: number; heldCount: number; maximumAge: number }[];
+    gapsOver60: number;
+    maximumGap: number;
+    valuationKnown: boolean;
+    legacyBlocks: number;
+    missingDays: number;
+  };
   sharedOperatingEstimate?: number;
   actualSharedCost?: number;
   books?: ExperimentBook[];
@@ -48,6 +66,37 @@ function amount(value: unknown): number {
 }
 const optional = (v: unknown) => v === null || v === undefined ? undefined : amount(v);
 const words = (v: unknown) => String(v ?? "").slice(0, 200).replaceAll("_", " ");
+const count = (v: unknown) => {
+  const n = amount(v);
+  if (!Number.isSafeInteger(n) || n < 0) throw new Error("invalid count");
+  return n;
+};
+
+function evidenceQuality(raw: Json): ExperimentStatus["evidenceQuality"] {
+  const value = raw.evidence_quality as Json | undefined;
+  if (!value?.coverage) return undefined;
+  const coverage = value.coverage as Json;
+  const fraction = optional(value.fresh_pair_observation_fraction);
+  if (fraction !== undefined && (fraction < 0 || fraction > 1)) throw new Error("invalid coverage fraction");
+  const first = optional(value.first_full_utc_day_start);
+  const stale = coverage.stale_by_asset as Json, held = coverage.held_stale_by_asset as Json;
+  const ages = coverage.maximum_quote_age_seconds as Json;
+  const observations = count(coverage.observations);
+  const staleByAsset = ["BTC-USD", "ETH-USD"].map(symbol => ({
+    symbol, count: count(stale[symbol]), heldCount: count(held[symbol]), maximumAge: amount(ages[symbol]),
+  }));
+  if (staleByAsset.some(s => s.count > observations || s.heldCount > s.count || s.maximumAge < 0)) {
+    throw new Error("inconsistent quote coverage");
+  }
+  return { day: words(value.day), completeSoFar: value.complete_so_far === true,
+    invalidReasons: Array.isArray(value.invalid_reasons) ? value.invalid_reasons.map(words) : [],
+    firstFullDay: first === undefined ? undefined : new Date(first * 1000).toISOString(),
+    observations, freshPairFraction: fraction, staleByAsset,
+    gapsOver60: count(coverage.gaps_over_60_seconds), maximumGap: amount(coverage.max_gap_seconds),
+    valuationKnown: (value.baseline_valuation_now as Json)?.valid === true,
+    legacyBlocks: count(value.legacy_blocks_retained), missingDays: count(value.unobserved_full_days),
+  };
+}
 
 export function loadExperimentStatus(path = process.env.VALOR_EXPERIMENT_SNAPSHOT_PATH, now = Date.now()): ExperimentStatus {
   if (!path) return { status: "unconfigured" };
@@ -81,8 +130,14 @@ export function loadExperimentStatus(path = process.env.VALOR_EXPERIMENT_SNAPSHO
       };
     });
     if (new Set(books.map(b => b.name)).size !== 3) throw new Error("duplicate book");
+    const captureFresh = now >= timestamp && now - timestamp <= 30_000;
     return {
-      status: raw.marks_fresh === true && now >= timestamp && now - timestamp <= 30_000 ? "current" : "stale",
+      status: raw.marks_fresh === true && captureFresh ? "current" : "stale",
+      captureFresh, marksFresh: raw.marks_fresh === true,
+      frames: raw.frames === undefined ? undefined : count(raw.frames),
+      evidencePolicy: (raw.active_evidence_policy as Json)?.version === undefined ? undefined :
+        String((raw.active_evidence_policy as Json).version).slice(0, 100),
+      evidenceQuality: evidenceQuality(raw),
       epoch: new Date(epoch).toISOString(), end: new Date(end).toISOString(), timestamp: new Date(timestamp).toISOString(),
       source: String(raw.market_source), halt: words(raw.halt), strategy: String(raw.strategy),
       evidenceBlocks: amount(raw.usable_evidence_blocks), sharedOperatingEstimate: optional(raw.shared_operating_estimate),

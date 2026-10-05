@@ -4,6 +4,7 @@ import { MetricTile, SectionHeader } from "@/components/dashboard/ui";
 import { requireBrowserSession } from "@/lib/auth/page-session";
 import { loadTradingRuntimeStatus } from "@/lib/trading/runtime-status";
 import { ExperimentComparison } from "./experiment-comparison";
+import { StudyRefresh } from "./study-refresh";
 
 export const dynamic = "force-dynamic";
 const usd = (n: number | undefined) => n === undefined ? "Unavailable" : new Intl.NumberFormat("en-US", {
@@ -15,6 +16,7 @@ export default async function StudyPage() {
   const report = loadTradingRuntimeStatus();
   return <main style={{ maxWidth: 1150, margin: "0 auto", padding: "36px 24px" }}>
     <Link href="/" className="muted">← Valor dashboard</Link>
+    <StudyRefresh />
     <section className="section-band" style={{ marginTop: 24 }}>
       <SectionHeader icon={<Activity size={20} aria-hidden="true" />} title="Account growth study"
         subtitle="Execution ledger • 90-day study begins with the first live fill" />
@@ -40,7 +42,7 @@ export default async function StudyPage() {
           <p>Learning: {report.learning}</p>
           <p>{report.positionCount} positions · {report.pendingOrderCount} pending orders · {usd(report.cash)} cash</p>
           <p>Unrealized trading P&L: {usd(report.unrealizedPnl)}</p>
-          {report.status === "stale" && <p className="bad-text">The latest ledger snapshot is stale. These figures do not confirm current account state.</p>}
+          {report.status === "stale" && <p className="bad-text">Current account state is unverified: the snapshot, broker reconciliation or market quotes failed freshness checks.</p>}
         </div>
         <div className="panel" style={{ marginTop: 24 }}>
           <h2>News in decisions</h2>

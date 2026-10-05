@@ -3,6 +3,7 @@
 This package supplies the existing BTC/ETH cash-study runtime and the shared
 contracts, ledger, strategy, news and snapshot types used by the virtual experiment.
 The three virtual books are described in [EXPERIMENT.md](EXPERIMENT.md).
+See [DASHBOARD.md](DASHBOARD.md) for private, automatically refreshed monitoring.
 
 `policy.paper.json` is a local simulation policy. `policy.demo.json` selects the
 Alpaca paper broker with simulated funds. Real-money execution is blocked by the

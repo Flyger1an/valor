@@ -68,4 +68,23 @@ describe("fictional book reporting", () => {
     expect(response.status).toBe(401);
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
+  it("separates current transport from stale quotes and reports prospective v2 coverage", () => {
+    const report = loadExperimentStatus(snapshot({ marks_fresh: false, frames: 30,
+      active_evidence_policy: {version: "robust-quarter-kelly-v2"},
+      evidence_quality: {day: "2026-10-05", complete_so_far: false,
+        invalid_reasons: ["policy_boundary_partial_day"], first_full_utc_day_start: now / 1000 + 86400,
+        fresh_pair_observation_fraction: .4, baseline_valuation_now: {valid: true},
+        legacy_blocks_retained: 1, unobserved_full_days: 0,
+        coverage: {observations: 10, stale_by_asset: {"BTC-USD": 0, "ETH-USD": 6},
+          held_stale_by_asset: {"BTC-USD": 0, "ETH-USD": 0}, maximum_quote_age_seconds: {"BTC-USD": 5, "ETH-USD": 90},
+          gaps_over_60_seconds: 0, max_gap_seconds: 5}}}), now);
+    expect(report.status).toBe("stale");
+    expect(report.captureFresh).toBe(true);
+    expect(report.marksFresh).toBe(false);
+    expect(report.evidenceQuality?.invalidReasons).toEqual(["policy boundary partial day"]);
+    expect(report.evidenceQuality?.staleByAsset[1]).toEqual({symbol: "ETH-USD", count: 6, heldCount: 0, maximumAge: 90});
+    expect(report.evidenceQuality?.valuationKnown).toBe(true);
+    expect(report.evidenceBlocks).toBe(0);
+    expect(report.evidenceQuality?.legacyBlocks).toBe(1);
+  });
 });
