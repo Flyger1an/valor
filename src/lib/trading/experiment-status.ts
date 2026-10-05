@@ -102,7 +102,17 @@ export function loadExperimentStatus(path = process.env.VALOR_EXPERIMENT_SNAPSHO
   if (!path) return { status: "unconfigured" };
   try {
     if (statSync(path).size > 1_000_000) throw new Error("oversized snapshot");
-    const raw = JSON.parse(readFileSync(path, "utf8")) as Json;
+    return parseExperimentStatus(JSON.parse(readFileSync(path, "utf8")), now);
+  } catch {
+    return { status: "unavailable" };
+  }
+}
+
+/** Also used by the private dashboard after checking the pinned study identity. */
+export function parseExperimentStatus(value: unknown, now = Date.now()): ExperimentStatus {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid snapshot");
+    const raw = value as Json;
     if (raw.schema_version !== 1 || raw.mode !== "virtual_only" || !Array.isArray(raw.books) || raw.books.length !== 3 ||
         !/^[a-f0-9]{64}$/.test(String(raw.identity_hash)) || raw.incremental_model_api_calls !== 0) {
       throw new Error("not an isolated virtual experiment");

@@ -1,0 +1,37 @@
+name: valor-dashboard
+services:
+  web:
+    image: ${VALOR_DASHBOARD_IMAGE:?set the verified dashboard image}
+    pull_policy: never
+    restart: unless-stopped
+    read_only: true
+    network_mode: none
+    user: "10001:10001"
+    init: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 128m
+    cpus: 0.25
+    stop_grace_period: 10s
+    volumes:
+      - source_outbox:/runtime:ro
+      - experiment_state:/experiment:ro
+      - /opt/valor-dashboard/config:/config:ro
+      - /opt/valor-dashboard/socket:/socket:rw
+    logging:
+      driver: json-file
+      options: {max-size: "2m", max-file: "2"}
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('node:http').get({socketPath:'/socket/dashboard.sock',path:'/'}, r => {r.resume();process.exit(r.statusCode === 403 ? 0 : 1)}).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+volumes:
+  source_outbox:
+    external: true
+    name: valor-demo_outbox
+  experiment_state:
+    external: true
+    name: valor-experiment_state

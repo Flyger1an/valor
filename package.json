@@ -12,6 +12,7 @@
     "soak:scheduler": "node scripts/soak-scheduler.mjs",
     "verify:dashboard": "node scripts/verify-dashboard.mjs",
     "test": "vitest run",
+    "test:private-dashboard": "node --test tests/trading-private-dashboard.test.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {

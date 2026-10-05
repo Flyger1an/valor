@@ -53,7 +53,17 @@ export function loadTradingRuntimeStatus(
   if (!path) return { configured: false, status: "unconfigured" };
   try {
     if (statSync(path).size > 1_000_000) throw new Error("oversized snapshot");
-    const raw = JSON.parse(readFileSync(path, "utf8")) as Json;
+    return parseTradingRuntimeStatus(JSON.parse(readFileSync(path, "utf8")), now);
+  } catch {
+    return { configured: true, status: "unavailable" };
+  }
+}
+
+/** Parse the same in-memory snapshot whose identity the private dashboard checked. */
+export function parseTradingRuntimeStatus(value: unknown, now = Date.now()): TradingRuntimeStatus {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid snapshot");
+    const raw = value as Json;
     if (raw.schema_version !== 1 || !["paper", "demo", "live"].includes(String(raw.mode)) ||
         !Array.isArray(raw.positions) || !Array.isArray(raw.pending_orders) ||
         !/^[a-f0-9]{64}$/.test(String(raw.policy_hash))) throw new Error("invalid snapshot");
