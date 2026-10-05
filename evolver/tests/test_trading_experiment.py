@@ -23,7 +23,9 @@ SYMBOLS = ["BTC-USD", "ETH-USD"]
 
 
 def policy():
-    return Policy.from_dict(json.loads((ROOT/"infra/trading/policy.demo.json").read_text()))
+    values = json.loads((ROOT/"infra/trading/policy.demo.initial.json").read_text())
+    values["allowed_instruments"] = SYMBOLS  # Immutable legacy replay fixtures.
+    return Policy.from_dict(values)
 
 
 def histories(symbols=("BTC-USD",), at=NOW):
@@ -181,7 +183,7 @@ class ExperimentTests(unittest.TestCase):
                 patch("evolver.trading.experiment_runner.signal.signal"), \
                 patch("evolver.trading.experiment_runner.capture") as read, redirect_stdout(StringIO()):
             self.assertEqual(main(["run", "--root", self.tmp.name, "--source-root", self.tmp.name+"-source",
-                "--policy", str(ROOT/"infra/trading/policy.demo.json"), "--stay-running-after-completion"]), 0)
+                "--policy", str(ROOT/"infra/trading/policy.demo.initial.json"), "--stay-running-after-completion"]), 0)
         read.assert_not_called()
         stop.wait.assert_called_once_with(30)
         self.assertEqual(self.exp.report(), before)
@@ -215,12 +217,12 @@ class ExperimentTests(unittest.TestCase):
     def test_no_refill_or_policy_change_or_live_policy(self):
         with self.assertRaises(ValueError):
             Experiment(self.path, policy(), epoch=NOW+1)
-        value = json.loads((ROOT/"infra/trading/policy.demo.json").read_text())
+        value = json.loads((ROOT/"infra/trading/policy.demo.initial.json").read_text())
         value["mode"] = "live"
         with self.assertRaisesRegex(ValueError, "paper/demo"):
             Experiment(Path(self.tmp.name)/"other"/"experiment.sqlite", Policy.from_dict(value), epoch=NOW)
         with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
-            main(["init", "--root", self.tmp.name, "--policy", str(ROOT/"infra/trading/policy.demo.json")])
+            main(["init", "--root", self.tmp.name, "--policy", str(ROOT/"infra/trading/policy.demo.initial.json")])
 
     def test_below_minimum_is_skipped_not_rounded_up(self):
         context = {"data_entry_allowed": True, "supervisor_entry_allowed": True, "supervisor_scale": ".2"}
@@ -355,7 +357,7 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(self.exp.state()["books"]["kelly"]["cash"], "500")  # fixture never enters journal
 
     def test_smaller_loss_ceiling_reduces_baseline_to_nonexecutable_size(self):
-        value = json.loads((ROOT/"infra/trading/policy.demo.json").read_text())
+        value = json.loads((ROOT/"infra/trading/policy.demo.initial.json").read_text())
         value["max_loss_per_trade"] = ".1"
         other = Experiment(Path(self.tmp.name)/"small-loss"/"experiment.sqlite", Policy.from_dict(value), epoch=NOW, strategy=SPEC.version)
         try:

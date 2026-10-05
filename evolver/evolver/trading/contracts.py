@@ -28,7 +28,8 @@ def encode(value) -> str:
 
 def utc_timestamp(value: str) -> float:
     # Exchanges publish nanosecond fractions; Python <3.11 accepts at most six digits.
-    normalized = re.sub(r"(\.\d{6})\d+(?=[+-]\d\d:\d\d$)", r"\1", value.replace("Z", "+00:00"))
+    normalized = re.sub(r"\.(\d+)(?=[+-]\d\d:\d\d$)",
+                        lambda m: "."+m.group(1)[:6].ljust(6, "0"), value.replace("Z", "+00:00"))
     stamp = dt.datetime.fromisoformat(normalized)
     if stamp.tzinfo is None:
         raise ValueError("market timestamp needs an explicit timezone")

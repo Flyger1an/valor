@@ -30,6 +30,8 @@ export type ExperimentStatus = {
   end?: string;
   timestamp?: string;
   source?: string;
+  symbols?: string[];
+  quoteStatus?: { symbol: string; fresh: boolean; ageSeconds?: number }[];
   halt?: string;
   strategy?: string;
   evidenceBlocks?: number;
@@ -82,7 +84,9 @@ function evidenceQuality(raw: Json): ExperimentStatus["evidenceQuality"] {
   const stale = coverage.stale_by_asset as Json, held = coverage.held_stale_by_asset as Json;
   const ages = coverage.maximum_quote_age_seconds as Json;
   const observations = count(coverage.observations);
-  const staleByAsset = ["BTC-USD", "ETH-USD"].map(symbol => ({
+  const symbols = Object.keys(stale).sort();
+  if (!symbols.length || symbols.length > 64 || symbols.some(s => !/^[A-Z0-9]+-USD$/.test(s))) throw new Error("invalid coverage universe");
+  const staleByAsset = symbols.map(symbol => ({
     symbol, count: count(stale[symbol]), heldCount: count(held[symbol]), maximumAge: amount(ages[symbol]),
   }));
   if (staleByAsset.some(s => s.count > observations || s.heldCount > s.count || s.maximumAge < 0)) {
@@ -141,9 +145,20 @@ export function parseExperimentStatus(value: unknown, now = Date.now()): Experim
     });
     if (new Set(books.map(b => b.name)).size !== 3) throw new Error("duplicate book");
     const captureFresh = now >= timestamp && now - timestamp <= 30_000;
+    const symbols = raw.symbols === undefined ? ["BTC-USD", "ETH-USD"] : raw.symbols;
+    if (!Array.isArray(symbols) || !symbols.length || symbols.length > 64 || new Set(symbols).size !== symbols.length ||
+        symbols.some(s => typeof s !== "string" || !/^[A-Z0-9]+-USD$/.test(s))) throw new Error("invalid symbol universe");
+    const quoteStatus = raw.quote_status === undefined ? undefined : symbols.map(symbol => {
+      const q = (raw.quote_status as Record<string, Json>)[symbol];
+      if (!q || typeof q.fresh !== "boolean") throw new Error("missing symbol freshness");
+      const ageSeconds = optional(q.age_seconds);
+      if (q.fresh && (ageSeconds === undefined || ageSeconds < 0 || ageSeconds > 30)) throw new Error("invalid symbol freshness");
+      return {symbol, fresh: q.fresh, ageSeconds};
+    });
     return {
       status: raw.marks_fresh === true && captureFresh ? "current" : "stale",
       captureFresh, marksFresh: raw.marks_fresh === true,
+      symbols, quoteStatus,
       frames: raw.frames === undefined ? undefined : count(raw.frames),
       evidencePolicy: (raw.active_evidence_policy as Json)?.version === undefined ? undefined :
         String((raw.active_evidence_policy as Json).version).slice(0, 100),

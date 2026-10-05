@@ -12,10 +12,11 @@ import json
 import math
 import sqlite3
 from decimal import ROUND_DOWN, ROUND_UP
+from dataclasses import replace
 from pathlib import Path
 
 from .contracts import Policy, Quote, decimal as D, encode
-from .shadow_sizing import KELLY_RULES, KELLY_RULES_V2, evidence_rules, recommend, usable_blocks
+from .shadow_sizing import KELLY_RULES, KELLY_RULES_V2, KELLY_RULES_V3, evidence_rules, recommend, usable_blocks
 from .strategies import BY_VERSION, entry_signal, exit_signal, position_budget
 
 
@@ -93,8 +94,8 @@ class Experiment:
             raise ValueError("virtual experiment accepts paper/demo source policies only")
         if self.path.name != "experiment.sqlite":
             raise ValueError("experiment must use its own experiment.sqlite file")
-        if set(policy.allowed_instruments) != {"BTC-USD", "ETH-USD"} or policy.starting_cash != D(500):
-            raise ValueError("v1 requires the $500 BTC/ETH study policy")
+        if not {"BTC-USD", "ETH-USD"} <= set(policy.allowed_instruments) or len(policy.allowed_instruments) > 64 or policy.starting_cash != D(500):
+            raise ValueError("requires the $500 cash study and its original BTC/ETH instruments")
         if policy.fee_bps > D(RULES["fee_reserve_bps"]):
             raise ValueError("fee assumption exceeds fictional reserve")
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -109,12 +110,17 @@ class Experiment:
         row = self.db.execute("SELECT payload FROM experiment_meta WHERE key='identity'").fetchone()
         if row:
             self.identity = json.loads(row[0])
-            if (self.identity["policy_hash"] != policy.fingerprint or self.identity["rules"] != RULES
+            if (self.state().get("universe", {}).get("policy_hash", self.identity["policy_hash"]) != policy.fingerprint
+                    or replace(policy, allowed_instruments=tuple(self.identity["symbols"])).fingerprint != self.identity["policy_hash"]
+                    or self.identity["rules"] != RULES
                     or (epoch is not None and epoch != self.identity["epoch"])
                     or (strategy is not None and strategy != self.identity["strategy"])):
                 self.db.close()
                 raise ValueError("existing experiment is immutable; no reset or policy substitution")
         else:
+            if set(policy.allowed_instruments) != {"BTC-USD", "ETH-USD"}:
+                self.db.close()
+                raise ValueError("initialize the original study, then apply an explicit universe boundary")
             if epoch is None or not math.isfinite(epoch) or epoch <= 0:
                 self.db.close()
                 raise ValueError("initialization needs a shared forward epoch")
@@ -129,6 +135,65 @@ class Experiment:
 
     def close(self):
         self.db.close()
+
+    def symbols(self, state=None):
+        state = self.state() if state is None else state
+        return state.get("universe", {}).get("symbols", self.identity["symbols"])
+
+    def policy_hash(self, state):
+        return state.get("universe", {}).get("policy_hash", self.identity["policy_hash"])
+
+    def _required_marks(self, book, state, symbol):
+        return set(book["positions"]) | {symbol} if state.get("universe") else self.symbols(state)
+
+    def _stop_execution_price(self, state, symbol, stop):
+        price = D(stop)*(1-self.policy.slippage_bps/10000)
+        if state.get("universe"):
+            step = D(state["quotes"][symbol]["price_increment"])
+            price = (price/step).to_integral_value(rounding=ROUND_DOWN)*step
+        return price
+
+    def _activate_universe(self, state, event, now):
+        from .universe import validate_expansion
+        old = replace(self.policy, allowed_instruments=tuple(self.symbols(state)))
+        new = Policy.from_dict(event["new_policy"])
+        added = validate_expansion(old, new)
+        if (event.get("from_policy") != self.policy_hash(state) or old.fingerprint != self.policy_hash(state)
+                or event.get("rules_hash") != digest(KELLY_RULES_V3)
+                or state.get("evidence_policy_version") not in {KELLY_RULES_V2["version"], KELLY_RULES_V3["version"]}):
+            raise IntegrityError("invalid_universe_boundary")
+        evidence = state["evidence"]
+        boundary = {"id": event["id"], "at": now, "from_policy": old.fingerprint, "to_policy": new.fingerprint,
+                    "from_version": state["evidence_policy_version"], "to_version": KELLY_RULES_V3["version"],
+                    "rules_hash": event["rules_hash"], "added": added,
+                    "prior_current_day": {k: copy.deepcopy(v) for k, v in evidence.items() if k != "blocks"},
+                    "legacy_blocks_retained": len(evidence["blocks"]), "reclassified_blocks": 0}
+        state.setdefault("universe_history", []).append(boundary)
+        state["evidence_policy_history"].append(boundary)
+        state["universe"] = {"version": "additive-cash-universe-v1", "symbols": list(new.allowed_instruments),
+                             "policy_hash": new.fingerprint, "activated_at": now,
+                             "cohort": digest({"id": event["id"], "at": now, "policy": new.fingerprint})}
+        state["evidence_policy_version"] = KELLY_RULES_V3["version"]
+        state["books"]["kelly"]["policy_version"] = KELLY_RULES_V3["version"]
+        evidence.update(evidence_version=KELLY_RULES_V3["version"], complete=False,
+                        invalid_reasons=["policy_boundary_partial_day"], coverage=self._new_coverage(state, now),
+                        start_valuation=self._valuation_at(state, now))
+
+    def _joint_recommendation(self, book, opportunities, frame, state, now):
+        m = metrics(book, state["quotes"])
+        held = {s: D(book["lots"][lid]["remaining"])*D(state["quotes"][s]["bid"])/m["equity"]
+                for s, lid in book["positions"].items()} if m["equity"] > 0 else {}
+        for s, order in book["pending"].items():
+            if order["side"] == "buy" and m["equity"] > 0:
+                held[s] = D(order["quantity"])*D(order["limit"])/m["equity"]
+        eligible = set()
+        for op in opportunities:
+            symbol, q = op["instrument"], state["quotes"].get(op["instrument"])
+            if (q and 0 <= now-q["timestamp"] <= 30 and symbol not in book["positions"]
+                    and symbol not in book["pending"] and (D(q["ask"])-D(q["bid"]))/D(q["ask"])*10000 <= self.policy.max_spread_bps):
+                eligible.add(symbol)
+        return recommend(state["evidence"]["blocks"], self.symbols(state), eligible, held, now,
+                         KELLY_RULES_V3["version"], state["universe"]["cohort"])
 
     def initial_state(self):
         return {"books": {n: new_book(n) for n in BOOKS}, "last_at": self.identity["epoch"], "frames": 0,
@@ -203,6 +268,8 @@ class Experiment:
             state["actual_shared_cost"] = str(value)
         elif kind == "evidence_policy_update":
             self._activate_evidence_v2(state, event, now)
+        elif kind == "universe_policy_update":
+            self._activate_universe(state, event, now)
         else:
             raise IntegrityError("unsupported_event_type")
         self._settlement_status(state, now)
@@ -246,7 +313,7 @@ class Experiment:
                 block.update(settled=True, available_at=now)
 
     def _roll_day(self, state, now):
-        if state.get("evidence_policy_version") == KELLY_RULES_V2["version"]:
+        if state.get("evidence_policy_version") in {KELLY_RULES_V2["version"], KELLY_RULES_V3["version"]}:
             return self._roll_day_v2(state, now)
         evidence = state["evidence"]
         m = metrics(state["books"]["baseline"], state["quotes"])
@@ -254,12 +321,12 @@ class Experiment:
         if evidence["day"] != current:
             if evidence["day"]:
                 end = dt.datetime.fromisoformat(evidence["day"]).replace(tzinfo=dt.timezone.utc).timestamp()+86400
-                pnl = {s: str(m["asset_pnl"].get(s, D(0))-D(evidence["start_pnl"].get(s, 0))) for s in self.identity["symbols"]}
+                pnl = {s: str(m["asset_pnl"].get(s, D(0))-D(evidence["start_pnl"].get(s, 0))) for s in self.symbols(state)}
                 evidence["blocks"].append({"day": evidence["day"], "start": evidence["start"], "end": end,
                     "pnl": pnl, "reference_notional": evidence["reference_notional"], "active": evidence["active"],
                     "complete": evidence["complete"] and end-state["last_at"] <= 30 and now-state["last_at"] <= 60,
                     "settled": False, "available_at": now})
-            evidence.update(day=current, start=day_start(now), start_pnl={s: str(m["asset_pnl"].get(s, D(0))) for s in self.identity["symbols"]},
+            evidence.update(day=current, start=day_start(now), start_pnl={s: str(m["asset_pnl"].get(s, D(0))) for s in self.symbols(state)},
                 reference_notional=str(position_budget(self.policy, m["equity"])), active={},
                 complete=now-day_start(now) <= 30 and state["frames"] > 0)
             for book in state["books"].values():
@@ -281,9 +348,9 @@ class Experiment:
 
     def _new_coverage(self, state, now):
         return {"since": now, "observations": 0, "first_observation_at": None, "last_observation_at": None,
-                "fresh_pair_observations": 0, "stale_by_asset": dict.fromkeys(self.identity["symbols"], 0),
-                "held_stale_by_asset": dict.fromkeys(self.identity["symbols"], 0),
-                "maximum_quote_age_seconds": dict.fromkeys(self.identity["symbols"], 0),
+                "fresh_pair_observations": 0, "stale_by_asset": dict.fromkeys(self.symbols(state), 0),
+                "held_stale_by_asset": dict.fromkeys(self.symbols(state), 0),
+                "maximum_quote_age_seconds": dict.fromkeys(self.symbols(state), 0),
                 "news_blocked_observations": 0, "supervisor_blocked_observations": 0,
                 "max_gap_seconds": 0, "gaps_over_60_seconds": 0}
 
@@ -306,6 +373,7 @@ class Experiment:
                         start_valuation=self._valuation_at(state, now))
 
     def _roll_day_v2(self, state, now):
+        version = state["evidence_policy_version"]
         evidence, current = state["evidence"], day(now)
         previous = state.get("evidence_last_observation_at")
         gap = now-previous if previous is not None else None
@@ -322,22 +390,24 @@ class Experiment:
                 if not valuation["valid"]:
                     reasons.append("unpriced_held_inventory_at_end")
                 evidence["blocks"].append({"day": evidence["day"], "start": evidence["start"], "end": end,
-                    "pnl": {s: str(m["asset_pnl"].get(s, D(0))-D(evidence["start_pnl"].get(s, 0))) for s in self.identity["symbols"]},
+                    "pnl": {s: str(m["asset_pnl"].get(s, D(0))-D(evidence["start_pnl"].get(s, 0))) for s in self.symbols(state)},
                     "reference_notional": evidence["reference_notional"], "active": evidence["active"],
                     "complete": evidence["complete"] and not reasons, "settled": False, "available_at": now,
-                    "evidence_version": KELLY_RULES_V2["version"], "invalid_reasons": sorted(set(reasons)),
+                    "evidence_version": version, "invalid_reasons": sorted(set(reasons)),
                     "coverage": evidence["coverage"], "start_valuation": evidence["start_valuation"], "end_valuation": valuation})
+                if state.get("universe"):
+                    evidence["blocks"][-1]["cohort"] = state["universe"]["cohort"]
             valuation = self._valuation_at(state, day_start(now))
             reasons = []
-            if day_start(now) <= day_start(state["evidence_policy_history"][0]["at"]):
+            if day_start(now) <= day_start(state["evidence_policy_history"][-1]["at"]):
                 reasons.append("policy_boundary_partial_day")
             if now-day_start(now) > 30 or not state["frames"]:
                 reasons.append("partial_day")
             if not valuation["valid"]:
                 reasons.append("unpriced_held_inventory_at_start")
-            evidence.update(day=current, start=day_start(now), start_pnl={s: str(m["asset_pnl"].get(s, D(0))) for s in self.identity["symbols"]},
+            evidence.update(day=current, start=day_start(now), start_pnl={s: str(m["asset_pnl"].get(s, D(0))) for s in self.symbols(state)},
                 reference_notional=str(position_budget(self.policy, m["equity"])), active={}, complete=not reasons,
-                invalid_reasons=reasons, evidence_version=KELLY_RULES_V2["version"],
+                invalid_reasons=reasons, evidence_version=version,
                 coverage=self._new_coverage(state, now), start_valuation=valuation)
             for book in state["books"].values():
                 book.update(day=current, day_start_equity=str(metrics(book, state["quotes"])["equity"]), daily_halt=False, attempts=0)
@@ -358,7 +428,7 @@ class Experiment:
         coverage["first_observation_at"] = coverage["first_observation_at"] or now
         coverage["last_observation_at"] = now
         fresh = []
-        for symbol in self.identity["symbols"]:
+        for symbol in self.symbols(state):
             q = state["quotes"].get(symbol)
             age = now-q["timestamp"] if q else None
             usable = age is not None and 0 <= age <= 30
@@ -378,16 +448,18 @@ class Experiment:
     def _frame(self, state, frame, now):
         if any(type(frame["context"][key]) is not bool for key in ("data_entry_allowed", "supervisor_entry_allowed")):
             raise IntegrityError("invalid_boolean_entry_gate")
-        if frame["policy_hash"] != self.policy.fingerprint or frame["strategy"] != self.identity["strategy"]:
+        if frame["policy_hash"] != self.policy_hash(state) or frame["strategy"] != self.identity["strategy"]:
             raise IntegrityError("source_policy_or_strategy_changed")
         if frame["source"] not in {"alpaca", "coinbase_public", "test_fixture"}:
             raise IntegrityError("unrecognized_market_source")
         if state.get("source") and state["source"] != frame["source"]:
             raise IntegrityError("market_source_changed")
+        if state.get("universe") and frame["source"] == "alpaca" and frame.get("venue") != "us":
+            raise IntegrityError("universe_requires_same_venue_provenance")
         state["source"] = frame["source"]
         self._roll_day(state, now)
         for symbol, raw in frame["quotes"].items():
-            if symbol not in self.identity["symbols"]:
+            if symbol not in self.symbols(state):
                 raise IntegrityError("unexpected_instrument")
             q = Quote(symbol, raw["bid"], raw["ask"], raw["timestamp"])
             previous = state["quotes"].get(symbol)
@@ -398,9 +470,11 @@ class Experiment:
             for key in ("buy_capacity", "sell_capacity", "increment"):
                 if D(raw[key]) < 0 or key == "increment" and D(raw[key]) == 0:
                     raise IntegrityError("invalid_execution_capacity")
+            if state.get("universe") and (D(raw.get("minimum_quantity", 0)) <= 0 or D(raw.get("price_increment", 0)) <= 0):
+                raise IntegrityError("missing_catalog_order_rules")
             state["quotes"][symbol] = raw
         for symbol, incoming in frame.get("bars", {}).items():
-            if symbol not in self.identity["symbols"]:
+            if symbol not in self.symbols(state):
                 raise IntegrityError("unexpected_bar_instrument")
             bars = {b["timestamp"]: b for b in state["histories"].get(symbol, [])}
             for bar in incoming:
@@ -412,8 +486,8 @@ class Experiment:
                     raise IntegrityError("closed_bar_revision")
                 bars[t] = bar
             state["histories"][symbol] = [bars[t] for t in sorted(bars)[-400:]]
-        fresh = all(s in state["quotes"] and 0 <= now-state["quotes"][s]["timestamp"] <= 30 for s in self.identity["symbols"])
-        if state.get("evidence_policy_version") == KELLY_RULES_V2["version"]:
+        fresh = all(s in state["quotes"] and 0 <= now-state["quotes"][s]["timestamp"] <= 30 for s in self.symbols(state))
+        if state.get("evidence_policy_version") in {KELLY_RULES_V2["version"], KELLY_RULES_V3["version"]}:
             self._record_coverage(state, frame, now)
         elif not fresh:
             state["evidence"]["complete"] = False
@@ -426,7 +500,7 @@ class Experiment:
         self._settlement_status(state, now)
         opportunities = []
         spec = BY_VERSION[self.identity["strategy"]]
-        for symbol in self.identity["symbols"]:
+        for symbol in self.symbols(state):
             bars = state["histories"].get(symbol, [])
             if bars and 0 <= now-bars[-1]["timestamp"]-300 <= 600 and entry_signal(spec, bars):
                 opportunities.append({"id": f"{spec.version}:{symbol}:{int(bars[-1]['timestamp'])}",
@@ -434,6 +508,8 @@ class Experiment:
                     "strategy": spec.version, "virtual_approval": RULES["approval"], "decisions": {}})
         for name, book in state["books"].items():
             self._exits(book, state, now)
+            if state.get("universe") and name == "kelly":
+                book["joint_sizing"] = self._joint_recommendation(book, opportunities, frame, state, now)
             for op in opportunities:
                 if op["id"] in book["seen"]:
                     op["decisions"][name] = "already_observed"
@@ -480,6 +556,9 @@ class Experiment:
                     book["skips"][reason] = book["skips"].get(reason, 0)+1
                     continue
             price = D(raw["ask"] if buy else raw["bid"])*(1+(1 if buy else -1)*self.policy.slippage_bps/10000)
+            if state.get("universe"):
+                step = D(raw["price_increment"])
+                price = (price/step).to_integral_value(rounding=ROUND_UP if buy else ROUND_DOWN)*step
             bucket = str(raw.get("capacity_bucket", raw["timestamp"]))
             used = book["liquidity_used"].get(symbol, {})
             consumed = D(used["quantity"]) if used.get("bucket") == bucket else D(0)
@@ -528,7 +607,7 @@ class Experiment:
             return "entry_gate_changed_before_fill"
         if book["halt"] or book["daily_halt"]:
             return "book_halted_before_fill"
-        if any(s not in state["quotes"] or not 0 <= now-state["quotes"][s]["timestamp"] <= 30 for s in self.identity["symbols"]):
+        if any(s not in state["quotes"] or not 0 <= now-state["quotes"][s]["timestamp"] <= 30 for s in self._required_marks(book, state, symbol)):
             return "stale_portfolio_mark_before_fill"
         q = state["quotes"][symbol]
         if (D(q["ask"])-D(q["bid"]))/D(q["ask"])*10000 > p.max_spread_bps:
@@ -546,7 +625,7 @@ class Experiment:
             return "exposure_changed_before_fill"
         risk = D(order["planned_loss"])
         remaining = p.daily_loss_limit*D(book["day_start_equity"])/500-max(D(0), D(book["day_start_equity"])-m["equity"])
-        held = sum((max(D(0), D(state["quotes"][s]["bid"])-D(book["lots"][lid]["stop"])*(1-p.slippage_bps/10000)*(1-p.fee_bps/10000))*D(book["lots"][lid]["remaining"]) for s, lid in book["positions"].items()), D(0))
+        held = sum((max(D(0), D(state["quotes"][s]["bid"])-self._stop_execution_price(state, s, book["lots"][lid]["stop"])*(1-p.fee_bps/10000))*D(book["lots"][lid]["remaining"]) for s, lid in book["positions"].items()), D(0))
         if risk > p.max_loss_per_trade*m["equity"]/500*scale or risk+held > remaining:
             return "loss_budget_changed_before_fill"
         return None
@@ -595,7 +674,7 @@ class Experiment:
         if not frame["context"]["data_entry_allowed"]:
             return "shared_data_or_news_gate"
         q = state["quotes"].get(symbol)
-        if not q or any(s not in state["quotes"] or not 0 <= now-state["quotes"][s]["timestamp"] <= 30 for s in self.identity["symbols"]):
+        if not q or any(s not in state["quotes"] or not 0 <= now-state["quotes"][s]["timestamp"] <= 30 for s in self._required_marks(book, state, symbol)):
             return "stale_quote"
         bid, ask = D(q["bid"]), D(q["ask"])
         if (ask-bid)/ask*10000 > p.max_spread_bps:
@@ -612,7 +691,13 @@ class Experiment:
         free_cash = max(D(0), D(book["cash"])-committed-D(".01"))
         budget = free_cash/(1+reserve_bps/10000)
         price = ask*(1+p.slippage_bps/10000)
+        if state.get("universe"):
+            step = D(q["price_increment"])
+            price = (price/step).to_integral_value(rounding=ROUND_DOWN)*step
+            if price < ask:
+                return "price_increment_exceeds_slippage_limit"
         stop = bid*(1-D(BY_VERSION[self.identity["strategy"]].stop_fraction))
+        stop_price = self._stop_execution_price(state, symbol, stop)
         sizing = {"raw_notional": str(budget), "fractional_notional": str(budget), "reason": "all_cash"}
         if book["name"] != "henry":
             if book["attempts"] >= p.max_trades_per_day:
@@ -627,7 +712,7 @@ class Experiment:
                 for s, order in book["pending"].items():
                     if order["side"] == "buy":
                         held[s] = D(order["quantity"])*D(order["limit"])/m["equity"]
-                sizing = recommend(state["evidence"]["blocks"], self.identity["symbols"],
+                sizing = copy.deepcopy(book["joint_sizing"]) if state.get("universe") else recommend(state["evidence"]["blocks"], self.symbols(state),
                                    {o["instrument"] for o in opportunities}, held, now,
                                    state.get("evidence_policy_version", KELLY_RULES["version"]))
                 sizing.update(raw_notional=str(D(str(sizing["raw_fraction"][symbol]))*m["equity"]),
@@ -635,21 +720,21 @@ class Experiment:
                 budget = min(budget, D(sizing["fractional_notional"]))
             else:
                 sizing = {"raw_notional": str(cap), "fractional_notional": str(cap), "reason": "current_policy_caps"}
-            loss_rate = (price-stop*(1-p.slippage_bps/10000))/price + p.fee_bps/10000*(1+stop*(1-p.slippage_bps/10000)/price)
+            loss_rate = (price-stop_price)/price + p.fee_bps/10000*(1+stop_price/price)
             loss_cap = p.max_loss_per_trade*max(D(0), m["equity"])/500*scale
             remaining = p.daily_loss_limit*D(book["day_start_equity"])/500-max(D(0), D(book["day_start_equity"])-m["equity"])
-            held_risk = sum((max(D(0), D(state["quotes"][s]["bid"])-D(book["lots"][lid]["stop"])*(1-p.slippage_bps/10000)*(1-p.fee_bps/10000))*D(book["lots"][lid]["remaining"]) for s, lid in book["positions"].items()), D(0))
+            held_risk = sum((max(D(0), D(state["quotes"][s]["bid"])-self._stop_execution_price(state, s, book["lots"][lid]["stop"])*(1-p.fee_bps/10000))*D(book["lots"][lid]["remaining"]) for s, lid in book["positions"].items()), D(0))
             pending_risk = sum((D(o.get("planned_loss", "0")) for o in book["pending"].values() if o["side"] == "buy"), D(0))
             budget = min(budget, loss_cap/loss_rate, max(D(0), remaining-held_risk-pending_risk)/loss_rate)
         quantity = floor(max(D(0), budget)/price, q["increment"])
         notional = quantity*price
         sizing.update(capped_notional=str(notional), supervisor_scale=str(scale), at=now, opportunity_id=op["id"])
         book["sizing"][symbol] = sizing
-        if notional < 10:
+        if notional < 10 or quantity < D(q.get("minimum_quantity", 0)):
             return sizing["reason"] if book["name"] == "kelly" and budget == 0 else "below_minimum_no_round_up"
         book["attempts"] += 1
-        planned = ((price-stop*(1-p.slippage_bps/10000))*quantity
-                   +fee(notional, p.fee_bps)+fee(stop*(1-p.slippage_bps/10000)*quantity, p.fee_bps))
+        planned = ((price-stop_price)*quantity
+                   +fee(notional, p.fee_bps)+fee(stop_price*quantity, p.fee_bps))
         if book["name"] != "henry" and (planned > loss_cap or planned+held_risk+pending_risk > remaining):
             return "rounded_fees_exceed_loss_budget"
         book["pending"][symbol] = {"id": book["name"]+":"+op["id"], "side": "buy", "created": now,
@@ -661,24 +746,26 @@ class Experiment:
         state = self.state() if state is None else state
         version = state.get("evidence_policy_version", KELLY_RULES["version"])
         evidence, coverage = state["evidence"], state["evidence"].get("coverage")
-        cohort = [b for b in evidence["blocks"] if b.get("evidence_version", KELLY_RULES["version"]) == version]
+        cohort_id = state.get("universe", {}).get("cohort")
+        cohort = [b for b in evidence["blocks"] if b.get("evidence_version", KELLY_RULES["version"]) == version
+                  and (cohort_id is None or b.get("cohort") == cohort_id)]
         history = state.get("evidence_policy_history", [])
-        first_full_day = day_start(history[0]["at"])+86400 if history else None
+        first_full_day = day_start(history[-1]["at"])+86400 if history else None
         expected_days = max(0, int((day_start(state["last_at"])-first_full_day)/86400)) if first_full_day else None
         observed_days = sum(b["start"] >= first_full_day and b["end"] <= state["last_at"] for b in cohort) if first_full_day else None
         result = {"schema_version": 1, "mode": "virtual_only", "identity_hash": digest(self.identity),
-                  "policy_hash": self.policy.fingerprint, "epoch": self.identity["epoch"],
+                  "policy_hash": self.policy_hash(state), "epoch": self.identity["epoch"],
                   "evaluation_end": self.identity["epoch"]+90*86400, "timestamp": state["last_at"],
                   "strategy": self.identity["strategy"], "rules": RULES, "frames": state["frames"],
                   "market_source": state.get("source", "not_started"),
                   "halt": state["halt"], "approval_basis": RULES["approval"],
                   "marks_fresh": bool(state["frames"]) and all(s in state["quotes"] and
-                    0 <= state["last_at"]-state["quotes"][s]["timestamp"] <= 30 for s in self.identity["symbols"]),
+                    0 <= state["last_at"]-state["quotes"][s]["timestamp"] <= 30 for s in self.symbols(state)),
                   "shared_operating_estimate": state["shared_operating_estimate"],
                   "actual_shared_operating_cost": state["actual_shared_cost"],
                   "incremental_model_api_calls": 0, "operating_cost_allocation": "one third for comparison only; never deducted from trading cash",
                   "evidence_blocks": len(state["evidence"]["blocks"]),
-                  "usable_evidence_blocks": len(usable_blocks(evidence["blocks"], state["last_at"], version)),
+                  "usable_evidence_blocks": len(usable_blocks(evidence["blocks"], state["last_at"], version, cohort_id)),
                   "active_evidence_policy": evidence_rules(version),
                   "evidence_policy_history": history,
                   "evidence_quality": {"day": evidence["day"], "complete_so_far": evidence["complete"],
@@ -690,8 +777,17 @@ class Experiment:
                       "unobserved_full_days": max(0, expected_days-observed_days) if expected_days is not None else None,
                       "current_version_day_records": len(cohort), "incomplete_day_records": sum(not b["complete"] for b in cohort),
                       "unsettled_day_records": sum(b["complete"] and not b["settled"] for b in cohort),
-                      "legacy_blocks_retained": sum(b.get("evidence_version", KELLY_RULES["version"]) != version for b in evidence["blocks"])},
+                      "legacy_blocks_retained": len(evidence["blocks"])-len(cohort)},
                   "books": [], "recent_opportunities": state["opportunities"][-12:]}
+        if state.get("universe"):
+            result.update(symbols=self.symbols(state), universe=state["universe"], universe_history=state["universe_history"],
+                          selection="lexical currently eligible symbols; no future ranking")
+            required = {s for b in state["books"].values() for s in b["positions"]}
+            result["marks_fresh"] = bool(state["frames"]) and all(s in state["quotes"] and
+                0 <= state["last_at"]-state["quotes"][s]["timestamp"] <= 30 for s in required)
+            result["quote_status"] = {s: {"age_seconds": state["last_at"]-state["quotes"][s]["timestamp"] if s in state["quotes"] else None,
+                "fresh": s in state["quotes"] and 0 <= state["last_at"]-state["quotes"][s]["timestamp"] <= 30}
+                for s in self.symbols(state)}
         for name in BOOKS:
             book = state["books"][name]
             m = metrics(book, state["quotes"])

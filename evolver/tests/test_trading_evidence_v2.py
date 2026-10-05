@@ -110,7 +110,7 @@ class EvidenceV2Tests(unittest.TestCase):
         count = self.exp.verify_replay()["events"]
         with redirect_stdout(StringIO()):
             self.assertEqual(main(["upgrade-evidence", "--root", self.tmp.name,
-                                   "--policy", str(ROOT/"infra/trading/policy.demo.json")]), 0)
+                                   "--policy", str(ROOT/"infra/trading/policy.demo.initial.json")]), 0)
         self.assertEqual(self.exp.state(), before)
         self.assertEqual(self.exp.identity, identity)
         self.assertEqual(self.exp.verify_replay()["events"], count)

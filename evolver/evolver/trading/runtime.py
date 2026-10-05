@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import signal
@@ -42,7 +43,7 @@ def build_broker(policy, state):
 
 
 class Feed:
-    def __init__(self, policy, target):
+    def __init__(self, policy, target, *, background=False):
         from .market import CoinbaseData, AlpacaData
         self.policy, self.target = policy, target
         source = os.getenv("VALOR_DATA_SOURCE", "coinbase_public" if policy.mode == "paper" else "alpaca")
@@ -55,22 +56,57 @@ class Feed:
             raise ValueError("remote execution requires matching Alpaca market data")
         self.next_bars = 0
         self.increments = None
+        self.instrument_rules = {}
+        self.background, self.bar_thread = background, None
 
     def tick(self, now):
-        from .market import merge_bars
         quotes = self.provider.quotes(self.policy.allowed_instruments)
         if self.increments is None:
-            self.increments = self.provider.increments(self.policy.allowed_instruments) if hasattr(self.provider, "increments") else {}
+            if hasattr(self.provider, "instrument_rules"):
+                self.instrument_rules = self.provider.instrument_rules(self.policy.allowed_instruments)
+                self.increments = {s: r["increment"] for s, r in self.instrument_rules.items()}
+            else:
+                self.increments = self.provider.increments(self.policy.allowed_instruments) if hasattr(self.provider, "increments") else {}
         header = {"source": self.provider.source, "policy_hash": self.policy.fingerprint, "timestamp": time.time(),
-                  "increments": self.increments}
+                  "venue": getattr(self.provider, "venue", self.provider.source),
+                  "increments": self.increments, "instrument_rules": self.instrument_rules,
+                  "symbols": list(self.policy.allowed_instruments)}
         write_snapshot(self.target / "quotes.json", {**header, "quotes": {s: asdict(q) for s, q in quotes.items()}})
-        if now < self.next_bars:
+        if now < self.next_bars or self.bar_thread is not None and self.bar_thread.is_alive():
             return
         self.next_bars = now + 60
+        if self.background:
+            self.bar_thread = threading.Thread(target=self._background_bars, args=(now, header), daemon=True)
+            self.bar_thread.start()
+        else:
+            self._refresh_bars(now, header)
+
+    def _background_bars(self, now, header):
+        try:
+            self._refresh_bars(now, header)
+        except Exception as exc:
+            print(encode({"role": "feed", "event": "bars_unavailable", "error_type": type(exc).__name__}), flush=True)
+
+    def _refresh_bars(self, now, header):
+        from .market import merge_bars
         saved = read_object(self.target / "history.json", {"histories": {}})
-        if saved.get("source", self.provider.source) != self.provider.source:
+        if (saved.get("source", self.provider.source) != self.provider.source
+                or saved.get("venue", header["venue"]) != header["venue"]):
             raise ValueError("cannot mix market data venues in a study")
-        incoming = self.provider.bars(self.policy.allowed_instruments, now)
+        incoming = {}
+        symbols = self.policy.allowed_instruments
+        for offset in range(0, len(symbols), 4):
+            group = symbols[offset:offset+4]
+            ready = [s for s in group if saved["histories"].get(s)]
+            missing = [s for s in group if s not in ready]
+            if missing:
+                incoming.update(self.provider.bars(missing, now))
+            if ready:
+                if hasattr(self.provider, "bars_since"):
+                    start = min(saved["histories"][s][-1]["timestamp"] for s in ready)-600
+                    incoming.update(self.provider.bars_since(ready, now, start))
+                else:
+                    incoming.update(self.provider.bars(ready, now))
         histories = {s: merge_bars(saved["histories"].get(s, []), incoming.get(s, []), now)
                      for s in self.policy.allowed_instruments}
         # An execution-sized view avoids decoding the full research history every five seconds.
@@ -84,6 +120,11 @@ def research_tick(policy, p, now):
     if data.get("policy_hash") != policy.fingerprint or not 0 <= now-data.get("timestamp", 0) <= 600:
         raise ValueError("research needs fresh, matching market history")
     saved = read_object(p["research"] / "assessment.json", {})
+    if saved.get("policy_hash") and saved["policy_hash"] != policy.fingerprint:
+        # Preserve the old classification, then start a prospective selection cohort.
+        archive = "assessment-"+hashlib.sha256(encode(saved).encode()).hexdigest()+".json"
+        write_snapshot(p["research"] / archive, saved)
+        saved = {"cutoff": now+300, "universe_boundary_at": now, "prior_policy_hash": saved["policy_hash"]}
     snapshot = read_object(p["outbox"] / "snapshot.json", {})
     learning = snapshot.get("learning", {})
     if saved.get("status") == "review_required" and learning.get("finalized_evidence_hash") != saved.get("evidence_hash"):
@@ -94,6 +135,8 @@ def research_tick(policy, p, now):
     incumbent = snapshot.get("active_strategy") or policy.approved_strategies[0]
     assessed = evaluate(policy, data["histories"], saved, incumbent)
     write_snapshot(p["research"] / "assessment.json", {**assessed, "policy_hash": policy.fingerprint,
+                  "universe_boundary_at": saved.get("universe_boundary_at"),
+                  "prior_policy_hash": saved.get("prior_policy_hash"),
                   "source": data["source"], "evaluated_at": now})
 
 
@@ -201,7 +244,7 @@ def main(argv=None):
         worker = Worker(book, policy, broker, p["state"], p["outbox"], p["inbox"], p["market"], p["research"], p["news"])
         tick, interval = worker.tick, 5
     elif args.role == "feed":
-        tick, interval = Feed(policy, p["market"]).tick, 5
+        tick, interval = Feed(policy, p["market"], background=True).tick, 5
     elif args.role == "research":
         tick, interval = lambda now: research_tick(policy, p, now), 3600
     elif args.role == "news":

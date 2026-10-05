@@ -235,6 +235,8 @@ class Worker:
         snapshot = self.engine.snapshot(quotes, now)
         quote_data = read_object(self.market / "quotes.json", {})
         snapshot["market_feed_received_at"] = quote_data.get("timestamp", 0)
+        snapshot["allowed_instruments"] = list(self.policy.allowed_instruments)
+        snapshot["market_venue"] = quote_data.get("venue")
         utc = dt.datetime.fromtimestamp(now, dt.timezone.utc)
         snapshot["entry_session_open"] = utc.hour in self.policy.trading_hours_utc and utc.weekday() in self.policy.trading_weekdays_utc
         usage = read_object(self.inbox / "responses" / "usage.json", {})

@@ -1,8 +1,9 @@
 # Isolated trading runtime
 
-This package supplies the existing BTC/ETH cash-study runtime and the shared
+This package supplies the six-candidate ADA/BTC/ETH/SHIB/SKY/WIF USD cash-study runtime and the shared
 contracts, ledger, strategy, news and snapshot types used by the virtual experiment.
 The three virtual books are described in [EXPERIMENT.md](EXPERIMENT.md).
+The original BTC/ETH study is extended at the explicit [universe boundary](UNIVERSE.md), without resetting its accounting or clock.
 See [DASHBOARD.md](DASHBOARD.md) for private, automatically refreshed monitoring.
 
 `policy.paper.json` is a local simulation policy. `policy.demo.json` selects the

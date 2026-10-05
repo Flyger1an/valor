@@ -18,7 +18,7 @@ from .engine import write_snapshot
 from .experiment import Experiment, IntegrityError, digest
 from .ipc import read_object
 from .news import assess as assess_news
-from .shadow_sizing import KELLY_RULES, KELLY_RULES_V2
+from .shadow_sizing import KELLY_RULES, KELLY_RULES_V2, KELLY_RULES_V3
 
 
 def capture(experiment, source_root, now):
@@ -39,21 +39,33 @@ def capture(experiment, source_root, now):
             or not 0 <= now-signals.get("timestamp", 0) <= 600):
         raise ValueError("fresh, matching pre-existing market files are required")
     bars, quotes = {}, {}
-    for symbol in experiment.identity["symbols"]:
+    dynamic = bool(state.get("universe"))
+    if dynamic and (prices.get("venue") != "us" or signals.get("venue") != "us"):
+        raise ValueError("expanded universe requires explicit matching Alpaca US provenance")
+    unavailable = []
+    for symbol in experiment.symbols(state):
         history = signals.get("histories", {}).get(symbol, [])
         if not history or history[-1]["timestamp"]+300 > now:
-            raise ValueError("closed-bar history is required")
+            if not dynamic or history:
+                raise ValueError("closed-bar history is required")
+            unavailable.append(symbol)
         retained = {b["timestamp"]: b for b in state["histories"].get(symbol, [])}
         if any(b["timestamp"] in retained and retained[b["timestamp"]] != b for b in history):
             # Route through the durable reducer so corruption becomes an auditable terminal halt.
             bars[symbol] = history
         else:
             bars[symbol] = [b for b in history if b["timestamp"] not in retained]
-        raw = prices["quotes"][symbol]
-        capacity = str(D(history[-1]["volume"])*D(".01"))
+        raw = prices.get("quotes", {}).get(symbol)
+        rules = signals.get("instrument_rules", {}).get(symbol)
+        if dynamic and (raw is None or not rules):
+            unavailable.append(symbol)
+            continue
+        capacity = str(D(history[-1]["volume"])*D(".01")) if history else "0"
         quotes[symbol] = {k: raw[k] for k in ("bid", "ask", "timestamp")}
-        quotes[symbol].update(buy_capacity=capacity, sell_capacity=capacity, capacity_bucket=history[-1]["timestamp"],
+        quotes[symbol].update(buy_capacity=capacity, sell_capacity=capacity, capacity_bucket=history[-1]["timestamp"] if history else 0,
                              increment=signals.get("increments", {}).get(symbol, "0.00000001"))
+        if dynamic:
+            quotes[symbol].update(rules)
     supervisor = runtime.get("supervisor", {})
     runtime_current = (runtime.get("policy_hash") == policy.fingerprint and
                        0 <= now-runtime.get("timestamp", 0) <= 60)
@@ -78,16 +90,19 @@ def capture(experiment, source_root, now):
                          "news_hash": news_facts.get("evidence_hash"),
                          "operational_approval_reused": False},
              "shared_operating_estimate": cost}
+    if dynamic:
+        frame.update(venue="us", unavailable_symbols=unavailable)
     return frame
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("init", "tick", "run", "report", "replay", "upgrade-evidence"))
+    parser.add_argument("command", choices=("init", "tick", "run", "report", "replay", "upgrade-evidence", "expand-universe"))
     parser.add_argument("--policy", default="infra/trading/policy.demo.json")
     parser.add_argument("--root", required=True, help="new isolated experiment directory")
     parser.add_argument("--source-root", help="existing read-only runtime root with market/outbox/news directories")
     parser.add_argument("--strategy", help="freeze an approved strategy at initialization")
+    parser.add_argument("--new-policy", help="expand-universe only: additive paper/demo policy")
     parser.add_argument("--stay-running-after-completion", action="store_true",
                         help="run only: idle after the settled end state, without further observations")
     args = parser.parse_args(argv)
@@ -111,6 +126,17 @@ def main(argv=None):
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     experiment = Experiment(path, policy, epoch=time.time() if args.command == "init" else None, strategy=args.strategy)
     try:
+        if args.command == "expand-universe":
+            if not args.new_policy:
+                parser.error("--new-policy is required for an explicit universe boundary")
+            from dataclasses import asdict
+            new = Policy.from_dict(read_object(args.new_policy, limit=20_000))
+            report = experiment.apply({"type": "universe_policy_update", "id": "universe:"+new.fingerprint,
+                "observed_at": time.time(), "from_policy": policy.fingerprint,
+                "new_policy": asdict(new), "rules_hash": digest(KELLY_RULES_V3)})
+            write_snapshot(root/"snapshot.json", report)
+            print(encode(report))
+            return 0
         if args.command == "upgrade-evidence":
             if experiment.state().get("evidence_policy_version") != KELLY_RULES_V2["version"]:
                 experiment.apply({"type": "evidence_policy_update", "id": "evidence-policy:"+KELLY_RULES_V2["version"],

@@ -1,4 +1,4 @@
-# Baseline, Kelly shadow, and Henry — virtual experiment v1
+# Baseline, Kelly shadow, and Henry — virtual experiment
 
 This is local software for three **fictional** $500 books. It creates no financial
 accounts, places no broker orders, reads no credentials, calls no models, and does
@@ -7,13 +7,18 @@ three virtual books begin together at an explicit forward initialization epoch.
 The prior admission drill and the broker account history are not copied into them.
 Their separate 90-day comparison does not start or reset the real live-study clock.
 
+The original v1 identity and BTC/ETH journal are immutable. An explicit
+[additive universe migration](UNIVERSE.md) enables ADA/BTC/ETH/SHIB/SKY/WIF
+against USD and starts a prospective v3 Kelly evidence cohort. It preserves the
+original epoch, deadline, balances, fees and earlier evidence classifications.
+
 ## Policies frozen at initialization
 
 | Book | Rule |
 |---|---|
 | Baseline | Existing stair-step position and aggregate limits, supervisor scale/entry pause, planned trade-loss budget, independent daily equity-loss halt, six entry attempts/day. At $500 and scale 1: $25 position, $50 aggregate, $15 planned trade loss, $50 daily loss. |
 | Kelly shadow | Same limits, plus the versioned deterministic robust quarter-Kelly recommendation. Missing, unusable, unsettled, insufficient, or negative-edge evidence means no entry. |
-| Henry chaos | Up to all available cash in **one** BTC/ETH position, reserving fees. BTC sorts before ETH when both signal. No $100/$200 position envelope, 20% halt, leverage, debt, top-ups, transfers, or position averaging. Henry ignores the supervisor's discretionary pause/scale and baseline loss budgets; he retains the common data/news, entry-session, spread, signal, and execution rules. |
+| Henry chaos | Up to all available cash in **one** eligible position, reserving fees. Symbols sort lexically (originally BTC before ETH). No $100/$200 position envelope, 20% halt, leverage, debt, top-ups, transfers, or position averaging. Henry ignores the supervisor's discretionary pause/scale and baseline loss budgets; he retains the common data/news, entry-session, spread, signal, and execution rules. |
 
 Henry can lose the entire fictional bankroll. He stops permanently when the flat
 book cannot fund the minimum entry plus its fee reserve, when held dust cannot be
@@ -85,7 +90,7 @@ funds is a terminal integrity incident, not a silent favorable accounting rewrit
 ## Kelly assumptions and limitations
 
 Kelly learns only from this experiment's forward baseline. For each complete UTC
-day it records a **paired BTC/ETH vector**: each asset's change in net marked P&L,
+day it records a **synchronized active-universe vector** (BTC/ETH under v1/v2): each asset's change in net marked P&L,
 divided by the declared unscaled baseline position-capital allowance at day start.
 The denominator and timestamps are retained. These are opportunity-sleeve return
 proxies at baseline participation, not pooled serial trade returns, historical
@@ -98,6 +103,11 @@ data and unsettled fees invalidate a day. The explicit [v2 evidence correction](
 instead requires continuous observation and valid valuations of held inventory
 at each UTC boundary, while preserving execution guards and reporting quote
 coverage. It never reclassifies v1 history or moves the epoch/deadline.
+V3 retains those valuation rules and separates evidence by universe cohort.
+It computes one joint six-asset allocation per frame using bounded deterministic
+5% grid ascent, with fixed held exposures and add/remove/exchange moves. This
+search is a documented heuristic, not a guarantee of the global optimum. Earlier
+two-asset enumeration and journal replay remain unchanged.
 The estimator requires at least **30 usable
 daily blocks**, with at least **10 active blocks for an eligible asset**, and uses
 at most the most recent 60. Thirty blocks are an initial operational policy, not a
@@ -128,9 +138,20 @@ read-only mirror of them. A downloaded status snapshot alone has no bar history
 and is insufficient. This implementation does not change the VPS deployment or
 add a paid feed/mirroring service.
 
+For a new local fixture only, initialize the original identity and explicitly
+activate both version boundaries. Existing studies start at `tick`/`run` after
+their controlled migration; never rerun `init`.
+
 ```sh
 PYTHONPATH=evolver python3 -m evolver.trading.experiment_runner init \
-  --policy infra/trading/policy.demo.json --root .valor/three-books
+  --policy infra/trading/policy.demo.initial.json --root .valor/three-books
+
+PYTHONPATH=evolver python3 -m evolver.trading.experiment_runner upgrade-evidence \
+  --policy infra/trading/policy.demo.initial.json --root .valor/three-books
+
+PYTHONPATH=evolver python3 -m evolver.trading.experiment_runner expand-universe \
+  --policy infra/trading/policy.demo.initial.json \
+  --new-policy infra/trading/policy.demo.json --root .valor/three-books
 
 PYTHONPATH=evolver python3 -m evolver.trading.experiment_runner tick \
   --policy infra/trading/policy.demo.json --root .valor/three-books \
@@ -158,7 +179,8 @@ the input and all three projections together; a single-writer file lock protects
 the CLI. A restart resumes the same book and epoch.
 
 The separately authorized `upgrade-evidence` command is the explicit journaled
-exception for the documented v2 evidence semantics. It changes no execution/risk
+exception for the documented v2 evidence semantics. `expand-universe` is the
+separate append-only v3 boundary; neither command can reset the study. V2 changes no execution/risk
 settings, preserves old blocks and excludes the activation day. Release the
 single-writer lock by stopping only the experiment service before using it.
 
@@ -182,16 +204,16 @@ It still consumes host CPU, disk and memory; existing hosting bills continue.
 
 Build `Dockerfile.experiment` from an explicitly pinned, already-present runtime
 image. The release context contains only `experiment.py`, `experiment_runner.py`,
-`shadow_sizing.py`, frozen `policy.json`, and the Dockerfile. The inherited runtime
+`shadow_sizing.py`, `contracts.py`, `universe.py`, frozen `policy.json`, and the Dockerfile. The inherited runtime
 dependencies must match the locally verified versions. Build with network off
 and pulling disabled, under a distinct experiment image tag; never overwrite the
 existing runtime image/tag or change its Compose project.
 
 Set `VALOR_EXPERIMENT_IMAGE` to the verified release image in a separate deployment
-environment file. Initialize exactly once with the new project's one-off
-`ledgers init --policy /config/experiment-policy.json --root /experiment` command;
-this is the moment the common virtual 90-day clock starts. Only then start the
-new `ledgers` service. Its command only resumes an existing ledger; missing state
+environment file. A new deployment requires explicit initialization with the
+original policy and the version boundaries shown above. An existing deployment
+uses the controlled [migration](UNIVERSE.md). The common virtual 90-day clock
+starts at original initialization. The `ledgers` command only resumes existing state; missing state
 is an error, never an implicit new $500. Container restarts resume the same epoch,
 policy, journal and balances. Never remove the state volume or run `down -v`.
 

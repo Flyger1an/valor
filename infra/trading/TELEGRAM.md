@@ -70,9 +70,16 @@ Create `notifications.json` in the private configuration directory:
   "broker_identity": "alpaca:demo:<existing identity suffix>",
   "recipient_hash": "<SHA-256 of the existing private numeric chat ID>",
   "bot_username": "<verified existing bot username>",
-  "instruments": ["BTC-USD", "ETH-USD"]
+  "instruments": ["ADA-USD", "BTC-USD", "ETH-USD", "SHIB-USD", "SKY-USD", "WIF-USD"]
 }
 ```
+
+An existing notifier must use the explicit `migrate_config` boundary described
+in [UNIVERSE.md](UNIVERSE.md). Set `acceptance_identity_policy_hash` to its
+original policy hash so accepted-order identities keep the same deduplication
+namespace. Preserve the source cursor, historical orders, delivery outbox,
+recipient, bot identity and credential mounts. Replacing configuration without
+migrating its recorded identity fails closed.
 
 The operator supplies the **existing** token and sole verified private chat ID
 as `bot-token` and `chat-id` files in the credential directory. Keep that

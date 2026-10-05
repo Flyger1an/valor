@@ -440,9 +440,9 @@ def latest_quotes(http, instruments):
     return result
 
 
-def recent_bars(http, instruments, now=None):
+def recent_bars(http, instruments, now=None, start_at=None):
     now = now or time.time()
-    start = dt.datetime.fromtimestamp(now - 86400 * 7, dt.timezone.utc).isoformat()
+    start = dt.datetime.fromtimestamp(now - 86400 * 7 if start_at is None else start_at, dt.timezone.utc).isoformat()
     params = {"symbols": ",".join(s.replace("-", "/") for s in instruments), "timeframe": "5Min",
               "start": start, "end": dt.datetime.fromtimestamp(now, dt.timezone.utc).isoformat(), "limit": 10000}
     collected, seen = {}, set()

@@ -15,10 +15,12 @@ export function ExperimentComparison() {
       <p className="muted">{report.status === "unconfigured" ? "No experiment snapshot is connected. The comparison starts after the local experiment is initialized." :
         "The experiment snapshot is unavailable or invalid. No comparative performance can be shown."}</p> : <>
       <p><strong>Virtual simulation only</strong> · Start {report.epoch} · End {report.end}</p>
+      <p>Paper candidates: {report.symbols?.join(", ")}. Every entry remains subject to cost, freshness and risk checks.</p>
       <p className="muted">Updated {report.timestamp}. Market source: {report.source}.
         {report.source === "test_fixture" && " These are synthetic test fixtures, not observed market performance."}</p>
       <p>Snapshot: <strong>{report.captureFresh ? "Current" : "Stale"}</strong> ·
-        Quotes at snapshot: <strong>{report.marksFresh ? "Fresh" : "Stale"}</strong> · {report.frames ?? "Unknown"} observations</p>
+        Portfolio valuation: <strong>{report.marksFresh ? "Known" : "Stale"}</strong> · {report.frames ?? "Unknown"} observations</p>
+      {report.quoteStatus && <p>{report.quoteStatus.map(q => `${q.symbol}: ${q.fresh ? "fresh" : "stale / missing"}`).join(" · ")}</p>}
       {!report.captureFresh && <p className="bad-text">The snapshot is stale. Reconnect the private snapshot mirror to confirm current state.</p>}
       {!report.marksFresh && <p className="bad-text">Some provider quotes are stale. They remain ineligible for execution; a recent snapshot does not refresh a quote.</p>}
       {report.halt && <p className="bad-text">Experiment stopped: {report.halt}. History and balances are retained.</p>}
@@ -43,7 +45,7 @@ export function ExperimentComparison() {
           "Eligible so far; awaiting the complete day and settlement." : "Excluded so far: " + report.evidenceQuality.invalidReasons.join("; ")} </p>
         <p>First full day for this version: {report.evidenceQuality.firstFullDay ?? "Unverified"}.
           {" "}{report.evidenceQuality.legacyBlocks} earlier blocks retained separately; {report.evidenceQuality.missingDays} missing full days.</p>
-        <p>{report.evidenceQuality.observations} observations today · both quotes fresh in {report.evidenceQuality.freshPairFraction === undefined ?
+        <p>{report.evidenceQuality.observations} observations today · all candidate quotes fresh in {report.evidenceQuality.freshPairFraction === undefined ?
           "unknown" : (100 * report.evidenceQuality.freshPairFraction).toFixed(1) + "%"} ·
           {" "}{report.evidenceQuality.gapsOver60} gaps over 60 seconds.</p>
         <ul>{report.evidenceQuality.staleByAsset.map(s => <li key={s.symbol}>{s.symbol}: {s.count} stale observations,

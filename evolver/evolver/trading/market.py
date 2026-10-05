@@ -45,6 +45,7 @@ class CoinbaseData:
 
 class AlpacaData:
     source = "alpaca"
+    venue = "us"
 
     def __init__(self, http):
         self.http = http
@@ -57,13 +58,24 @@ class AlpacaData:
         from .alpaca import recent_bars
         return recent_bars(self.http, instruments, now)
 
+    def bars_since(self, instruments, now, start):
+        from .alpaca import recent_bars
+        return recent_bars(self.http, instruments, now, start_at=start)
+
     def increments(self, instruments):
+        return {s: a["increment"] for s, a in self.instrument_rules(instruments).items()}
+
+    def instrument_rules(self, instruments):
         result = {}
         for s in instruments:
             asset = self.http.request("GET", "/v2/assets/"+urllib.parse.quote(s.replace("-", "/"), safe=""))
-            if not asset or not asset.get("tradable") or decimal(asset["min_trade_increment"]) <= 0:
-                raise ValueError("missing tradable instrument increments")
-            result[s] = str(decimal(asset["min_trade_increment"]))
+            if (not asset or not asset.get("tradable") or asset.get("status") != "active"
+                    or asset.get("class") != "crypto"
+                    or any(decimal(asset.get(k, 0)) <= 0 for k in ("min_trade_increment", "min_order_size", "price_increment"))):
+                raise ValueError("missing tradable instrument order rules")
+            result[s] = {"increment": str(decimal(asset["min_trade_increment"])),
+                         "minimum_quantity": str(decimal(asset["min_order_size"])),
+                         "price_increment": str(decimal(asset["price_increment"]))}
         return result
 
 

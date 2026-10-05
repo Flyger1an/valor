@@ -35,14 +35,21 @@ KELLY_RULES_V2 = {**KELLY_RULES, "version": "robust-quarter-kelly-v2",
     "boundary_quote_age_seconds": 30,
     "cohort": "forward full UTC days after activation; never pool v1 or partial days"}
 
+KELLY_RULES_V3 = {**KELLY_RULES_V2, "version": "robust-quarter-kelly-v3",
+    "cohort": "synchronized full UTC days after this universe boundary; never fabricate new-asset returns",
+    "optimizer": "deterministic joint 5% grid ascent with add/remove/exchange moves; bounded heuristic, not a global optimum guarantee",
+    "maximum_optimizer_steps": 400,
+    "selection": "lexical eligible symbol order; one joint recommendation per frame, then unchanged shared caps"}
+
 
 def evidence_rules(version):
-    return {KELLY_RULES["version"]: KELLY_RULES, KELLY_RULES_V2["version"]: KELLY_RULES_V2}[version]
+    return {r["version"]: r for r in (KELLY_RULES, KELLY_RULES_V2, KELLY_RULES_V3)}[version]
 
 
-def usable_blocks(blocks, now, version):
+def usable_blocks(blocks, now, version, cohort=None):
     return [b for b in blocks if b["complete"] and b["settled"] and b["available_at"] <= now and b["end"] < now
-            and b.get("evidence_version", KELLY_RULES["version"]) == version][-evidence_rules(version)["maximum_blocks"]:]
+            and b.get("evidence_version", KELLY_RULES["version"]) == version
+            and (cohort is None or b.get("cohort") == cohort)][-evidence_rules(version)["maximum_blocks"]:]
 
 
 def _score(weights, samples, rules=KELLY_RULES):
@@ -54,17 +61,22 @@ def _score(weights, samples, rules=KELLY_RULES):
         math.log1p(v) for v in values) + rules["joint_shock_probability"]*math.log1p(tail)
 
 
-def recommend(blocks, symbols, eligible, held_weights, now, version=KELLY_RULES["version"]):
+def recommend(blocks, symbols, eligible, held_weights, now, version=KELLY_RULES["version"], cohort=None):
     """Recommend *new* notional weights; held allocations are fixed, never resized.
 
     Settlement and availability gates prevent learning from as-yet unknown fees.
     A second, comonotonic scenario removes the benefit of an estimated low correlation.
-    At most two assets are supported; bounded enumeration avoids optimizer dependencies.
+    Legacy cohorts retain exact two-asset enumeration. V3 uses a bounded joint search.
     """
-    if len(symbols) != 2:
+    dynamic = version == KELLY_RULES_V3["version"]
+    if dynamic:
+        if not 1 <= len(symbols) <= 64 or len(set(symbols)) != len(symbols) or not cohort:
+            raise ValueError("dynamic Kelly requires a bounded unique universe and explicit cohort")
+        symbols = sorted(symbols)
+    elif len(symbols) != 2:
         raise ValueError("Kelly v1 supports exactly two synchronized assets")
     rules = evidence_rules(version)
-    usable = usable_blocks(blocks, now, version)
+    usable = usable_blocks(blocks, now, version, cohort)
     digest = hashlib.sha256(encode(usable).encode()).hexdigest()
     result = {"policy_version": rules["version"], "evidence_hash": digest,
               "blocks": len(usable), "evidence_cutoff": max((b["end"] for b in usable), default=None),
@@ -73,6 +85,8 @@ def recommend(blocks, symbols, eligible, held_weights, now, version=KELLY_RULES[
               "reason": "insufficient_forward_evidence", "assumptions": rules}
     if len(usable) < rules["minimum_blocks"]:
         return result
+    if any(set(b["pnl"]) != set(symbols) for b in usable):
+        return {**result, "reason": "missing_synchronized_asset_evidence"}
     if any(float(b["reference_notional"]) <= 0 for b in usable):
         return {**result, "reason": "unusable_return_distribution"}
     columns = [[float(b["pnl"][s])/float(b["reference_notional"]) for b in usable] for s in symbols]
@@ -94,13 +108,22 @@ def recommend(blocks, symbols, eligible, held_weights, now, version=KELLY_RULES[
     result["adjusted_mean"] = lower
     if not any(allowed):
         return {**result, "reason": "no_supported_positive_net_edge"}
-    joint = [tuple(row[j]-margins[j] for j in range(2)) for row in zip(*columns)]
-    comonotonic = list(zip(*(sorted(x-margins[j] for x in columns[j]) for j in range(2))))
+    count = len(symbols)
+    joint = [tuple(row[j]-margins[j] for j in range(count)) for row in zip(*columns)]
+    comonotonic = list(zip(*(sorted(x-margins[j] for x in columns[j]) for j in range(count))))
     held = tuple(float(held_weights.get(s, 0)) for s in symbols)
-    if any(w < 0 for w in held) or sum(held) > 1:
+    if any(not math.isfinite(w) or w < 0 for w in held) or sum(held) > 1:
         return {**result, "reason": "invalid_held_exposure"}
     objective = lambda w: min(_score(w, joint, rules), _score(w, comonotonic, rules))
-    baseline, best, new = objective(held), objective(held), (0.0, 0.0)
+    baseline, best, new = objective(held), objective(held), (0.0,)*count
+    if dynamic:
+        new, best = _joint_grid(objective, held, allowed, rules)
+        fractional = tuple(w*rules["fraction"] for w in new)
+        if objective(tuple(held[j]+fractional[j] for j in range(count))) <= baseline + 1e-12:
+            return {**result, "reason": "cash_has_better_robust_growth"}
+        return {**result, "reason": "positive_stress_adjusted_growth",
+                "raw_fraction": dict(zip(symbols, new)), "fractional_fraction": dict(zip(symbols, fractional)),
+                "raw_incremental_log_growth": best-baseline}
     choices = [range(21) if ok and held[j] == 0 else (0,) for j, ok in enumerate(allowed)]
     for a in choices[0]:
         for b in choices[1]:
@@ -119,3 +142,33 @@ def recommend(blocks, symbols, eligible, held_weights, now, version=KELLY_RULES[
             "raw_fraction": dict(zip(symbols, new)),
             "fractional_fraction": dict(zip(symbols, fractional)),
             "raw_incremental_log_growth": best-baseline}
+
+
+def _joint_grid(objective, held, allowed, rules):
+    """Optimize a single joint objective; held exposures are fixed and never sold here."""
+    n, units = len(held), [0]*len(held)
+    best = objective(held)
+    destinations = [i for i in range(n) if allowed[i] and held[i] == 0]
+    step = rules["grid_step"]
+    for _ in range(rules["maximum_optimizer_steps"]):
+        winner, score = None, best
+        # None represents cash. Moves can add, remove, or exchange one grid unit.
+        for source in [None]+[i for i in range(n) if units[i]]:
+            for target in [None]+destinations:
+                if source == target:
+                    continue
+                candidate = units.copy()
+                if source is not None:
+                    candidate[source] -= 1
+                if target is not None:
+                    candidate[target] += 1
+                weights = tuple(held[i]+candidate[i]*step for i in range(n))
+                if sum(weights) > 1+1e-12:
+                    continue
+                value = objective(weights)
+                if value > score+1e-12:
+                    winner, score = candidate, value
+        if winner is None:
+            break
+        units, best = winner, score
+    return tuple(u*step for u in units), best

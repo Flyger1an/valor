@@ -14,12 +14,8 @@
   "fee_bps": "25",
   "slippage_bps": "5",
   "allowed_instruments": [
-    "ADA-USD",
     "BTC-USD",
-    "ETH-USD",
-    "SHIB-USD",
-    "SKY-USD",
-    "WIF-USD"
+    "ETH-USD"
   ],
   "approved_strategies": [
     "ema_trend@6ad91594a2f1",

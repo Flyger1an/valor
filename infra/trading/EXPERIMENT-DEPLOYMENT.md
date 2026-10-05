@@ -22,14 +22,17 @@ Results and operating estimates must not be represented as reconciled real profi
 ## Release process
 
 Build from an already-present pinned runtime image using `Dockerfile.experiment`.
-Prepare a bounded context with the three virtual modules and frozen policy.
+Prepare a bounded context with the virtual modules, updated contracts/universe
+migration modules, and frozen policy.
 Record the source commit, input hashes, image ID and Compose configuration in
 private deployment metadata. Build without pulling or network access.
 
 Before changing an existing experiment, back up its SQLite database consistently
 and replay a copy. Preserve identity, epoch, deadline, financial state and prior
 journal bytes. Verify the candidate image on that copy before stopping only the
-isolated service. Do not restart the source broker/feed services.
+isolated service. An experiment-only change does not restart source services;
+the coordinated [universe migration](UNIVERSE.md) also changes source policy
+and restarts only the affected source processes.
 
 For an authorized v1-to-v2 correction, release the single-writer lock and run the
 candidate image's `upgrade-evidence` command against the existing experiment.

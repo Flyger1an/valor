@@ -1,8 +1,8 @@
 # Prospective USD universe assessment — 5 October 2026
 
-**Result: no additional pair passed the full predeclared admission criteria.** ADA/USD, SHIB/USD, SKY/USD and WIF/USD passed quote freshness during the measured windows, but failed execution availability and recent modeled-volume capacity. They are research candidates, not enabled trading instruments. The existing BTC/USD and ETH/USD configuration remains unchanged.
+**Freshness result: ADA/USD, SHIB/USD, SKY/USD and WIF/USD passed the measured freshness criteria.** These four additions join BTC/USD and ETH/USD in the PAPER/DEMO candidate universe through the [explicit migration](UNIVERSE.md). The scan's additional 80% execution-availability and qualifying-volume-bar screens were engineering choices beyond the requested freshness criterion; they are diagnostics, not membership gates. Per-order spread, volume, minimum-size and risk checks remain unchanged.
 
-This report records an observed gate failure. It does not implement or claim a completed dynamic-universe expansion. No deployment, policy migration, service restart, order, credential change, subscription purchase or risk-limit change was performed for this scan.
+This report preserves the original scan observations and thresholds. No additional pair passed all of its combined screens. The scan itself performed no deployment, policy migration, service restart, order, credential change, subscription purchase or risk-limit change; the subsequent implementation is documented separately.
 
 ## Observation and frozen criteria
 
@@ -77,12 +77,12 @@ The existing credentials authenticated to the Alpaca US quote stream. A 36-symbo
 
 The ten symbols were ADA, ARB, BONK, BTC, ETH, FIL, PEPE, SHIB, SKY and WIF, all quoted in USD. This short diagnostic is not part of the three-window selection evidence. Several symbols had no initial quote before the first sample; missing initial observations were retained. It demonstrates that a smaller stream subscription works, not that streaming makes the full universe consistently executable. No Kraken or other venue was mixed into the observations.
 
-## Required engineering before a qualifying expansion
+## Engineering requirements identified by the scan
 
 1. Bound or partition historical fetches and separate their latency from quote refresh. Pin venue identity explicitly in quote and bar provenance. Preserve the existing closed-bar revision checks. See [runtime.py](../../evolver/evolver/trading/runtime.py) and [alpaca.py](../../evolver/evolver/trading/alpaca.py).
 2. Add a prospective, append-only universe/policy migration covering the source ledger, experiment identity, notifier source pin and dashboard pins. Preserve the original epoch, journal prefix, cash, fee settlements, evidence classifications, supervisor state and pending/protective orders. Startup must not silently substitute a policy. See [ledger.py](../../evolver/evolver/trading/ledger.py), [experiment.py](../../evolver/evolver/trading/experiment.py) and [telegram_alerts.py](../../evolver/evolver/trading/telegram_alerts.py).
 3. Replace experiment-wide unused-symbol freshness gates with per-candidate entry checks plus fresh valuation for held inventory. Keep stale held-position marks and unavailable protective execution explicit. Generalize the two-asset Kelly estimator as a joint portfolio problem with a versioned evidence cohort; do not fabricate returns for new symbols or allocate independently across correlated assets. New assets with insufficient forward evidence remain cash. Henry must retain one cash-funded position and a deterministic ordering of currently eligible opportunities. See [shadow_sizing.py](../../evolver/evolver/trading/shadow_sizing.py).
-4. Generalize catalog minima/increments, experiment capture, Telegram instrument validation and dashboard coverage, then test shared capital/exposure/loss budgets, stale-symbol isolation, deterministic selection, no leverage, cold starts, migrations without reset and BTC/ETH accounting regressions. Publish and deploy only an actually qualifying universe. The separate supervisor role/prompt issue is outside this pair-expansion work and remains unchanged.
+4. Generalize catalog minima/increments, experiment capture, Telegram instrument validation and dashboard coverage, then test shared capital/exposure/loss budgets, stale-symbol isolation, deterministic selection, no leverage, cold starts, migrations without reset and BTC/ETH accounting regressions. These requirements are implemented by the [six-candidate expansion](UNIVERSE.md). The separate supervisor role/prompt issue is outside this pair-expansion work and remains unchanged.
 
 ## Verification and evidence
 

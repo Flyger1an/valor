@@ -35,14 +35,48 @@ def load_config(path):
     if len(raw) > 8192:
         raise AlertError("invalid_config")
     c = json.loads(raw)
+    return validate_config(c)
+
+
+def validate_config(c):
     if (c.get("schema_version") != 1 or
             not re.fullmatch(r"[a-f0-9]{64}", c.get("policy_hash", "")) or
             not re.fullmatch(r"alpaca:demo:[a-f0-9]{16}", c.get("broker_identity", "")) or
             not re.fullmatch(r"[a-f0-9]{64}", c.get("recipient_hash", "")) or
             not re.fullmatch(r"[A-Za-z0-9_]{5,64}", c.get("bot_username", "")) or
-            c.get("instruments") != ["BTC-USD", "ETH-USD"]):
+            not isinstance(c.get("instruments"), list) or not 1 <= len(c["instruments"]) <= 64 or
+            len(set(c["instruments"])) != len(c["instruments"]) or
+            any(not isinstance(s, str) or not re.fullmatch(r"[A-Z0-9]+-USD", s) for s in c["instruments"]) or
+            not re.fullmatch(r"[a-f0-9]{64}", c.get("acceptance_identity_policy_hash", c["policy_hash"]))):
         raise AlertError("invalid_config")
     return c
+
+
+def migrate_config(state, old, new, now):
+    """Offline source-pin expansion; recipient, cursor and delivery identities stay fixed."""
+    validate_config(old)
+    validate_config(new)
+    origin = old.get("acceptance_identity_policy_hash", old["policy_hash"])
+    strip = lambda c: {k: v for k, v in c.items() if k not in {"policy_hash", "instruments", "acceptance_identity_policy_hash"}}
+    if (strip(old) != strip(new) or not set(old["instruments"]) < set(new["instruments"])
+            or new.get("acceptance_identity_policy_hash") != origin or old["policy_hash"] == new["policy_hash"]):
+        raise AlertError("invalid_notification_universe_migration")
+    if not Path(state).is_file():
+        raise AlertError("notification_state_required")
+    db = sqlite3.connect(state, timeout=10)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT value FROM meta WHERE key='config_identity'").fetchone()
+        if not row or json.loads(row[0]) != digest(json.dumps(old, sort_keys=True)):
+            raise AlertError("notification_identity_changed")
+        db.execute("CREATE TABLE IF NOT EXISTS config_migrations (policy_hash TEXT PRIMARY KEY,payload TEXT NOT NULL)")
+        db.execute("INSERT INTO config_migrations VALUES (?,?)", (new["policy_hash"], json.dumps(
+            {"at": now, "old": old, "new": new, "cursor_preserved": True, "delivery_ids_preserved": True}, sort_keys=True)))
+        db.execute("UPDATE meta SET value=? WHERE key='config_identity'",
+                   (json.dumps(digest(json.dumps(new, sort_keys=True))),))
+        db.commit()
+    finally:
+        db.close()
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -198,7 +232,7 @@ class PaperOrderAlerts:
             return None
         # No quantities, balances, account IDs, strategy prose, raw receipts or broker
         # IDs enter Telegram. A short opaque reference makes duplicate review possible.
-        identity = digest(self.config["policy_hash"] + ":accepted:" + cid)
+        identity = digest(self.config.get("acceptance_identity_policy_hash", self.config["policy_hash"]) + ":accepted:" + cid)
         purpose = "Protective order" if row["purpose"] == "protection" else "Order"
         label = {"open": "open (fill not confirmed)", "partial": "partially filled", "filled": "filled"}[status]
         body = (f"VALOR — PAPER/DEMO\n{purpose} accepted by Alpaca\n"
@@ -218,7 +252,7 @@ class PaperOrderAlerts:
                 with self.db:
                     for order in source.execute("SELECT client_id FROM alpaca_receipts WHERE remote_id IS NOT NULL AND remote_id!=''"):
                         self.db.execute("INSERT OR IGNORE INTO historical_orders VALUES (?)",
-                                        (digest(self.config["policy_hash"] + ":accepted:" + order[0]),))
+                                        (digest(self.config.get("acceptance_identity_policy_hash", self.config["policy_hash"]) + ":accepted:" + order[0]),))
                     self.set("cursor", maximum)
                     self.set("cursor_hash", self.event_hash(newest))
                     self.set("activated_at", now)
