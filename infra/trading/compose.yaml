@@ -1,0 +1,105 @@
+name: ${VALOR_PROJECT:-valor-study}
+
+x-common: &common
+  build: {context: ../.., dockerfile: infra/Dockerfile.trading}
+  image: valor-study:local
+  restart: unless-stopped
+  read_only: true
+  init: true
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+  pids_limit: 64
+  logging:
+    driver: json-file
+    options: {max-size: "5m", max-file: "3"}
+
+services:
+  feed:
+    <<: *common
+    command: [feed, --policy, /config/policy.json, --root, /runtime]
+    mem_limit: 192m
+    env_file: [{path: ./feed.env, required: false}]
+    volumes:
+      - ${VALOR_POLICY_FILE:-./policy.paper.json}:/config/policy.json:ro
+      - market:/runtime/market
+
+  worker:
+    <<: *common
+    command: [worker, --policy, /config/policy.json, --root, /runtime]
+    mem_limit: 192m
+    env_file: [{path: ./worker.env, required: false}]
+    volumes:
+      - ${VALOR_POLICY_FILE:-./policy.paper.json}:/config/policy.json:ro
+      - state:/runtime/state
+      - outbox:/runtime/outbox
+      - inbox:/runtime/inbox:ro
+      - market:/runtime/market:ro
+      - research:/runtime/research:ro
+      - news:/runtime/news:ro
+    healthcheck:
+      test: [CMD, python, -m, evolver.trading, status, --policy, /config/policy.json, --root, /runtime, --require-fresh]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  agents:
+    <<: *common
+    command: [agents, --policy, /config/policy.json, --root, /runtime]
+    mem_limit: 128m
+    env_file: [{path: ./agents.env, required: false}]
+    volumes:
+      - ${VALOR_POLICY_FILE:-./policy.paper.json}:/config/policy.json:ro
+      - outbox:/runtime/outbox:ro
+      - inbox:/runtime/inbox
+      - agent_usage:/runtime/agents
+
+  research:
+    <<: *common
+    command: [research, --policy, /config/policy.json, --root, /runtime]
+    mem_limit: 256m
+    network_mode: none
+    volumes:
+      - ${VALOR_POLICY_FILE:-./policy.paper.json}:/config/policy.json:ro
+      - market:/runtime/market:ro
+      - outbox:/runtime/outbox:ro
+      - research:/runtime/research
+
+  monitor:
+    <<: *common
+    command: [monitor, --policy, /config/policy.json, --root, /runtime, --bind, "0.0.0.0"]
+    mem_limit: 64m
+    ports: ["127.0.0.1:9001:9001"]
+    volumes:
+      - ${VALOR_POLICY_FILE:-./policy.paper.json}:/config/policy.json:ro
+      - outbox:/runtime/outbox:ro
+
+  news:
+    <<: *common
+    command: [news, --policy, /config/policy.json, --root, /runtime]
+    mem_limit: 96m
+    env_file: [{path: ./feed.env, required: false}]
+    volumes:
+      - ${VALOR_POLICY_FILE:-./policy.paper.json}:/config/policy.json:ro
+      - news:/runtime/news
+
+  watchdog:
+    <<: *common
+    command: [watchdog, --policy, /config/policy.json, --root, /runtime]
+    mem_limit: 48m
+    env_file: [{path: ./heartbeat.env, required: false}]
+    volumes:
+      - ${VALOR_POLICY_FILE:-./policy.paper.json}:/config/policy.json:ro
+      - outbox:/runtime/outbox:ro
+
+volumes:
+  state: {}
+  outbox: {}
+  inbox: {}
+  market: {}
+  research: {}
+  news: {}
+  agent_usage:
+    name: ${VALOR_AGENT_USAGE_VOLUME:-valor-study_agent_usage}
+    external: true
