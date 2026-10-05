@@ -21,6 +21,11 @@ from currently eligible signals, with no leverage, top-ups or future ranking.
 Alpaca US venue identity is recorded in quotes and bars. Quotes refresh separately
 from background historical-bar requests; those requests use bounded batches and
 incremental windows after bootstrap. Closed-bar revisions still fail closed.
+An invalid or revised candle quarantines only its symbol's signal history; its
+recorded bars are retained unchanged. Other symbols keep refreshing. Quarantine
+blocks that symbol's new orders and pending buys, while valid quote-based exits
+remain available. Research promotions wait until quarantined history is resolved.
+Dashboards identify unavailable signal history separately from quote freshness.
 Catalog minimum quantity, quantity increment and price increment are checked.
 Entry limits round down within the existing slippage bound; later simulated buys
 round adversely up to the price grid and must still fit that original limit.

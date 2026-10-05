@@ -107,11 +107,19 @@ class Feed:
                     incoming.update(self.provider.bars_since(ready, now, start))
                 else:
                     incoming.update(self.provider.bars(ready, now))
-        histories = {s: merge_bars(saved["histories"].get(s, []), incoming.get(s, []), now)
-                     for s in self.policy.allowed_instruments}
+        histories, errors = {}, {}
+        for symbol in self.policy.allowed_instruments:
+            try:
+                histories[symbol] = merge_bars(saved["histories"].get(symbol, []), incoming.get(symbol, []), now)
+            except ValueError:
+                # Retain the frozen observations; quarantine this symbol instead of
+                # replacing history or preventing unrelated symbols from refreshing.
+                histories[symbol] = saved["histories"].get(symbol, [])
+                errors[symbol] = "closed_bar_revision_or_invalid_bar"
         # An execution-sized view avoids decoding the full research history every five seconds.
-        write_snapshot(self.target / "signals.json", {**header, "histories": {s: b[-400:] for s, b in histories.items()}})
-        write_snapshot(self.target / "history.json", {**header, "histories": histories})
+        write_snapshot(self.target / "signals.json", {**header, "history_errors": errors,
+            "histories": {s: [] if s in errors else b[-400:] for s, b in histories.items()}})
+        write_snapshot(self.target / "history.json", {**header, "history_errors": errors, "histories": histories})
 
 
 def research_tick(policy, p, now):
@@ -119,6 +127,8 @@ def research_tick(policy, p, now):
     data = read_object(p["market"] / "history.json", {})
     if data.get("policy_hash") != policy.fingerprint or not 0 <= now-data.get("timestamp", 0) <= 600:
         raise ValueError("research needs fresh, matching market history")
+    if data.get("history_errors"):
+        raise ValueError("research requires resolution of quarantined historical bars")
     saved = read_object(p["research"] / "assessment.json", {})
     if saved.get("policy_hash") and saved["policy_hash"] != policy.fingerprint:
         # Preserve the old classification, then start a prospective selection cohort.

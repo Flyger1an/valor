@@ -90,7 +90,8 @@ describe("fictional book reporting", () => {
   it("reports six candidates without treating an unused stale quote as an unknown cash valuation", () => {
     const symbols = ["ADA-USD", "BTC-USD", "ETH-USD", "SHIB-USD", "SKY-USD", "WIF-USD"];
     const report = loadExperimentStatus(snapshot({symbols, marks_fresh: true,
-      quote_status: Object.fromEntries(symbols.map(symbol => [symbol, {fresh: symbol !== "WIF-USD", age_seconds: symbol === "WIF-USD" ? 45 : 2}])),
+      quote_status: Object.fromEntries(symbols.map(symbol => [symbol, {fresh: symbol !== "WIF-USD", age_seconds: symbol === "WIF-USD" ? 45 : 2,
+        history_available: symbol !== "BTC-USD"}])),
       evidence_quality: {day: "2026-10-05", complete_so_far: false, invalid_reasons: ["policy_boundary_partial_day"],
         first_full_utc_day_start: now / 1000 + 86400, fresh_pair_observation_fraction: 0,
         baseline_valuation_now: {valid: true}, legacy_blocks_retained: 1, unobserved_full_days: 0,
@@ -101,6 +102,7 @@ describe("fictional book reporting", () => {
     expect(report.status).toBe("current");
     expect(report.symbols).toEqual(symbols);
     expect(report.quoteStatus?.find(q => q.symbol === "WIF-USD")?.fresh).toBe(false);
+    expect(report.quoteStatus?.find(q => q.symbol === "BTC-USD")?.historyAvailable).toBe(false);
     expect(report.evidenceQuality?.staleByAsset).toHaveLength(6);
     expect(loadExperimentStatus(snapshot({symbols: ["BTC-USD", "BTC-USD"]}), now).status).toBe("unavailable");
     expect(loadExperimentStatus(snapshot({symbols, quote_status: {}}), now).status).toBe("unavailable");

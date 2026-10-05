@@ -33,7 +33,7 @@ function render() {
     paragraph(byId("study-period"), `Start ${date(e.epoch)} · End ${date(e.end)}`, "mono");
     paragraph(byId("study-period"), `Paper candidates: ${(e.symbols ?? []).join(", ")}. Each entry must pass the existing cost, freshness and risk checks.`);
     paragraph(byId("freshness"), `Snapshot: ${stale || !e.captureFresh ? "STALE" : "current"} · Portfolio valuation: ${e.marksFresh ? "known" : "STALE"} · ${e.frames ?? "Unknown"} observations`, stale || !e.marksFresh ? "bad" : "ok");
-    if (e.quoteStatus) paragraph(byId("freshness"), e.quoteStatus.map(q => `${q.symbol}: ${q.fresh ? "fresh" : "stale / missing"}`).join(" · "));
+    if (e.quoteStatus) paragraph(byId("freshness"), e.quoteStatus.map(q => `${q.symbol}: ${q.fresh ? "fresh" : "stale / missing"}${q.historyAvailable === false ? " (signal history unavailable)" : ""}`).join(" · "));
     paragraph(byId("freshness"), `Observed ${date(e.timestamp)} · Source: ${e.source}`, "muted");
     if (stale) paragraph(byId("freshness"), "The last values below are stale. Current balances and health are unverified.", "notice");
     if (!e.marksFresh) paragraph(byId("freshness"), "Some provider quotes are stale and remain ineligible for execution.", "notice");

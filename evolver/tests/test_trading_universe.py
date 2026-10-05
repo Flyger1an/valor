@@ -146,6 +146,23 @@ class UniverseExperimentTests(unittest.TestCase):
         self.exp._exits(book, state, NOW+50)
         self.assertNotIn("BTC-USD", book["pending"])
 
+    def test_quarantined_history_blocks_only_that_symbols_new_risk(self):
+        self.exp.apply(six_frame(signals=SIX))
+        frozen = copy.deepcopy(self.exp.state()["histories"]["BTC-USD"])
+        event = six_frame(NOW+5, signals=SIX)
+        event["history_unavailable_symbols"] = ["BTC-USD"]
+        event["bars"]["BTC-USD"] = []
+        report = self.exp.apply(event)
+        baseline = self.exp.state()["books"]["baseline"]
+        self.assertIn("ADA-USD", baseline["positions"])
+        self.assertNotIn("BTC-USD", baseline["positions"])
+        self.assertIn("history_unavailable_before_fill", baseline["skips"])
+        self.assertEqual(self.exp.state()["histories"]["BTC-USD"], frozen)
+        self.assertTrue(report["quote_status"]["BTC-USD"]["fresh"])
+        self.assertFalse(report["quote_status"]["BTC-USD"]["history_available"])
+        self.assertTrue(report["marks_fresh"])
+        self.assertTrue(self.exp.verify_replay()["verified"])
+
     def test_tick_grid_does_not_raise_entry_slippage_limit(self):
         f = six_frame(signals=("ADA-USD",))
         f["quotes"]["ADA-USD"]["price_increment"] = ".03"
@@ -273,6 +290,33 @@ class UniverseRiskAndFeedTests(unittest.TestCase):
             finally:
                 release.set()
                 feed.bar_thread.join(3)
+
+    def test_revised_closed_bar_is_retained_and_only_its_signals_quarantined(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            old = histories((), at=NOW)
+            old["BTC-USD"][-1]["high"] = "101"
+            incoming = copy.deepcopy(old)
+            incoming["BTC-USD"][-1]["close"] = "101"
+            for s in set(SIX)-set(old):incoming[s] = copy.deepcopy(old["ETH-USD"])
+            class Provider:
+                source, venue = "alpaca", "us"
+                def bars(self, instruments, now):return {s: incoming[s] for s in instruments}
+                def bars_since(self, instruments, now, start):return self.bars(instruments, now)
+            write_snapshot(root/"history.json", {"source":"alpaca", "venue":"us", "histories":old})
+            with patch.dict("os.environ", {"VALOR_DATA_SOURCE":"alpaca"}), patch("evolver.trading.market.AlpacaData", return_value=Provider()), patch("evolver.trading.alpaca.AlpacaHTTP"):
+                feed = Feed(expanded_policy(), root)
+            feed._refresh_bars(NOW, {"source":"alpaca", "venue":"us", "timestamp":NOW, "policy_hash":expanded_policy().fingerprint})
+            history = json.loads((root/"history.json").read_text())
+            signals = json.loads((root/"signals.json").read_text())
+            self.assertEqual(history["histories"]["BTC-USD"], old["BTC-USD"])
+            self.assertEqual(set(signals["history_errors"]), {"BTC-USD"})
+            self.assertEqual(signals["histories"]["BTC-USD"], [])
+            self.assertTrue(all(signals["histories"][s] for s in set(SIX)-{"BTC-USD"}))
+            with patch("evolver.trading.learning.evaluate") as evaluate:
+                with self.assertRaisesRegex(ValueError, "quarantined"):
+                    research_tick(expanded_policy(), {"market":root}, NOW)
+                evaluate.assert_not_called()
 
     def test_research_retains_old_classification_and_starts_new_forward_cutoff(self):
         with tempfile.TemporaryDirectory() as temp:

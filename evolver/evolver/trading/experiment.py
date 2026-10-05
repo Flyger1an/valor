@@ -456,6 +456,11 @@ class Experiment:
             raise IntegrityError("market_source_changed")
         if state.get("universe") and frame["source"] == "alpaca" and frame.get("venue") != "us":
             raise IntegrityError("universe_requires_same_venue_provenance")
+        if state.get("universe"):
+            missing = frame.get("history_unavailable_symbols", [])
+            if not isinstance(missing, list) or any(s not in self.symbols(state) for s in missing):
+                raise IntegrityError("invalid_history_availability")
+            state["history_unavailable_symbols"] = missing
         state["source"] = frame["source"]
         self._roll_day(state, now)
         for symbol, raw in frame["quotes"].items():
@@ -501,6 +506,8 @@ class Experiment:
         opportunities = []
         spec = BY_VERSION[self.identity["strategy"]]
         for symbol in self.symbols(state):
+            if symbol in state.get("history_unavailable_symbols", []):
+                continue
             bars = state["histories"].get(symbol, [])
             if bars and 0 <= now-bars[-1]["timestamp"]-300 <= 600 and entry_signal(spec, bars):
                 opportunities.append({"id": f"{spec.version}:{symbol}:{int(bars[-1]['timestamp'])}",
@@ -607,6 +614,8 @@ class Experiment:
             return "entry_gate_changed_before_fill"
         if book["halt"] or book["daily_halt"]:
             return "book_halted_before_fill"
+        if symbol in state.get("history_unavailable_symbols", []):
+            return "history_unavailable_before_fill"
         if any(s not in state["quotes"] or not 0 <= now-state["quotes"][s]["timestamp"] <= 30 for s in self._required_marks(book, state, symbol)):
             return "stale_portfolio_mark_before_fill"
         q = state["quotes"][symbol]
@@ -650,7 +659,8 @@ class Experiment:
             cost = (D(buy["value"])+D(buy["fee"]))/D(buy["quantity"])
             stop = D(q["bid"]) <= D(lot["stop"])
             expiry = now >= self.identity["epoch"]+90*86400
-            stale_bars = not bars or not 0 <= now-bars[-1]["timestamp"]-300 <= 600
+            stale_bars = (symbol in state.get("history_unavailable_symbols", []) or
+                          not bars or not 0 <= now-bars[-1]["timestamp"]-300 <= 600)
             ordinary = (D(q["bid"]) >= cost*(1+D(spec.target_fraction)) or now-lot["opened"] >= spec.max_hold_bars*300
                         or not stale_bars and exit_signal(spec, bars))
             if stop or book["daily_halt"] or book["halt"] or expiry or ordinary:
@@ -673,6 +683,8 @@ class Experiment:
             return "outside_shared_entry_window"
         if not frame["context"]["data_entry_allowed"]:
             return "shared_data_or_news_gate"
+        if symbol in state.get("history_unavailable_symbols", []):
+            return "history_unavailable"
         q = state["quotes"].get(symbol)
         if not q or any(s not in state["quotes"] or not 0 <= now-state["quotes"][s]["timestamp"] <= 30 for s in self._required_marks(book, state, symbol)):
             return "stale_quote"
@@ -785,7 +797,8 @@ class Experiment:
             required = {s for b in state["books"].values() for s in b["positions"]}
             result["marks_fresh"] = bool(state["frames"]) and all(s in state["quotes"] and
                 0 <= state["last_at"]-state["quotes"][s]["timestamp"] <= 30 for s in required)
-            result["quote_status"] = {s: {"age_seconds": state["last_at"]-state["quotes"][s]["timestamp"] if s in state["quotes"] else None,
+            result["quote_status"] = {s: {"history_available": bool(state["histories"].get(s)) and s not in state.get("history_unavailable_symbols", []),
+                "age_seconds": state["last_at"]-state["quotes"][s]["timestamp"] if s in state["quotes"] else None,
                 "fresh": s in state["quotes"] and 0 <= state["last_at"]-state["quotes"][s]["timestamp"] <= 30}
                 for s in self.symbols(state)}
         for name in BOOKS:

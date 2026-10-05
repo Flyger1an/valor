@@ -31,7 +31,7 @@ export type ExperimentStatus = {
   timestamp?: string;
   source?: string;
   symbols?: string[];
-  quoteStatus?: { symbol: string; fresh: boolean; ageSeconds?: number }[];
+  quoteStatus?: { symbol: string; fresh: boolean; ageSeconds?: number; historyAvailable?: boolean }[];
   halt?: string;
   strategy?: string;
   evidenceBlocks?: number;
@@ -153,7 +153,8 @@ export function parseExperimentStatus(value: unknown, now = Date.now()): Experim
       if (!q || typeof q.fresh !== "boolean") throw new Error("missing symbol freshness");
       const ageSeconds = optional(q.age_seconds);
       if (q.fresh && (ageSeconds === undefined || ageSeconds < 0 || ageSeconds > 30)) throw new Error("invalid symbol freshness");
-      return {symbol, fresh: q.fresh, ageSeconds};
+      if (q.history_available !== undefined && typeof q.history_available !== "boolean") throw new Error("invalid history availability");
+      return {symbol, fresh: q.fresh, ageSeconds, historyAvailable: q.history_available as boolean | undefined};
     });
     return {
       status: raw.marks_fresh === true && captureFresh ? "current" : "stale",

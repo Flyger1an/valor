@@ -42,9 +42,12 @@ def capture(experiment, source_root, now):
     dynamic = bool(state.get("universe"))
     if dynamic and (prices.get("venue") != "us" or signals.get("venue") != "us"):
         raise ValueError("expanded universe requires explicit matching Alpaca US provenance")
-    unavailable = []
+    unavailable, history_unavailable = [], []
     for symbol in experiment.symbols(state):
         history = signals.get("histories", {}).get(symbol, [])
+        if dynamic and (not history or symbol in signals.get("history_errors", {})):
+            history = []
+            history_unavailable.append(symbol)
         if not history or history[-1]["timestamp"]+300 > now:
             if not dynamic or history:
                 raise ValueError("closed-bar history is required")
@@ -91,7 +94,7 @@ def capture(experiment, source_root, now):
                          "operational_approval_reused": False},
              "shared_operating_estimate": cost}
     if dynamic:
-        frame.update(venue="us", unavailable_symbols=unavailable)
+        frame.update(venue="us", unavailable_symbols=unavailable, history_unavailable_symbols=history_unavailable)
     return frame
 
 

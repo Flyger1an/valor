@@ -20,7 +20,7 @@ export function ExperimentComparison() {
         {report.source === "test_fixture" && " These are synthetic test fixtures, not observed market performance."}</p>
       <p>Snapshot: <strong>{report.captureFresh ? "Current" : "Stale"}</strong> ·
         Portfolio valuation: <strong>{report.marksFresh ? "Known" : "Stale"}</strong> · {report.frames ?? "Unknown"} observations</p>
-      {report.quoteStatus && <p>{report.quoteStatus.map(q => `${q.symbol}: ${q.fresh ? "fresh" : "stale / missing"}`).join(" · ")}</p>}
+      {report.quoteStatus && <p>{report.quoteStatus.map(q => `${q.symbol}: ${q.fresh ? "fresh" : "stale / missing"}${q.historyAvailable === false ? " (signal history unavailable)" : ""}`).join(" · ")}</p>}
       {!report.captureFresh && <p className="bad-text">The snapshot is stale. Reconnect the private snapshot mirror to confirm current state.</p>}
       {!report.marksFresh && <p className="bad-text">Some provider quotes are stale. They remain ineligible for execution; a recent snapshot does not refresh a quote.</p>}
       {report.halt && <p className="bad-text">Experiment stopped: {report.halt}. History and balances are retained.</p>}
