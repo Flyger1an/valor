@@ -18,7 +18,12 @@ services:
       - ${VALOR_TELEGRAM_CONFIG_DIR:?Choose a private configuration directory}:/config:ro
       - ${VALOR_TELEGRAM_CREDENTIAL_DIR:?Operator must configure the existing bot credential}:/credentials:ro
     healthcheck:
-      test: [CMD, python, /app/telegram_alerts.py, --health]
+      # Avoid importing the network client in a CPU-limited health-check process.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,time; d=json.load(open('/state/status.json')); raise SystemExit(0 if d.get('healthy') is True and 0 <= time.time()-d.get('timestamp',0) < 45 else 1)"
       interval: 30s
       timeout: 5s
       retries: 3
