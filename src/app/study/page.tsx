@@ -3,6 +3,7 @@ import { Activity } from "lucide-react";
 import { MetricTile, SectionHeader } from "@/components/dashboard/ui";
 import { requireBrowserSession } from "@/lib/auth/page-session";
 import { loadTradingRuntimeStatus } from "@/lib/trading/runtime-status";
+import { ExperimentComparison } from "./experiment-comparison";
 
 export const dynamic = "force-dynamic";
 const usd = (n: number | undefined) => n === undefined ? "Unavailable" : new Intl.NumberFormat("en-US", {
@@ -63,5 +64,6 @@ export default async function StudyPage() {
       </>}
       <p className="muted">Starting rules: $25 maximum position, $15 planned trade loss, $50 daily loss, 1× leverage. Position caps rise in steps when capital doubles and shrink during drawdowns. Price gaps and outages can exceed planned losses.</p>
     </section>
+    <ExperimentComparison />
   </main>;
 }

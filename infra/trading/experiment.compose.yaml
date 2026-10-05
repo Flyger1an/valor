@@ -1,0 +1,53 @@
+name: valor-experiment
+
+services:
+  ledgers:
+    image: ${VALOR_EXPERIMENT_IMAGE:?set the verified experiment release image}
+    pull_policy: never
+    restart: unless-stopped
+    read_only: true
+    network_mode: none
+    user: "10001:10001"
+    init: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 256m
+    cpus: 0.25
+    stop_grace_period: 20s
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    volumes:
+      - state:/experiment
+      - source_market:/runtime/market:ro
+      - source_outbox:/runtime/outbox:ro
+      - source_news:/runtime/news:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json,time,sys;
+          s=json.load(open('/experiment/snapshot.json'));
+          complete=s['timestamp']>=s['evaluation_end'] and all(b['positions']==0 and b['pending_orders']==0 and not b['provisional_fees'] for b in s['books']);
+          sys.exit(0 if s['mode']=='virtual_only' and not s['halt'] and s['frames']>0 and (0<=time.time()-s['timestamp']<=30 or complete) else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  state:
+    name: valor-experiment_state
+  source_market:
+    external: true
+    name: valor-demo_market
+  source_outbox:
+    external: true
+    name: valor-demo_outbox
+  source_news:
+    external: true
+    name: valor-demo_news
