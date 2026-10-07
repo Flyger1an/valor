@@ -291,7 +291,9 @@ class AlpacaBroker:
         for symbol in self.policy.allowed_instruments:
             self.asset(symbol)
         now = max(now, self.clock())
-        projection = self.journal.rebuild(now)
+        # Stage first: a failed balance check must not publish a guessed cash/lot
+        # projection. Immutable raw activities are still retained for review.
+        projection = self.journal.rebuild(now, persist=False)
         if projection["accounting"]["order_activity_lag"]:
             with self.book.db:
                 self.book.set("entry_pause", "activity_lag")
@@ -304,19 +306,17 @@ class AlpacaBroker:
         if set(a["open_order_ids"]) != expected_open:
             raise AccountingError("unknown or missing open orders")
         gross = {s: q for s, q in projection["positions"].items() if q}
-        effective = {s: decimal(p["quantity"]) for s, p in self.book.positions().items()}
-        for s, p in self.book.get("dust", {}).items():
-            effective[s] = effective.get(s, decimal(0)) + decimal(p["quantity"])
+        effective = projection["effective_positions"]
         actual = {s: q for s, q in a["positions"].items() if q}
         tolerance = decimal("0.00000001")
         cash_confirmed = abs(a["cash"]-projection["cash"]) <= tolerance
-        cash_estimated = abs(a["cash"]-decimal(self.book.get("cash"))) <= tolerance
+        cash_estimated = abs(a["cash"]-projection["effective_cash"]) <= tolerance
         # The authenticated account endpoint rounds USD cash to cents while FILL carries
         # sub-cent execution values. Require an exact rounded match, not a loose $0.01 band.
         cents = decimal("0.01")
         if a["cash"] == a["cash"].quantize(cents):
             cash_confirmed |= a["cash"] == projection["cash"].quantize(cents)
-            cash_estimated |= a["cash"] == decimal(self.book.get("cash")).quantize(cents)
+            cash_estimated |= a["cash"] == projection["effective_cash"].quantize(cents)
         # A documented fee accrual can bridge an exactly matching withheld fee, but the
         # readiness report still marks it provisional. Arbitrary in-range deltas do not pass.
         if any(q < 0 for q in actual.values()):
@@ -328,6 +328,7 @@ class AlpacaBroker:
         qty_estimated = quantities_match(effective)
         if not ((cash_confirmed or cash_estimated) and (qty_confirmed or qty_estimated)):
             raise AccountingError("broker balance differs from journal and explicit fee accruals")
+        self.journal.rebuild(now)
         accounting = projection["accounting"]
         reason = "activity_lag" if accounting["order_activity_lag"] else ""
         if accounting["cash_flow_count"]:
