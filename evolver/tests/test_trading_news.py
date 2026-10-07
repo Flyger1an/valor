@@ -149,7 +149,8 @@ class NewsTests(unittest.TestCase):
                 q = Quote('BTC-USD','99.9','100',NOW)
                 header = {'timestamp': NOW, 'source':'coinbase_public','policy_hash':p.fingerprint}
                 write_snapshot(root/'market/quotes.json',{**header,'quotes':{'BTC-USD':asdict(q)}})
-                write_snapshot(root/'market/signals.json',{**header,'histories':{'BTC-USD':[]}})
+                bars=[dict(timestamp=(NOW//300-80+i)*300,open='100',high='101',low='99',close='100',volume='20') for i in range(80)]
+                write_snapshot(root/'market/signals.json',{**header,'histories':{'BTC-USD':bars}})
                 write_snapshot(root/'news/snapshot.json',bundle())
                 buy = Intent('bar1',CATALOG[0].version,'BTC-USD','buy','.24','97',NOW,'fixture','100.05')
                 with patch('evolver.trading.worker.make_intents',return_value=[buy]):

@@ -307,6 +307,7 @@ class UniverseRiskAndFeedTests(unittest.TestCase):
             with patch.dict("os.environ", {"VALOR_DATA_SOURCE":"alpaca"}), patch("evolver.trading.market.AlpacaData", return_value=Provider()), patch("evolver.trading.alpaca.AlpacaHTTP"):
                 feed = Feed(expanded_policy(), root)
             feed._refresh_bars(NOW, {"source":"alpaca", "venue":"us", "timestamp":NOW, "policy_hash":expanded_policy().fingerprint})
+            feed._refresh_bars(NOW+60, {"source":"alpaca", "venue":"us", "timestamp":NOW+60, "policy_hash":expanded_policy().fingerprint})
             history = json.loads((root/"history.json").read_text())
             signals = json.loads((root/"signals.json").read_text())
             self.assertEqual(history["histories"]["BTC-USD"], old["BTC-USD"])
@@ -314,9 +315,9 @@ class UniverseRiskAndFeedTests(unittest.TestCase):
             self.assertEqual(signals["histories"]["BTC-USD"], [])
             self.assertTrue(all(signals["histories"][s] for s in set(SIX)-{"BTC-USD"}))
             with patch("evolver.trading.learning.evaluate") as evaluate:
-                with self.assertRaisesRegex(ValueError, "quarantined"):
-                    research_tick(expanded_policy(), {"market":root}, NOW)
+                research_tick(expanded_policy(), {"market":root, "research":root/'research'}, NOW+60)
                 evaluate.assert_not_called()
+                self.assertEqual(json.loads((root/'research/assessment.json').read_text())["status"], "blocked_history_integrity")
 
     def test_research_retains_old_classification_and_starts_new_forward_cutoff(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -23,6 +23,7 @@ class Engine:
         self.analyst, self.reviewer = analyst, reviewer
         self.kill_path = Path(kill_path) if kill_path else None
         self.refresh_quotes, self.monotonic = refresh_quotes, monotonic
+        self.context_valid = None
 
     def supervise(self, command: dict, now: float):
         current = self.book.get("supervisor")
@@ -387,6 +388,10 @@ class Engine:
                         self.book.event(now, "entry.blocked", {"client_id": intent.client_id, "reason": reason})
                     continue
                 quote = quotes[intent.instrument]
+            if self.context_valid is not None and not self.context_valid(intent, now):
+                with self.book.db:
+                    self.book.event(now, "review.history_changed_before_submit", {"client_id": intent.client_id})
+                continue
             if not self._submit(intent, quote, now):
                 break
         self._reconcile(now)

@@ -88,7 +88,8 @@ class Feed:
             print(encode({"role": "feed", "event": "bars_unavailable", "error_type": type(exc).__name__}), flush=True)
 
     def _refresh_bars(self, now, header):
-        from .market import merge_bars
+        from .history import advance, contiguous, retain
+        from .strategies import BY_VERSION
         saved = read_object(self.target / "history.json", {"histories": {}})
         if (saved.get("source", self.provider.source) != self.provider.source
                 or saved.get("venue", header["venue"]) != header["venue"]):
@@ -107,34 +108,52 @@ class Feed:
                     incoming.update(self.provider.bars_since(ready, now, start))
                 else:
                     incoming.update(self.provider.bars(ready, now))
-        histories, errors = {}, {}
+        # Preserve the complete pre-upgrade observation set before adding recovery
+        # metadata. Evidence records are immutable and independent of projections.
+        archive = self.target / "history-evidence"
+        if saved.get("histories") and "history_integrity" not in saved:
+            retain(archive, {"kind": "legacy_history", "snapshot": saved}, {})
+        histories, errors, integrity, signals = {}, {}, {}, {}
+        minimum = min(BY_VERSION[v].slow * 3 + 1 for v in self.policy.approved_strategies if v in BY_VERSION)
         for symbol in self.policy.allowed_instruments:
-            try:
-                histories[symbol] = merge_bars(saved["histories"].get(symbol, []), incoming.get(symbol, []), now)
-            except ValueError:
-                # Retain the frozen observations; quarantine this symbol instead of
-                # replacing history or preventing unrelated symbols from refreshing.
-                histories[symbol] = saved["histories"].get(symbol, [])
-                errors[symbol] = "closed_bar_revision_or_invalid_bar"
+            def record(identity, payload):
+                return retain(archive, {"symbol": symbol, "source": self.provider.source,
+                                       "venue": header.get("venue"), **identity}, payload)
+            histories[symbol], integrity[symbol] = advance(saved["histories"].get(symbol, []),
+                incoming.get(symbol, []), now, saved.get("history_integrity", {}).get(symbol), record,
+                saved.get("history_errors", {}).get(symbol))
+            clean = contiguous(histories[symbol], integrity[symbol]["cutoff"])
+            if integrity[symbol]["cutoff"] and len(clean) < minimum:
+                errors[symbol] = "history_recovery_warmup"
+            signals[symbol] = [] if symbol in errors else clean[-400:]
         # An execution-sized view avoids decoding the full research history every five seconds.
+        provenance = {"history_errors": errors, "history_integrity": integrity}
         write_snapshot(self.target / "signals.json", {**header, "history_errors": errors,
-            "histories": {s: [] if s in errors else b[-400:] for s, b in histories.items()}})
-        write_snapshot(self.target / "history.json", {**header, "history_errors": errors, "histories": histories})
+            "history_integrity": {s: {k: v for k, v in item.items() if k != "pending"} for s, item in integrity.items()},
+            "histories": signals})
+        write_snapshot(self.target / "history.json", {**header, **provenance, "histories": histories})
 
 
 def research_tick(policy, p, now):
     from .learning import evaluate
+    from .history import context, contiguous, digest
     data = read_object(p["market"] / "history.json", {})
     if data.get("policy_hash") != policy.fingerprint or not 0 <= now-data.get("timestamp", 0) <= 600:
         raise ValueError("research needs fresh, matching market history")
-    if data.get("history_errors"):
-        raise ValueError("research requires resolution of quarantined historical bars")
     saved = read_object(p["research"] / "assessment.json", {})
-    if saved.get("policy_hash") and saved["policy_hash"] != policy.fingerprint:
+    history_context = context(data)
+    changed_history = bool(saved and saved.get("history_context", {}) != history_context)
+    if saved.get("policy_hash") and saved["policy_hash"] != policy.fingerprint or changed_history:
         # Preserve the old classification, then start a prospective selection cohort.
         archive = "assessment-"+hashlib.sha256(encode(saved).encode()).hexdigest()+".json"
         write_snapshot(p["research"] / archive, saved)
-        saved = {"cutoff": now+300, "universe_boundary_at": now, "prior_policy_hash": saved["policy_hash"]}
+        saved = {"cutoff": now+300, "universe_boundary_at": now, "prior_policy_hash": saved.get("policy_hash"),
+                 "history_context": history_context, "history_boundary_at": now if changed_history else None}
+    if data.get("history_errors"):
+        write_snapshot(p["research"] / "assessment.json", {**saved, "status": "blocked_history_integrity",
+            "history_errors": data["history_errors"], "history_context": history_context,
+            "policy_hash": policy.fingerprint, "source": data["source"], "evaluated_at": now})
+        return
     snapshot = read_object(p["outbox"] / "snapshot.json", {})
     learning = snapshot.get("learning", {})
     if saved.get("status") == "review_required" and learning.get("finalized_evidence_hash") != saved.get("evidence_hash"):
@@ -143,11 +162,21 @@ def research_tick(policy, p, now):
     if saved.get("status") == "rejected" or learning.get("finalized_evidence_hash") == saved.get("evidence_hash") and saved.get("evidence_hash"):
         saved = {"cutoff": saved["end"] + 300}
     incumbent = snapshot.get("active_strategy") or policy.approved_strategies[0]
-    assessed = evaluate(policy, data["histories"], saved, incumbent)
+    clean = {s: contiguous(b, history_context.get(s, {}).get("cutoff", 0)) for s, b in data["histories"].items()}
+    assessed = evaluate(policy, clean, saved, incumbent)
+    # Bind promotion to the reviewed source generations and candle prefix, so a
+    # later integrity boundary cannot recycle an older approval.
+    end = assessed.get("end")
+    binding = {"context": history_context, "source": data["source"], "venue": data.get("venue"),
+               "end": end, "hashes": {s: digest([b for b in bars if end is None or b["timestamp"] <= end])
+                                        for s, bars in clean.items()}}
+    if assessed.get("evidence_hash"):
+        assessed["evidence_hash"] = digest({"evaluation": assessed["evidence_hash"], "history": binding})
     write_snapshot(p["research"] / "assessment.json", {**assessed, "policy_hash": policy.fingerprint,
                   "universe_boundary_at": saved.get("universe_boundary_at"),
                   "prior_policy_hash": saved.get("prior_policy_hash"),
-                  "source": data["source"], "evaluated_at": now})
+                  "source": data["source"], "evaluated_at": now, "history_context": history_context,
+                  "history_binding": binding, "history_boundary_at": saved.get("history_boundary_at")})
 
 
 def status(outbox, now=None):

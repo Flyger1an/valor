@@ -143,6 +143,13 @@ class Experiment:
     def policy_hash(self, state):
         return state.get("universe", {}).get("policy_hash", self.identity["policy_hash"])
 
+    def _decision_history(self, state, symbol):
+        bars = state["histories"].get(symbol, [])
+        if "history_cutoffs" not in state:
+            return bars  # Existing journal decisions retain their original semantics.
+        from .history import contiguous
+        return contiguous(bars, state["history_cutoffs"].get(symbol, 0))
+
     def _required_marks(self, book, state, symbol):
         return set(book["positions"]) | {symbol} if state.get("universe") else self.symbols(state)
 
@@ -461,6 +468,14 @@ class Experiment:
             if not isinstance(missing, list) or any(s not in self.symbols(state) for s in missing):
                 raise IntegrityError("invalid_history_availability")
             state["history_unavailable_symbols"] = missing
+            if "history_cutoffs" in frame:
+                cutoffs = frame["history_cutoffs"]
+                if (not isinstance(cutoffs, dict) or any(s not in self.symbols(state) or
+                        D(t) < D(state.get("history_cutoffs", {}).get(s, 0)) or D(t) % 300 or D(t) > now+300
+                        for s, t in cutoffs.items())
+                        or not set(state.get("history_cutoffs", {})).issubset(cutoffs)):
+                    raise IntegrityError("invalid_history_recovery_boundary")
+                state["history_cutoffs"] = cutoffs
         state["source"] = frame["source"]
         self._roll_day(state, now)
         for symbol, raw in frame["quotes"].items():
@@ -508,7 +523,7 @@ class Experiment:
         for symbol in self.symbols(state):
             if symbol in state.get("history_unavailable_symbols", []):
                 continue
-            bars = state["histories"].get(symbol, [])
+            bars = self._decision_history(state, symbol)
             if bars and 0 <= now-bars[-1]["timestamp"]-300 <= 600 and entry_signal(spec, bars):
                 opportunities.append({"id": f"{spec.version}:{symbol}:{int(bars[-1]['timestamp'])}",
                     "instrument": symbol, "bar_timestamp": bars[-1]["timestamp"], "observed_at": now,
@@ -616,6 +631,13 @@ class Experiment:
             return "book_halted_before_fill"
         if symbol in state.get("history_unavailable_symbols", []):
             return "history_unavailable_before_fill"
+        if state.get("history_cutoffs", {}).get(symbol, 0) >= order["created"]:
+            return "history_changed_before_fill"
+        if "history_cutoffs" in state:
+            bars = self._decision_history(state, symbol)
+            spec = BY_VERSION[self.identity["strategy"]]
+            if len(bars) < spec.slow*3+1 or not 0 <= now-bars[-1]["timestamp"]-300 <= 600:
+                return "history_unavailable_before_fill"
         if any(s not in state["quotes"] or not 0 <= now-state["quotes"][s]["timestamp"] <= 30 for s in self._required_marks(book, state, symbol)):
             return "stale_portfolio_mark_before_fill"
         q = state["quotes"][symbol]
@@ -654,7 +676,8 @@ class Experiment:
             q = state["quotes"].get(symbol)
             if not q or not 0 <= now-q["timestamp"] <= 30:
                 continue
-            lot, bars = book["lots"][lid], state["histories"].get(symbol, [])
+            lot = book["lots"][lid]
+            bars = self._decision_history(state, symbol)
             buy = book["fills"][lot["buy"]]
             cost = (D(buy["value"])+D(buy["fee"]))/D(buy["quantity"])
             stop = D(q["bid"]) <= D(lot["stop"])

@@ -42,7 +42,10 @@ class OrchestrationTests(unittest.TestCase):
     def market(self, quote):
         header = {'timestamp': quote.timestamp, 'source': 'coinbase_public', 'policy_hash': self.p.fingerprint}
         write_snapshot(self.root / 'market/quotes.json', {**header, 'quotes': {'BTC-USD': asdict(quote)}})
-        write_snapshot(self.root / 'market/signals.json', {**header, 'histories': {'BTC-USD': []}})
+        bars = [dict(timestamp=(quote.timestamp//300-80+i)*300, open='100', high='101', low='99', close='100', volume='20')
+                for i in range(80)]
+        write_snapshot(self.root / 'market/signals.json', {**header, 'histories': {'BTC-USD': bars}})
+        write_snapshot(self.root / 'market/history.json', {**header, 'histories': {'BTC-USD': bars}})
 
     def test_async_two_reviews_restart_and_unattended_stop(self):
         with patch('evolver.trading.worker.make_intents', return_value=[self.buy]):
@@ -120,6 +123,12 @@ class OrchestrationTests(unittest.TestCase):
             self.assertIsNotNone(book.get('supervision_request'))
             evidence = {'evidence_hash': 'synthetic-proof', 'challenger': CATALOG[1].version,
                         'source': 'coinbase_public'}
+            from evolver.trading.history import digest
+            history = {'source': 'coinbase_public', 'policy_hash': p.fingerprint, 'timestamp': NOW, 'histories': {'BTC-USD': []}}
+            write_snapshot(root/'market/history.json', history)
+            write_snapshot(root/'market/signals.json', history)
+            evidence['history_binding'] = {'context': {}, 'source': 'coinbase_public', 'venue': None,
+                                           'end': NOW-300, 'hashes': {'BTC-USD': digest([])}}
             request = worker.mailbox.put('promotion', {'policy_hash': p.fingerprint, 'evidence': evidence}, NOW, 30)
             with book.db:
                 book.set('promotion_request', request)

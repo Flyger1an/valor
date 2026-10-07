@@ -95,6 +95,10 @@ def capture(experiment, source_root, now):
              "shared_operating_estimate": cost}
     if dynamic:
         frame.update(venue="us", unavailable_symbols=unavailable, history_unavailable_symbols=history_unavailable)
+        if signals.get("history_integrity"):
+            frame["history_cutoffs"] = {s: v.get("cutoff", 0) for s, v in signals["history_integrity"].items()}
+            frame["input_provenance"]["history_integrity"] = {s: {k: v.get(k) for k in ("cutoff", "generation")}
+                                                            for s, v in signals["history_integrity"].items()}
     return frame
 
 

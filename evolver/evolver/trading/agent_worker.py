@@ -121,9 +121,16 @@ def process_request(request, policy, analyst, reviewer, now):
     body = request["body"]
     if body["policy_hash"] != policy.fingerprint:
         raise ValueError("request policy mismatch")
+    # The immutable request retains every binding. Each market card already
+    # includes its exact window binding, so do not send the duplicate map twice.
+    snapshot = {k: v for k, v in body.get("snapshot", {}).items() if k != "history_binding"}
     if request["kind"] == "trade":
+        if snapshot.get("market_evidence"):
+            market = snapshot["market_evidence"]
+            snapshot["market_evidence"] = {**market, "symbols": {s: v for s, v in market["symbols"].items()
+                                                   if s == body["intent"]["instrument"]}}
         result = {}
-        review_entry(Intent(**body["intent"]), policy, body["snapshot"], analyst, reviewer,
+        review_entry(Intent(**body["intent"]), policy, snapshot, analyst, reviewer,
                      lambda role, decision: result.update({role: decision}))
         return result
     if request["kind"] == "supervision":
@@ -131,8 +138,13 @@ def process_request(request, policy, analyst, reviewer, now):
         schema = {"action": "pause_entries, resume_entries, or reduce_risk",
                   "risk_scale": f"A decimal string greater than 0 and at most 1. Current scale is {current_scale}. pause_entries keeps the current scale; reduce_risk can only lower it. resume_entries may restore toward 1 when evidence supports recovery, subject to an independent review. Never use zero.",
                   "reason": "Explain opportunity, recent strategy outcomes, costs, news and health. Restore risk only on improved evidence, never just to recover losses."}
-        result = parse_object(analyst(SYSTEM + "\nSupervise an experiment. Paper exploration is allowed inside the policy; simulated profits do not validate live trading.",
-                              encode({"policy": asdict(policy), "snapshot": body["snapshot"], "required_output": schema})))
+        result = parse_object(analyst(SYSTEM + "\nSupervise an experiment. Paper exploration is allowed inside the policy; simulated profits do not validate live trading. "
+                              "Use market_evidence for actual closed-candle signals, indicators, candidates, and explicit blockers. "
+                              "A candidate blocked only by the current supervisor pause may still be evaluated on its price evidence; "
+                              "this never waives other gates or the independent exact-trade reviews. "
+                              "Unavailable history and absent signals must remain explicit, never invented. "
+                              "Recent candles are a bounded excerpt; the evidence hash identifies the retained complete calculation window.",
+                              encode({"policy": asdict(policy), "snapshot": snapshot, "required_output": schema})))
         if set(result) != set(schema):
             raise ValueError("invalid supervision output")
         if result["action"] not in {"pause_entries", "resume_entries", "reduce_risk"} or not 0 < decimal(result["risk_scale"]) <= 1:
@@ -143,7 +155,7 @@ def process_request(request, policy, analyst, reviewer, now):
             expected = {"verdict": "approve or reject", "command_hash": supervision_digest(command),
                         "policy_hash": policy.fingerprint, "reason": "Explain whether evidence supports restoring risk within the original cap, at most 800 characters"}
             review = parse_object(reviewer(SYSTEM + "\nIndependently review restoration of risk toward the owner's original cap. Reject loss-chasing or unsupported restoration.",
-                                           encode({"command": command, "snapshot": body["snapshot"], "required_output": expected})))
+                                           encode({"command": command, "snapshot": snapshot, "required_output": expected})))
             if (set(review) != set(expected) or review["command_hash"] != expected["command_hash"]
                     or review["policy_hash"] != policy.fingerprint or review["verdict"] != "approve"
                     or not isinstance(review["reason"], str) or not 1 <= len(review["reason"]) <= 800):

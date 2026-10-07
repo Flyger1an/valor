@@ -31,6 +31,8 @@ class Mailbox:
         return request
 
     def result(self, request, now):
+        if (self.requests.parent / "invalidations" / (request["id"] + ".json")).exists():
+            return None
         if not request["created_at"] <= now < request["expires_at"]:
             return None
         value = read_object(self.responses / (request["id"] + ".json"), limit=30_000)
@@ -51,8 +53,13 @@ class Mailbox:
             digest = hashlib.sha256(encode({k: v for k, v in request.items() if k != "id"}).encode()).hexdigest()
             if digest != request["id"] or not request["created_at"] <= now < request["expires_at"]:
                 continue
-            if not (self.responses / path.name).exists():
+            if not (self.responses / path.name).exists() and not (self.requests.parent / "invalidations" / path.name).exists():
                 yield request
+
+    def invalidate(self, request, reason, now):
+        path = self.requests.parent / "invalidations" / (request["id"] + ".json")
+        if not path.exists():
+            write_snapshot(path, {"id": request["id"], "invalidated_at": now, "reason": reason})
 
     def answer(self, request, result, now):
         write_snapshot(self.responses / (request["id"] + ".json"),

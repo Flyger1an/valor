@@ -34,7 +34,7 @@ class Worker:
             return {}
         return {s: Quote(**q) for s, q in value.get("quotes", {}).items() if s in self.policy.allowed_instruments}
 
-    def _facts(self, snapshot):
+    def _facts(self, snapshot, data=None):
         # Do not copy the growing activity journal/reserve list or engineering drill into prompts.
         # Requests retain the complete selected news evidence for later outcome evaluation.
         keys = ("mode", "policy_hash", "timestamp", "cash", "equity", "exposure", "realized_pnl",
@@ -58,7 +58,33 @@ class Worker:
         usage = read_object(self.inbox / "responses" / "usage.json", {})
         from .costs import cost_summary
         facts["costs"] = cost_summary(snapshot, usage, snapshot["timestamp"])
+        from .evidence import describe
+        from .history import retain
+        quotes = {s: Quote(**q) for s, q in snapshot["quotes"].items()}
+        data = self._history_data() if data is None else data
+        evidence, binding, archive = describe(data, snapshot, quotes, self.policy, snapshot["timestamp"],
+            lambda intent: self.engine._entry_reason(intent, quotes, snapshot["timestamp"], snapshot))
+        retain(self.outbox / "candle-evidence", archive, {})
+        facts["market_evidence"] = evidence
+        facts["history_binding"] = binding
         return facts
+
+    def _history_data(self):
+        try:
+            return read_object(self.market / "signals.json", {})
+        except (ValueError, TypeError, KeyError, OSError):
+            return {}
+
+    def _invalidate(self, request, reason, now):
+        self.mailbox.invalidate(request, reason, now)
+        self.book.event(now, reason, {"request": request["id"]})
+
+    def _history_matches(self, request, now, symbol=None):
+        from .history import binding_valid
+        binding = request["body"].get("snapshot", {}).get("history_binding")
+        if symbol and binding:
+            binding = {**binding, "symbols": {symbol: binding.get("symbols", {}).get(symbol, {})}}
+        return binding_valid(binding, self._history_data(), self.policy, now, require_usable=bool(symbol))
 
     def _news(self, now):
         if self.news is None:
@@ -79,6 +105,16 @@ class Worker:
         request = self.book.get("supervision_request")
         if request:
             result = self.mailbox.result(request, now)
+            # Only a pause cannot authorize entries. reduce_risk also permits
+            # entries at a smaller scale, so it needs still-valid evidence.
+            needs_history = result is None or result.get("action") != "pause_entries"
+            if needs_history and not self._history_matches(request, now):
+                with self.book.db:
+                    self._invalidate(request, "supervisor.history_changed", now)
+                    self.book.set("supervision_request", None)
+                request = None
+        if request:
+            result = self.mailbox.result(request, now)
             if result is not None:
                 try:
                     reviewed = request["body"]["snapshot"].get("news", {})
@@ -86,6 +122,8 @@ class Worker:
                     if current.get("required") and (reviewed.get("evidence_hash"), reviewed.get("status")) != (current.get("evidence_hash"), current.get("status")):
                         raise ValueError("supervision news changed")
                     self.engine.supervise(result, now)
+                    with self.book.db:
+                        self.book.set("supervision_history_binding", request["body"]["snapshot"].get("history_binding"))
                 except (ValueError, TypeError, KeyError):
                     with self.book.db:
                         self.book.event(now, "supervisor.rejected", {"request": request["id"]})
@@ -114,6 +152,11 @@ class Worker:
             return  # Do not spend review calls or promote strategies after the operating window.
         request = self.book.get("promotion_request")
         if request:
+            if not self._promotion_history_matches(request["body"]["evidence"], now):
+                with self.book.db:
+                    self._invalidate(request, "promotion.history_changed", now)
+                    self.book.set("promotion_request", None)
+                return
             result = self.mailbox.result(request, now)
             evidence = request["body"]["evidence"]
             if result is None and now < request["expires_at"]:
@@ -148,6 +191,8 @@ class Worker:
         if (report.get("policy_hash") != self.policy.fingerprint
                 or not 0 <= now - report.get("evaluated_at", 0) <= 7200):
             return
+        if not self._promotion_history_matches(report, now):
+            return
         current = self.book.get("learning", {})
         if report.get("evidence_hash") and report["evidence_hash"] == current.get("finalized_evidence_hash"):
             return
@@ -166,6 +211,26 @@ class Worker:
         request = self.mailbox.put("promotion", {"policy_hash": self.policy.fingerprint, "evidence": report}, now, 3600)
         with self.book.db:
             self.book.set("promotion_request", request)
+
+    def _promotion_history_matches(self, report, now):
+        from .history import context, contiguous, digest, source_reason
+        try:
+            data = read_object(self.market / "history.json", {})
+            binding = report.get("history_binding")
+            signals = self._history_data()
+            if (not binding or source_reason(data, self.policy, now) or data.get("history_errors")
+                    or binding.get("context") != context(data) or binding.get("source") != data.get("source")
+                    or binding.get("venue") != data.get("venue") or source_reason(signals, self.policy, now)
+                    or signals.get("history_errors") or context(signals) != context(data)):
+                return False
+            end = binding["end"]
+            if end is None:
+                return False
+            clean = {s: contiguous(b, binding["context"].get(s, {}).get("cutoff", 0))
+                     for s, b in data["histories"].items()}
+            return binding["hashes"] == {s: digest([b for b in bars if b["timestamp"] <= end]) for s, bars in clean.items()}
+        except (ValueError, TypeError, KeyError, OSError):
+            return False
 
     def _rollback(self, now):
         previous, current = self.book.get("previous_strategy"), self.book.get("active_strategy")
@@ -186,12 +251,28 @@ class Worker:
         self._news(now)
         quotes = self.quotes()
         snapshot = self.engine.tick(quotes, [], now)  # protective checks NEVER wait for a model
+        from .history import authority_valid
+        lease = self.book.get("supervisor")
+        binding = self.book.get("supervision_history_binding")
+        if (lease.get("action") != "pause_entries" and binding is not None
+                and not authority_valid(binding, self._history_data(), self.policy, now)):
+            with self.book.db:
+                self.book.set("supervisor", {**lease, "action": "pause_entries", "expires_at": now})
+                self.book.event(now, "supervisor.history_invalidated", {"reason": "supporting_history_unreliable"})
+            snapshot = self.engine.snapshot(quotes, now)
         self._supervision(snapshot, now)
         self._learning(snapshot, now)
         self._rollback(now)
         pending = self.book.get("pending_reviews", {})
         for cid, item in list(pending.items()):
             request = item["request"]
+            if not self._history_matches(request, now, item["intent"]["instrument"]):
+                with self.book.db:
+                    self._invalidate(request, "review.history_changed", now)
+                    seen = self.book.get("seen_signals", {})
+                    self.book.set("seen_signals", {k: v for k, v in seen.items() if v != cid})
+                del pending[cid]
+                continue
             result = self.mailbox.result(request, now)
             if result is None and now < request["expires_at"]:
                 continue
@@ -209,22 +290,36 @@ class Worker:
                     continue
                 self.engine.analyst = lambda *_: encode(result.get("analyst", {}))
                 self.engine.reviewer = lambda *_: encode(result.get("reviewer", {}))
-                snapshot = self.engine.tick(quotes, [Intent(**item["intent"])], now)
-                self.engine.analyst = self.engine.reviewer = None
+                self.engine.context_valid = lambda intent, stamp: (intent.client_id != cid or
+                    self._history_matches(request, stamp, intent.instrument))
+                try:
+                    snapshot = self.engine.tick(quotes, [Intent(**item["intent"])], now)
+                finally:
+                    self.engine.analyst = self.engine.reviewer = self.engine.context_valid = None
             del pending[cid]
-        bars = read_object(self.market / "signals.json", {})
-        if bars.get("policy_hash") == self.policy.fingerprint and 0 <= now - bars.get("timestamp", 0) <= 600:
+        from .history import source_reason, window
+        bars = self._history_data()
+        if not source_reason(bars, self.policy, now):
             snapshot = self.engine.snapshot(quotes, now)
             seen = self.book.get("seen_signals", {})
-            for intent in make_intents(BY_VERSION[self.book.get("active_strategy")], bars["histories"], quotes,
+            spec = BY_VERSION[self.book.get("active_strategy")]
+            clean = {}
+            positions = self.book.positions()
+            for symbol in self.policy.allowed_instruments:
+                active = BY_VERSION.get(positions.get(symbol, {}).get("strategy"), spec)
+                selected, reason, _ = window(bars, symbol, active.slow*3+1, now)
+                clean[symbol] = [] if reason else selected
+            for intent in make_intents(spec, clean, quotes,
                                        snapshot, self.policy, now, bars.get("increments")):
                 key = intent.instrument + ":" + intent.side
                 if seen.get(key) == intent.client_id or intent.client_id in pending or self.book.order(intent.client_id):
                     continue
                 if intent.side == "buy" and self.engine._entry_reason(intent, quotes, now, snapshot):
                     continue
+                if not clean.get(intent.instrument):
+                    continue
                 request = self.mailbox.put("trade", {"policy_hash": self.policy.fingerprint,
-                                "intent": asdict(intent), "snapshot": self._facts(snapshot)}, now,
+                                "intent": asdict(intent), "snapshot": self._facts(snapshot, bars)}, now,
                                 self.policy.max_quote_age_seconds)
                 pending[intent.client_id] = {"request": request, "intent": asdict(intent)}
                 seen[key] = intent.client_id
