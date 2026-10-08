@@ -1,4 +1,4 @@
-# Henry v2 (henry-raging-bull-v4)
+# Henry v2 (henry-raging-bull-v5)
 
 A standalone, aggressive, cash-only virtual book. It is a fourth, separate study, not part of the
 three-book experiment. Baseline, kelly and henry v1 keep their journal, identity and rules unchanged.
@@ -10,6 +10,7 @@ three-book experiment. Baseline, kelly and henry v1 keep their journal, identity
 | Regime | none | 1h bars built from 5m: uptrend, consolidation, transition or downtrend, from a 20h EMA, its 5h slope and 24h efficiency (net move / total path). Seeded from the feed's history.json so a fresh run is not blind |
 | Entries | one frozen strategy | uptrend: breakouts and EMA trend entries. consolidation: dip buys only. transition and downtrend: cash. Strongest 24h coin wins ties, 24/7, no supervisor, news, session or daily-trade gate |
 | Market filter | none | alts follow BTC: alt breakouts and trend entries need BTC in an uptrend; a BTC downtrend blocks alt dip buys and exits alt momentum trades |
+| Cost gate | none | every entry must expect a move of at least 2.5x its round-trip cost (2x fee + 2x slippage + spread). Dip buys: distance back to the range middle. Momentum: 3x the 1h ATR. Friction is reported per trade and in total |
 | Volume | none | breakouts and trend entries need signal-bar volume at least 1.5x the prior 20-bar average |
 | Sizing | caps / Kelly / all-cash | probe with 50% of cash, press the rest only in an uptrend once up 2 stop distances with the 5m trend intact |
 | Stops | fixed 1-3% | 2.5x ATR (5m), clamped 0.8% to 6%; once working, trail 3x ATR under the high-water mark, never below true round-trip breakeven |

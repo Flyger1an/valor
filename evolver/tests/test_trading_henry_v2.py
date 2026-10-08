@@ -221,6 +221,33 @@ class HenryV2Test(unittest.TestCase):
         self.assertFalse(self.book._market_allows(state, "ETH-USD", "mean_reversion"))
         self.assertTrue(self.book._market_allows(state, "BTC-USD", "breakout"), "the leader is not filtered by itself")
 
+    # ---------- cost gate ----------
+    def test_round_trip_cost_includes_fees_slippage_and_spread(self):
+        self.assertEqual(self.book._round_trip_cost_pct(D("10")), D("0.7"))  # 2x25 + 2x5 + 10 bps
+
+    def test_shallow_dip_is_skipped_as_unable_to_pay_costs(self):
+        self.m.run(420, zigzag)
+        self.m.run(2, lambda i: 0.997)  # small dip: the bounce cannot cover ~0.6% round trip x 2.5
+        r = self.book.report()
+        self.assertIsNone(r["position"])
+        self.assertEqual(r["closed_trades"], 0)
+
+    def test_deep_dip_clears_the_gate_and_records_its_edge(self):
+        self.m.run(420, zigzag)
+        self.m.run(3, lambda i: 0.99)
+        self.m.run(12, lambda i: 1.006)
+        t = self.trades()[0]
+        self.assertGreaterEqual(D(t["expected_move_pct"]), D(t["cost_pct"])*D("2.5"))
+        self.assertGreater(D(t["friction_usd"]), 0)
+
+    def test_report_separates_friction_from_gross(self):
+        self.m.run(420, zigzag)
+        self.m.run(3, lambda i: 0.99)
+        self.m.run(12, lambda i: 1.006)
+        r = self.book.report()
+        self.assertGreater(D(r["friction_usd"]), D(r["fees_paid_usd"]), "spread and slippage count too")
+        self.assertEqual(D(r["gross_pnl_before_friction_usd"]), D(r["net_pnl_usd"])+D(r["friction_usd"]))
+
     # ---------- execution ----------
     def _open(self, family="breakout", budget="250", symbol="BTC-USD"):
         self.m.run(400, grind_up)

@@ -26,8 +26,8 @@ from .contracts import encode
 DEFAULT_SPREAD_BPS = {"BTC-USD": "4", "ETH-USD": "4"}
 OTHER_SPREAD_BPS = "20"
 SWEEP = {
-    ("regime", "trend_efficiency_min"): ["0.25", "0.30", "0.40"],
-    ("volume_confirmation", "min_ratio"): ["1.2", "1.5"],
+    ("cost_gate", "edge_multiple"): ["2.0", "2.5", "3.5"],
+    ("cost_gate", "momentum_target_hourly_atr"): ["2", "3"],
     ("stop_atr",): ["2.0", "2.5"],
 }
 
@@ -108,7 +108,8 @@ def replay(histories, *, fee_bps="25", slippage_bps="5", spreads=None):
             "max_drawdown_pct": report["max_drawdown_pct"], "closed_trades": report["closed_trades"],
             "win_rate_pct": report["win_rate_pct"], "payoff_ratio": report["payoff_ratio"],
             "avg_win_usd": report["avg_win_usd"], "avg_loss_usd": report["avg_loss_usd"],
-            "fees_paid_usd": report["fees_paid_usd"], "time_in_market_pct": round(in_market/(frames/2)*100, 1),
+            "fees_paid_usd": report["fees_paid_usd"], "friction_usd": report["friction_usd"],
+            "gross_pnl_before_friction_usd": report["gross_pnl_before_friction_usd"], "time_in_market_pct": round(in_market/(frames/2)*100, 1),
             "buy_and_hold_pct": hold, "by_entry_regime": report["by_entry_regime"],
             "by_family": by("family"), "by_exit_reason": by("reason"), "by_symbol": by("symbol"),
             "skips": report["skips"], "invalid_bars_skipped": invalid, "final_regimes": report["regimes"], "open_position": report["position"],
@@ -144,7 +145,10 @@ def sweep(histories, **kwargs):
 def _print(r):
     print(f"Henry {r['rules_version']} replay: {r['days']} days of history, {len(r['symbols'])} symbols")
     print(f"  warmup {r['warmup_hours']}h, then trading. time in market {r['time_in_market_pct']}%")
-    print(f"  equity ${r['equity_usd']}  return {r['return_pct']}%  max drawdown {r['max_drawdown_pct']}%  fees ${r['fees_paid_usd']}")
+    print(f"  equity ${r['equity_usd']}  return {r['return_pct']}%  max drawdown {r['max_drawdown_pct']}%")
+    print(f"  friction ${r['friction_usd']} (fees ${r['fees_paid_usd']} + spread/slippage)  "
+          f"gross before friction ${r['gross_pnl_before_friction_usd']}")
+    print("  verdict:", "BEATS CASH" if D(r["return_pct"]) > 0 else "does not beat cash")
     print(f"  trades {r['closed_trades']}  win rate {r['win_rate_pct']}%  avg win ${r['avg_win_usd']}  "
           f"avg loss ${r['avg_loss_usd']}  payoff {r['payoff_ratio']}")
     print("  buy and hold over the same window:", ", ".join(f"{s} {v}%" for s, v in r["buy_and_hold_pct"].items()))

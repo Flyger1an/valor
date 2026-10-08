@@ -12,6 +12,8 @@ Personality (versioned in HENRY_V2_RULES):
 - Hunts every approved strategy on every allowed symbol, 24/7, picking the strongest coin.
   No supervisor, news, session window or daily-loss gate.
 - Stops and trails are sized from each coin's own volatility (ATR), not a fixed percent.
+- Every entry must expect a move of at least 2.5x its round-trip cost (fees, slippage, spread).
+  Small trades that cannot pay for themselves are skipped. Friction is reported on every trade.
 - Alts follow BTC: alt momentum needs a BTC uptrend; a BTC downtrend blocks alt dip buys and
   exits alt momentum trades. Breakouts and trend entries need a volume surge to count.
 - Probe then press: opens with half of spendable cash, adds the rest once the trade is
@@ -40,7 +42,7 @@ from .contracts import decimal as D, encode
 from .strategies import BY_VERSION, CATALOG, ema, entry_signal
 
 HENRY_V2_RULES = {
-    "version": "henry-raging-bull-v4",
+    "version": "henry-raging-bull-v5",
     "starting_cash": "500",
     "equity_floor": "250",
     "entry_tranche": "0.5",
@@ -57,6 +59,9 @@ HENRY_V2_RULES = {
     "market_leader": "BTC-USD",
     "market_filter": {"momentum_requires_leader": ["uptrend"], "dip_buys_block_leader": ["downtrend"],
                       "exit_alt_momentum_on_leader": ["downtrend"]},
+    "cost_gate": {"edge_multiple": "2.5", "momentum_target_hourly_atr": "3", "hourly_atr_bars": 14,
+                  "round_trip_cost": "2x fee + 2x slippage + current spread",
+                  "dip_target": "distance from the ask up to the slow-window mean"},
     "volume_confirmation": {"families": ["breakout", "ema_trend"], "lookback_bars": 20, "min_ratio": "1.5"},
     "exit_on_downtrend": True,
     "range_target": "dip buys take profit at the 5m slow-window mean",
@@ -151,7 +156,8 @@ class HenryV2:
         return {"cash": cash, "position": None, "pending": None, "trades": [], "fills": 0,
                 "histories": {}, "quotes": {}, "liquidity_used": {}, "peak": cash, "max_drawdown_pct": "0",
                 "halt": "", "floor_breached": False, "frames": 0, "last_at": self.identity["epoch"],
-                "fees_paid": "0", "skips": {}, "last_decision": None, "hourly": {}, "regime_view": {}}
+                "fees_paid": "0", "friction_usd": "0", "skips": {}, "last_decision": None, "hourly": {},
+                "regime_view": {}}
 
     def state(self):
         return json.loads(self.db.execute("SELECT payload FROM meta WHERE key='state'").fetchone()[0])
@@ -337,6 +343,9 @@ class HenryV2:
             return
         value = quantity*price
         cost = fee(value, bps)
+        mid = (D(q["bid"])+D(q["ask"]))/2
+        friction = cost+abs(price-mid)*quantity  # fee + half-spread + slippage actually paid
+        state["friction_usd"] = str(D(state.get("friction_usd", "0"))+friction)
         state["liquidity_used"][order["symbol"]] = {"bucket": bucket, "quantity": str(consumed+quantity)}
         state["fees_paid"] = str(D(state["fees_paid"])+cost)
         state["fills"] += 1
@@ -349,6 +358,8 @@ class HenryV2:
                 value, cost = quantity*price, fee(quantity*price, bps)
             state["cash"] = str(D(state["cash"])-value-cost)
             pos = state["position"]
+            if pos:
+                pos["friction"] = str(D(pos.get("friction", "0"))+friction)
             if pos:  # press the winner
                 total_cost = D(pos["cost"])+value+cost
                 qty = D(pos["quantity"])+quantity
@@ -365,6 +376,8 @@ class HenryV2:
                                      "entry_regime": order["regime"], "entry_spread_bps": order["spread_bps"],
                                      "entry_atr_pct": order["atr_pct"], "family": BY_VERSION[order["strategy"]].family,
                                      "entry_market_regime": order.get("market_regime"),
+                                     "friction": str(friction), "expected_move_pct": order.get("expected_move_pct"),
+                                     "cost_pct": order.get("cost_pct"),
                                      "entry_volume_ratio": order.get("volume_ratio")}
         else:
             pos = state["position"]
@@ -372,6 +385,7 @@ class HenryV2:
             remaining = D(pos["quantity"])-quantity
             share = D(pos["cost"])*quantity/D(pos["quantity"])
             state["cash"] = str(D(state["cash"])+proceeds)
+            pos["friction"] = str(D(pos.get("friction", "0"))+friction)
             realized = D(pos.get("realized", "0"))+proceeds-share
             if remaining > 0:
                 pos.update(quantity=str(remaining), cost=str(D(pos["cost"])-share), realized=str(realized),
@@ -387,6 +401,8 @@ class HenryV2:
                      "stop_pct": pos["stop_pct"], "entry_atr_pct": pos["entry_atr_pct"],
                      "entry_spread_bps": pos["entry_spread_bps"],
                      "entry_market_regime": pos.get("entry_market_regime"),
+                     "friction_usd": str(D(pos.get("friction", "0")).quantize(D(".01"))),
+                     "expected_move_pct": pos.get("expected_move_pct"), "cost_pct": pos.get("cost_pct"),
                      "entry_volume_ratio": pos.get("entry_volume_ratio")}
             state["trades"] = (state["trades"]+[trade])[-500:]
             state["position"] = None
@@ -403,6 +419,7 @@ class HenryV2:
         if not choice:
             return
         symbol, spec, regime, spread_bps, volume_ratio = choice
+        edge = state.pop("candidate_edge", {})
         budget = D(state["cash"])*D(HENRY_V2_RULES["entry_tranche"])
         if budget < D(HENRY_V2_RULES["min_notional"]):
             budget = D(state["cash"])
@@ -414,7 +431,8 @@ class HenryV2:
                             "created": now, "reason": "entry:"+spec.family, "regime": regime,
                             "atr_pct": str(atr_pct), "stop_pct": str(self._clamp_pct(atr_pct*D(HENRY_V2_RULES["stop_atr"]))),
                             "spread_bps": str(spread_bps), "market_regime": self._leader_regime(state),
-                            "volume_ratio": volume_ratio}
+                            "volume_ratio": volume_ratio,
+                            **edge}
         state["last_decision"] = {"at": now, "action": "enter", "symbol": symbol, "strategy": spec.version,
                                   "regime": regime, "market_regime": self._leader_regime(state)}
 
@@ -442,8 +460,8 @@ class HenryV2:
                 "strength_24h_pct": round((last/window[0]-1)*100, 2),
                 "ema_slope_pct": round((now_ema/then_ema-1)*100, 3), "hours": len(closes)}
 
-    def _atr_pct(self, bars):
-        n = HENRY_V2_RULES["atr_bars"]
+    def _atr_pct(self, bars, n=None):
+        n = n or HENRY_V2_RULES["atr_bars"]
         if len(bars) < n+1:
             return D("1")
         ranges = []
@@ -478,12 +496,39 @@ class HenryV2:
                         state["last_volume_skip"] = key
                         self._skip(state, "unconfirmed_by_volume")
                     continue
+                expected, cost = self._expected_move_pct(state, symbol, spec, bars, q), self._round_trip_cost_pct(spread_bps)
+                if expected is None or expected < cost*D(HENRY_V2_RULES["cost_gate"]["edge_multiple"]):
+                    key = f"{symbol}@{bars[-1]['timestamp']}"
+                    if state.get("last_cost_skip") != key:
+                        state["last_cost_skip"] = key
+                        self._skip(state, "edge_below_costs")
+                    continue
                 candidates.append((priority.index(spec.family), -view.get("strength_24h_pct", 0), symbol,
-                                   spec.version, spec, view["regime"], spread_bps, volume_ratio))
+                                   spec.version, spec, view["regime"], spread_bps, volume_ratio, expected, cost))
         if not candidates:
             return None
         best = sorted(candidates, key=lambda c: c[:4])[0]
+        state["candidate_edge"] = {"expected_move_pct": str(best[8]), "cost_pct": str(best[9])}
         return best[2], best[4], best[5], best[6], (str(best[7]) if best[7] is not None else None)
+
+    def _round_trip_cost_pct(self, spread_bps):
+        fee_bps, slip = D(self.identity["fee_bps"]), D(self.identity["slippage_bps"])
+        return ((2*fee_bps+2*slip+D(spread_bps))/100).quantize(D(".0001"))
+
+    def _expected_move_pct(self, state, symbol, spec, bars, q):
+        """What the trade can plausibly make before costs. Dip buys: the distance back to the range
+        middle. Momentum: a multiple of the 1h ATR, the size of a typical hourly trend leg."""
+        ask = D(q["ask"])
+        if spec.family == "mean_reversion":
+            closes = [D(b["close"]) for b in bars[-spec.slow:]]
+            if len(closes) < spec.slow:
+                return None
+            return ((sum(closes, D(0))/len(closes)-ask)/ask*100).quantize(D(".0001"))
+        gate = HENRY_V2_RULES["cost_gate"]
+        hourly = state["hourly"].get(symbol, [])
+        if len(hourly) < gate["hourly_atr_bars"]+1:
+            return None
+        return (self._atr_pct(hourly, gate["hourly_atr_bars"])*D(gate["momentum_target_hourly_atr"])).quantize(D(".0001"))
 
     def _leader_regime(self, state):
         leader = HENRY_V2_RULES["market_leader"]
@@ -591,6 +636,8 @@ class HenryV2:
                 "return_pct": str(((equity-start)/start*100).quantize(D(".01"))),
                 "peak_equity_usd": str(D(state["peak"]).quantize(D(".01"))),
                 "max_drawdown_pct": state["max_drawdown_pct"], "fees_paid_usd": state["fees_paid"],
+                "friction_usd": str(D(state.get("friction_usd", "0")).quantize(D(".01"))),
+                "gross_pnl_before_friction_usd": str((equity-start+D(state.get("friction_usd", "0"))).quantize(D(".01"))),
                 "closed_trades": len(trades), "win_rate_pct": str((D(len(wins))/len(trades)*100).quantize(D(".1"))) if trades else "0",
                 "avg_win_usd": str(avg_win.quantize(D(".01"))), "avg_loss_usd": str(avg_loss.quantize(D(".01"))),
                 "payoff_ratio": str((avg_win/-avg_loss).quantize(D(".01"))) if avg_loss < 0 and wins else None,
