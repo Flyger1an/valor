@@ -14,7 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from decimal import ROUND_DOWN
+from decimal import ROUND_DOWN, ROUND_UP
 
 from .contracts import Intent, OrderReport, Policy, Quote, decimal, encode, utc_timestamp
 
@@ -303,8 +303,21 @@ class AlpacaBroker:
         for row in self.book.db.execute("SELECT client_id,report FROM alpaca_receipts WHERE report IS NOT NULL"):
             if json.loads(row["report"])["status"] in {"open", "partial"}:
                 expected_open.add(row["client_id"])
-        if set(a["open_order_ids"]) != expected_open:
-            raise AccountingError("unknown or missing open orders")
+        live_open = set(a["open_order_ids"])
+        if live_open - expected_open:
+            raise AccountingError("unknown or missing open orders")  # a broker order we never reserved
+        if expected_open - live_open:
+            # Race: an order looked up as open filled/cancelled before this account snapshot. Refresh
+            # each by its durable client ID; only a still-open-yet-unlisted order is a real mismatch.
+            for cid in expected_open - live_open:
+                fresh = self.lookup(cid)
+                if fresh is None or fresh.status in {"open", "partial"}:
+                    raise AccountingError("unknown or missing open orders")
+            with self.book.db:
+                self.book.set("entry_pause", "order_state_refresh")
+                self.book.event(now, "broker.order_state_refreshed",
+                                {"client_ids": sorted(expected_open - live_open)})
+            return False  # re-ingest the new fills on the next cycle; never infer them here
         gross = {s: q for s, q in projection["positions"].items() if q}
         effective = projection["effective_positions"]
         actual = {s: q for s, q in a["positions"].items() if q}
@@ -317,6 +330,15 @@ class AlpacaBroker:
         if a["cash"] == a["cash"].quantize(cents):
             cash_confirmed |= a["cash"] == projection["cash"].quantize(cents)
             cash_estimated |= a["cash"] == projection["effective_cash"].quantize(cents)
+        # Owner decision 2026-10-08: the account endpoint shows cash in whole cents, and unposted
+        # fees are reserved rounded UP per fill while the broker withholds the exact rate, so an
+        # exact match is often impossible. Until fees post, accept cent-rounded broker cash between
+        # "every reserved fee charged" and "no fee charged". Full-precision cash keeps the exact
+        # rule above; a gap larger than the declared reserves still fails.
+        if projection["accounting"].get("fee_reserves") and a["cash"] == a["cash"].quantize(cents):
+            low, high = sorted((projection["effective_cash"], projection["cash"]))
+            cash_estimated |= (low.quantize(cents, rounding=ROUND_DOWN) <= a["cash"]
+                               <= high.quantize(cents, rounding=ROUND_UP))
         # A documented fee accrual can bridge an exactly matching withheld fee, but the
         # readiness report still marks it provisional. Arbitrary in-range deltas do not pass.
         if any(q < 0 for q in actual.values()):

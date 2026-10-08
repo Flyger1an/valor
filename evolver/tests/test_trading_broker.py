@@ -33,6 +33,10 @@ class Exchange:
         self.hidden = []
         self.partial_next = None
         self.price = D(100)
+        self.usd_fee_at_fill = None  # Alpaca: exact-rate USD sell fee withheld at fill (e.g. D(".0025"))
+        self.cents_cash = False      # Alpaca: /v2/account cash rounded to cents
+        self.fill_late = False      # next market/limit order fills only after the client's lookup
+        self.late_order = None
 
     def fill(self, order, qty, price):
         qty, price = D(qty), D(price)
@@ -42,6 +46,8 @@ class Exchange:
         order["status"] = "filled" if old_qty+qty == D(order["qty"]) else "partially_filled"
         sign = 1 if order["side"] == "buy" else -1
         self.cash -= sign*qty*price
+        if order["side"] == "sell" and self.usd_fee_at_fill:
+            self.cash -= qty*price*self.usd_fee_at_fill
         self.qty += sign*qty
         event = {"id": "fill-"+str(len(self.events)+len(self.hidden)), "activity_type": "FILL",
                  "order_id": order["id"], "symbol": "BTCUSD", "side": order["side"],
@@ -62,8 +68,12 @@ class Exchange:
 
     def request(self, method, path, body=None, params=None, **_):
         if path == "/v2/account":
-            return {"id": "fixture", "status": "ACTIVE", "crypto_status": "ACTIVE", "currency": "USD", "cash": str(self.cash)}
+            return {"id": "fixture", "status": "ACTIVE", "crypto_status": "ACTIVE", "currency": "USD",
+                    "cash": str(self.cash.quantize(D("0.01")) if self.cents_cash else self.cash)}
         if path == "/v2/positions":
+            if self.late_order is not None:  # the exchange fills between lookup and account snapshot
+                order, self.late_order = self.late_order, None
+                self.fill(order, order["qty"], self.price)
             return [{"symbol": "BTCUSD", "qty": str(self.qty)}] if self.qty else []
         if path.startswith("/v2/assets/"):
             return {"tradable": True, "class": "crypto", "min_trade_increment": ".000000001",
@@ -81,7 +91,9 @@ class Exchange:
                 raise AssertionError("duplicate submission")
             order = {**body, "id": "remote-"+str(self.posts), "filled_qty": "0", "filled_avg_price": None, "status": "new"}
             self.orders[cid] = order
-            if body["type"] != "stop_limit":
+            if body["type"] != "stop_limit" and self.fill_late:
+                self.fill_late, self.late_order = False, order
+            elif body["type"] != "stop_limit":
                 self.fill(order, self.partial_next or body["qty"], self.price)
                 self.partial_next = None
             if self.drop_post:
