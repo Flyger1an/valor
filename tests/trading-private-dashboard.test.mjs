@@ -126,3 +126,57 @@ test("serves over an owner-only Unix socket and validates Serve’s rewritten or
     assert.equal((await get(server, "/api/status", {socketPath: path, headers: supplied})).status, 403);
   }
 });
+
+function henrySnapshot(overrides = {}) {
+  return {book: "henry_v2", mode: "virtual_only", rules_version: "henry-raging-bull-v1", identity_hash: "c".repeat(64),
+    epoch: now / 1000 - 60, timestamp: now / 1000, frames: 12, halt: "", floor_breached: false, equity_floor_usd: "250",
+    cash_usd: "250.00", equity_usd: "512.40", net_pnl_usd: "12.40", return_pct: "2.48", peak_equity_usd: "515.00",
+    max_drawdown_pct: "0.51", fees_paid_usd: "1.25", closed_trades: 2, win_rate_pct: "50.0", avg_win_usd: "9.10",
+    avg_loss_usd: "-2.30", payoff_ratio: "3.96", best_trade_usd: "9.10", worst_trade_usd: "-2.30", pressed_trades: 1,
+    position: {symbol: "SKY-USD", strategy: "breakout@be6c54d2010f", quantity: "3100", avg_price: "0.0802", stop: "0.0790",
+      high_water: "0.0815", pressed: true, accidental_secret: "must-never-leak"},
+    pending: null, last_decision: {action: "press", symbol: "SKY-USD", reason: "up one stop, trend intact", raw: "must-never-leak"},
+    recent_trades: [{symbol: "ADA-USD", strategy: "ema_trend@6ad91594a2f1", pnl_usd: "-2.30", pressed: false, fills: "must-never-leak"}],
+    skips: {"must-never-leak": 1}, accidental_secret: "must-never-leak", ...overrides};
+}
+
+test("Henry v2 is projected explicitly and never leaks raw fields", () => {
+  const {options} = fixture();
+  options.henryPath = join(dirs.at(-1), "henry.json");
+  writeFileSync(options.henryPath, JSON.stringify(henrySnapshot()));
+  const report = statusReport(options, policy, now);
+  const h = report.henryV2;
+  assert.equal(h.status, "running");
+  assert.equal(h.equity, 512.4);
+  assert.equal(h.returnPct, 2.48);
+  assert.equal(h.payoffRatio, 3.96);
+  assert.equal(h.position.symbol, "SKY-USD");
+  assert.equal(h.position.pressed, true);
+  assert.equal(h.captureFresh, true);
+  assert.match(h.lastDecision, /press · SKY-USD/);
+  assert.equal(h.recentTrades[0].pnl, -2.3);
+  assert.ok(!JSON.stringify(report).includes("must-never-leak"));
+  assert.equal(report.experiment.books?.length ?? 3, 3);  // the existing studies are unaffected
+});
+
+test("Henry v2 missing reads not_deployed; malformed fails closed", () => {
+  const {options} = fixture();
+  options.henryPath = join(dirs.at(-1), "absent.json");
+  assert.equal(statusReport(options, policy, now).henryV2.status, "not_deployed");
+  writeFileSync(options.henryPath, JSON.stringify(henrySnapshot({mode: "live"})));
+  assert.deepEqual(statusReport(options, policy, now).henryV2, {status: "unavailable"});
+  writeFileSync(options.henryPath, "{not json");
+  assert.deepEqual(statusReport(options, policy, now).henryV2, {status: "unavailable"});
+  delete options.henryPath;
+  assert.equal(statusReport(options, policy, now).henryV2.status, "not_deployed");
+});
+
+test("halted or floor-breached Henry v2 reports its stop", () => {
+  const {options} = fixture();
+  options.henryPath = join(dirs.at(-1), "henry.json");
+  writeFileSync(options.henryPath, JSON.stringify(henrySnapshot({halt: "equity_floor", floor_breached: true, position: null})));
+  const h = statusReport(options, policy, now).henryV2;
+  assert.equal(h.status, "halted");
+  assert.equal(h.floorBreached, true);
+  assert.equal(h.position, null);
+});

@@ -53,11 +53,53 @@ export function authorized(req, policy) {
     !["cross-site", "same-site"].includes(req.headers["sec-fetch-site"]);
 }
 
+const finite = value => {
+  const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+  return Number.isFinite(n) ? n : undefined;
+};
+const shortText = (value, max) => typeof value === "string" ? value.slice(0, max) : undefined;
+const describe = value => {
+  if (typeof value === "string") return value.slice(0, 200);
+  if (value && typeof value === "object") {
+    return ["action", "symbol", "strategy", "reason"].map(k => shortText(value[k], 80)).filter(Boolean).join(" · ").slice(0, 200) || undefined;
+  }
+  return undefined;
+};
+
+// Henry v2 is a separate virtual study with its own journal. Explicit projection only.
+export function parseHenryV2(raw, now = Date.now()) {
+  if (!raw || raw.book !== "henry_v2" || raw.mode !== "virtual_only" || typeof raw.rules_version !== "string" ||
+      !/^[a-f0-9]{64}$/.test(String(raw.identity_hash)) || !Number.isFinite(raw.timestamp) || !Number.isFinite(raw.epoch) ||
+      !Number.isInteger(raw.frames) || raw.frames < 0) throw new Error("unexpected Henry v2 snapshot");
+  const observed = raw.timestamp * 1000;
+  const pos = raw.position && typeof raw.position === "object" ? raw.position : null;
+  const trades = Array.isArray(raw.recent_trades) ? raw.recent_trades.slice(-5) : [];
+  return {
+    status: raw.halt ? "halted" : "running", rulesVersion: raw.rules_version.slice(0, 60),
+    epoch: new Date(raw.epoch * 1000).toISOString(), timestamp: new Date(observed).toISOString(),
+    captureFresh: now >= observed && now - observed <= 30_000, frames: raw.frames,
+    equity: finite(raw.equity_usd), cash: finite(raw.cash_usd), netPnl: finite(raw.net_pnl_usd),
+    returnPct: finite(raw.return_pct), peakEquity: finite(raw.peak_equity_usd), maxDrawdownPct: finite(raw.max_drawdown_pct),
+    fees: finite(raw.fees_paid_usd), closedTrades: Number.isInteger(raw.closed_trades) ? raw.closed_trades : undefined,
+    winRatePct: finite(raw.win_rate_pct), avgWin: finite(raw.avg_win_usd), avgLoss: finite(raw.avg_loss_usd),
+    payoffRatio: finite(raw.payoff_ratio), bestTrade: finite(raw.best_trade_usd), worstTrade: finite(raw.worst_trade_usd),
+    pressedTrades: Number.isInteger(raw.pressed_trades) ? raw.pressed_trades : undefined,
+    floor: finite(raw.equity_floor_usd), floorBreached: raw.floor_breached === true, halt: shortText(raw.halt, 120) || "",
+    pending: !!raw.pending,
+    position: pos ? {symbol: shortText(pos.symbol, 20), strategy: shortText(pos.strategy, 40), quantity: finite(pos.quantity),
+      avgPrice: finite(pos.avg_price), stop: finite(pos.stop), highWater: finite(pos.high_water), pressed: pos.pressed === true} : null,
+    lastDecision: describe(raw.last_decision),
+    recentTrades: trades.filter(t => t && typeof t === "object").map(t => ({symbol: shortText(t.symbol, 20),
+      strategy: shortText(t.strategy, 40), pnl: finite(t.pnl_usd), pressed: t.pressed === true})),
+  };
+}
+
 // Explicit projection: never serve a raw snapshot, broker order IDs, news bodies,
 // connection metadata, identity configuration, credentials or filesystem paths.
-export function statusReport({runtimePath, experimentPath}, policy, now = Date.now()) {
+export function statusReport({runtimePath, experimentPath, henryPath}, policy, now = Date.now()) {
   let runtime = {configured: true, status: "unavailable"};
   let experiment = {status: "unavailable"};
+  let henryV2 = {status: henryPath ? "unavailable" : "not_deployed"};
   try {
     const raw = readJson(runtimePath, 1_000_000);
     if (raw.policy_hash !== policy.source_policy_hash || raw.mode !== "demo" ||
@@ -77,7 +119,12 @@ export function statusReport({runtimePath, experimentPath}, policy, now = Date.n
         raw.epoch !== policy.experiment_epoch || raw.market_source !== policy.source) throw new Error("unexpected study");
     experiment = parseExperimentStatus(raw, now);
   } catch { /* Same fail-closed data behavior. */ }
-  return {schemaVersion: 1, servedAt: new Date(now).toISOString(), runtime, experiment};
+  if (henryPath) {
+    try {
+      henryV2 = parseHenryV2(readJson(henryPath, 1_000_000), now);
+    } catch (error) { henryV2 = {status: error && error.code === "ENOENT" ? "not_deployed" : "unavailable"}; }
+  }
+  return {schemaVersion: 1, servedAt: new Date(now).toISOString(), runtime, experiment, henryV2};
 }
 
 export function createDashboard(options) {
@@ -130,6 +177,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     accessPath: process.env.VALOR_DASHBOARD_ACCESS_PATH || "/config/access.json",
     runtimePath: process.env.VALOR_TRADING_SNAPSHOT_PATH || "/runtime/snapshot.json",
     experimentPath: process.env.VALOR_EXPERIMENT_SNAPSHOT_PATH || "/experiment/snapshot.json",
+    henryPath: process.env.VALOR_HENRY_V2_SNAPSHOT_PATH || "/henry/snapshot.json",
   });
   // There is no TCP listener or container network. Only local Tailscale Serve
   // connects through the owner-only socket mounted into this one container.
