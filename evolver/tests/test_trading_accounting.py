@@ -245,6 +245,25 @@ class AccountingParserTests(unittest.TestCase):
         with self.assertRaises(AccountingError):
             self.broker.reconcile(NOW+86400)
 
+    def test_review_survives_recorded_policy_migration_but_not_an_unrecorded_one(self):
+        self.broker.initialize(NOW)
+        item = self.journal(); self.http.events.append(item)
+        self.review(item)
+        old = self.book.get("identity")
+        migrated = {**old, "policy": "9"*64}
+        self.book.set("identity", migrated)
+        self.book.set("session_history", [{"from_policy": old["policy"], "to_policy": "9"*64}])
+        self.book.db.commit()
+        self.assertTrue(self.broker.reconcile(NOW+86400))  # recorded boundary: the review stays valid
+        self.book.set("identity", {**migrated, "policy": "8"*64})
+        self.book.db.commit()
+        with self.assertRaises(AccountingError):
+            self.broker.reconcile(NOW+86401)  # unrecorded policy change: still fails closed
+        self.book.set("identity", {**migrated, "broker": "other"})
+        self.book.db.commit()
+        with self.assertRaises(AccountingError):
+            self.broker.reconcile(NOW+86402)  # broker change is never accepted
+
     def test_wrong_opening_classification_cannot_reconcile_new_money(self):
         self.broker.initialize(NOW)
         item = self.journal(); self.http.events.append(item); self.http.cash += D(500)
