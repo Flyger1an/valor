@@ -97,9 +97,12 @@ if [ "$FRESH" = yes ]; then
   docker run --rm $H "$TAG" init --policy /config/henry-v2-policy.json --root /henry >/dev/null \
     || { log "init FAILED; keeping the running Henry v2"; exit 1; }
 fi
-# A same-rules image must open the existing journal before we swap anything.
-docker run --rm $H "$TAG" report --policy /config/henry-v2-policy.json --root /henry >/dev/null \
-  || { log "new image cannot open $VOLUME; keeping the running Henry v2"; exit 1; }
+# The new image must open the existing journal (identity + rules check) before we swap anything.
+# Opened directly, not through the runner, so it never contends for the live Henry's run lock.
+CHECK=$(docker run --rm $H --entrypoint python "$TAG" -c \
+  "from evolver.trading.henry_v2 import HenryV2; b=HenryV2('/henry/henry_v2.sqlite'); r=b.report(); b.close(); print(r['rules_version'], r['equity_usd'], r['frames'])" 2>&1) \
+  || { echo "$CHECK" | tail -5; log "new image cannot open $VOLUME; keeping the running Henry v2"; exit 1; }
+log "journal check ok: $CHECK"
 
 docker stop -t 20 "$NAME" >/dev/null 2>&1 || true
 docker rm "$NAME" >/dev/null 2>&1 || true
