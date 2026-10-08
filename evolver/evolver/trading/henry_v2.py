@@ -12,6 +12,8 @@ Personality (versioned in HENRY_V2_RULES):
 - Hunts every approved strategy on every allowed symbol, 24/7, picking the strongest coin.
   No supervisor, news, session window or daily-loss gate.
 - Stops and trails are sized from each coin's own volatility (ATR), not a fixed percent.
+- Alts follow BTC: alt momentum needs a BTC uptrend; a BTC downtrend blocks alt dip buys and
+  exits alt momentum trades. Breakouts and trend entries need a volume surge to count.
 - Probe then press: opens with half of spendable cash, adds the rest once the trade is
   working by at least one stop distance while the trend is intact.
 - Lets winners run: no fixed take-profit and no hold clock. Exits only on a trailing
@@ -38,7 +40,7 @@ from .contracts import decimal as D, encode
 from .strategies import BY_VERSION, CATALOG, ema, entry_signal
 
 HENRY_V2_RULES = {
-    "version": "henry-raging-bull-v3",
+    "version": "henry-raging-bull-v4",
     "starting_cash": "500",
     "equity_floor": "250",
     "entry_tranche": "0.5",
@@ -52,6 +54,10 @@ HENRY_V2_RULES = {
     "regime_routes": {"uptrend": ["breakout", "ema_trend"], "consolidation": ["mean_reversion"],
                       "transition": [], "downtrend": [], "warming_up": []},
     "press_regimes": ["uptrend"],
+    "market_leader": "BTC-USD",
+    "market_filter": {"momentum_requires_leader": ["uptrend"], "dip_buys_block_leader": ["downtrend"],
+                      "exit_alt_momentum_on_leader": ["downtrend"]},
+    "volume_confirmation": {"families": ["breakout", "ema_trend"], "lookback_bars": 20, "min_ratio": "1.5"},
     "exit_on_downtrend": True,
     "range_target": "dip buys take profit at the 5m slow-window mean",
     "atr_bars": 14, "stop_atr": "2.5", "trail_atr": "3", "stop_pct_min": "0.8", "stop_pct_max": "6",
@@ -357,7 +363,9 @@ class HenryV2:
                                      "stop": str(price*(1-stop_pct/100)), "stop_pct": str(stop_pct),
                                      "high_water": str(price), "pressed": False,
                                      "entry_regime": order["regime"], "entry_spread_bps": order["spread_bps"],
-                                     "entry_atr_pct": order["atr_pct"], "family": BY_VERSION[order["strategy"]].family}
+                                     "entry_atr_pct": order["atr_pct"], "family": BY_VERSION[order["strategy"]].family,
+                                     "entry_market_regime": order.get("market_regime"),
+                                     "entry_volume_ratio": order.get("volume_ratio")}
         else:
             pos = state["position"]
             proceeds = value-cost
@@ -377,7 +385,9 @@ class HenryV2:
                      "family": pos["family"], "entry_regime": pos["entry_regime"],
                      "exit_regime": state["regime_view"].get(pos["symbol"], {}).get("regime"),
                      "stop_pct": pos["stop_pct"], "entry_atr_pct": pos["entry_atr_pct"],
-                     "entry_spread_bps": pos["entry_spread_bps"]}
+                     "entry_spread_bps": pos["entry_spread_bps"],
+                     "entry_market_regime": pos.get("entry_market_regime"),
+                     "entry_volume_ratio": pos.get("entry_volume_ratio")}
             state["trades"] = (state["trades"]+[trade])[-500:]
             state["position"] = None
 
@@ -392,7 +402,7 @@ class HenryV2:
         choice = self._best_signal(state, now)
         if not choice:
             return
-        symbol, spec, regime, spread_bps = choice
+        symbol, spec, regime, spread_bps, volume_ratio = choice
         budget = D(state["cash"])*D(HENRY_V2_RULES["entry_tranche"])
         if budget < D(HENRY_V2_RULES["min_notional"]):
             budget = D(state["cash"])
@@ -403,8 +413,10 @@ class HenryV2:
         state["pending"] = {"side": "buy", "symbol": symbol, "strategy": spec.version, "budget": str(budget),
                             "created": now, "reason": "entry:"+spec.family, "regime": regime,
                             "atr_pct": str(atr_pct), "stop_pct": str(self._clamp_pct(atr_pct*D(HENRY_V2_RULES["stop_atr"]))),
-                            "spread_bps": str(spread_bps)}
-        state["last_decision"] = {"at": now, "action": "enter", "symbol": symbol, "strategy": spec.version, "regime": regime}
+                            "spread_bps": str(spread_bps), "market_regime": self._leader_regime(state),
+                            "volume_ratio": volume_ratio}
+        state["last_decision"] = {"at": now, "action": "enter", "symbol": symbol, "strategy": spec.version,
+                                  "regime": regime, "market_regime": self._leader_regime(state)}
 
     # ---------- market reading ----------
     def _regime(self, state, symbol):
@@ -454,15 +466,48 @@ class HenryV2:
             if spread_bps > D(HENRY_V2_RULES["broken_quote_spread_bps"]):
                 continue  # data-quality guard, not a strategy gate
             view = state["regime_view"].get(symbol) or self._regime(state, symbol)
-            allowed = routes[view["regime"]]
+            allowed = [f for f in routes[view["regime"]] if self._market_allows(state, symbol, f)]
             for spec in CATALOG:
-                if spec.family in allowed and entry_signal(spec, bars):
-                    candidates.append((priority.index(spec.family), -view.get("strength_24h_pct", 0), symbol,
-                                       spec.version, spec, view["regime"], spread_bps))
+                if spec.family not in allowed or not entry_signal(spec, bars):
+                    continue
+                volume_ratio = self._volume_ratio(bars)
+                if spec.family in HENRY_V2_RULES["volume_confirmation"]["families"] and (
+                        volume_ratio is None or volume_ratio < D(HENRY_V2_RULES["volume_confirmation"]["min_ratio"])):
+                    key = f"{symbol}@{bars[-1]['timestamp']}"
+                    if state.get("last_volume_skip") != key:
+                        state["last_volume_skip"] = key
+                        self._skip(state, "unconfirmed_by_volume")
+                    continue
+                candidates.append((priority.index(spec.family), -view.get("strength_24h_pct", 0), symbol,
+                                   spec.version, spec, view["regime"], spread_bps, volume_ratio))
         if not candidates:
             return None
         best = sorted(candidates, key=lambda c: c[:4])[0]
-        return best[2], best[4], best[5], best[6]
+        return best[2], best[4], best[5], best[6], (str(best[7]) if best[7] is not None else None)
+
+    def _leader_regime(self, state):
+        leader = HENRY_V2_RULES["market_leader"]
+        if leader not in self.identity["symbols"]:
+            return None
+        return (state["regime_view"].get(leader) or self._regime(state, leader))["regime"]
+
+    def _market_allows(self, state, symbol, family):
+        """Alts move with BTC. An alt 'uptrend' while BTC is not trending up is usually a trap."""
+        leader, f = self._leader_regime(state), HENRY_V2_RULES["market_filter"]
+        if leader is None or symbol == HENRY_V2_RULES["market_leader"]:
+            return True
+        if family == "mean_reversion":
+            return leader not in f["dip_buys_block_leader"]
+        return leader in f["momentum_requires_leader"]
+
+    def _volume_ratio(self, bars):
+        n = HENRY_V2_RULES["volume_confirmation"]["lookback_bars"]
+        if len(bars) < n+1:
+            return None
+        prior = sum((D(b["volume"]) for b in bars[-n-1:-1]), D(0))/n
+        if prior <= 0:
+            return None
+        return (D(bars[-1]["volume"])/prior).quantize(D(".01"))
 
     def _manage(self, state, pos, now):
         q = self._fresh(state, pos["symbol"], now)
@@ -485,6 +530,9 @@ class HenryV2:
             return self._exit(state, pos, now, "trailing_stop" if D(pos["stop"]) >= D(pos["avg_price"]) else "stop_loss")
         if HENRY_V2_RULES["exit_on_downtrend"] and regime == "downtrend":
             return self._exit(state, pos, now, "regime_downtrend")
+        if (spec.family != "mean_reversion" and pos["symbol"] != HENRY_V2_RULES["market_leader"]
+                and self._leader_regime(state) in HENRY_V2_RULES["market_filter"]["exit_alt_momentum_on_leader"]):
+            return self._exit(state, pos, now, "market_downtrend")
         if spec.family == "mean_reversion":
             closes = [D(b["close"]) for b in bars[-spec.slow:]]
             if len(closes) == spec.slow and D(bars[-1]["close"]) >= sum(closes, D(0))/len(closes):

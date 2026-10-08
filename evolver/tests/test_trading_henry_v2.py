@@ -5,7 +5,7 @@ import unittest
 from decimal import Decimal as D
 from pathlib import Path
 
-from evolver.trading import henry_v2_runner
+from evolver.trading import henry_v2_replay, henry_v2_runner
 from evolver.trading.experiment import BOOKS, RULES as THREE_BOOK_RULES
 from evolver.trading.henry_v2 import HENRY_V2_RULES, HenryV2, IntegrityError, hourly_bars
 from evolver.trading.strategies import CATALOG
@@ -30,24 +30,29 @@ class Market:
                     "timestamp": now-1, "capacity": "1000000", "capacity_bucket": self.t, "increment": "0.0001"}
                 for s, p in self.prices.items()}
 
-    def step(self, moves):
+    def step(self, moves, volumes=None):
         self.t += 300
         for s, m in moves.items():
             self.prices[s] *= m
         now = self.t+300+5
         self.n += 1
+        volumes = volumes or {}
         self.book.apply({"type": "frame", "id": f"f{self.n}", "observed_at": now, "quotes": self._quotes(now),
-                         "bars": {s: [bar(self.t, round(p, 6))] for s, p in self.prices.items()}})
+                         "bars": {s: [bar(self.t, round(p, 6), volume=str(int(1_000_000*volumes.get(s, 1))))]
+                                  for s, p in self.prices.items()}})
         now += 10
         self.n += 1
         return self.book.apply({"type": "frame", "id": f"f{self.n}", "observed_at": now,
                                 "quotes": self._quotes(now), "bars": {}})
 
-    def run(self, n, btc, eth=lambda i: 1.0):
+    def run(self, n, btc, eth=lambda i: 1.0, vol_btc=lambda i: 1, vol_eth=lambda i: 1):
         r = None
         for i in range(n):
-            r = self.step({"BTC-USD": btc(i), "ETH-USD": eth(i)})
+            r = self.step({"BTC-USD": btc(i), "ETH-USD": eth(i)}, {"BTC-USD": vol_btc(i), "ETH-USD": vol_eth(i)})
         return r
+
+
+SURGE = lambda i: 3  # noqa: E731  volume surge on every rally bar
 
 
 def zigzag(i):  # a range: alternating legs that go nowhere
@@ -124,7 +129,7 @@ class HenryV2Test(unittest.TestCase):
 
     def test_uptrend_trades_momentum_presses_and_banks_the_run(self):
         self.m.run(400, grind_up)
-        self.m.run(60, lambda i: 1.004)  # acceleration: breakouts fire inside an uptrend
+        self.m.run(60, lambda i: 1.004, vol_btc=lambda i: 3 if i < 3 else 1.6)  # acceleration on rising volume
         r = self.book.report()
         self.assertIsNotNone(r["position"], "momentum entry in an uptrend")
         self.assertEqual(r["position"]["entry_regime"], "uptrend")
@@ -161,7 +166,7 @@ class HenryV2Test(unittest.TestCase):
 
     def test_picks_the_strongest_coin(self):
         self.m.run(400, grind_up, lambda i: 1.0006 if i % 5 else 0.9995)
-        self.m.run(30, lambda i: 1.004, lambda i: 1.004)  # both break out together
+        self.m.run(30, lambda i: 1.004, lambda i: 1.004, SURGE, SURGE)  # both break out together
         pos = self.book.report()["position"] or {}
         first = self.trades()[0]["symbol"] if self.trades() else pos.get("symbol")
         self.assertEqual(first, "BTC-USD", "stronger 24h coin wins the tie")
@@ -174,15 +179,57 @@ class HenryV2Test(unittest.TestCase):
             state["quotes"][s] = dict(state["quotes"][s], ask=str(D(state["quotes"][s]["bid"])*D("1.05")), timestamp=now-1)
         self.assertIsNone(self.book._best_signal(state, now))
 
+    # ---------- market filter and volume ----------
+    def test_breakouts_need_a_volume_surge(self):
+        self.m.run(400, grind_up)
+        self.m.run(20, lambda i: 1.004)  # price breaks out on flat volume
+        r = self.book.report()
+        self.assertEqual(r["closed_trades"], 0)
+        self.assertIsNone(r["position"])
+        self.assertGreater(r["skips"].get("unconfirmed_by_volume", 0), 0)
+        self.m.run(3, lambda i: 1.004, vol_btc=SURGE)
+        self.assertIsNotNone(self.book.report()["position"], "same breakout with volume is taken")
+        self.assertIsNotNone(self.book.state()["position"]["entry_volume_ratio"])
+
+    def test_alt_momentum_needs_btc_uptrend(self):
+        self.m.run(420, zigzag, grind_up)  # BTC ranging, ETH trending up
+        self.m.run(30, lambda i: 1.0, lambda i: 1.004, vol_eth=SURGE)
+        r = self.book.report()
+        self.assertNotEqual(r["regimes"]["BTC-USD"], "uptrend")
+        self.assertNotIn("ETH-USD", {t["symbol"] for t in self.trades() if t["family"] != "mean_reversion"})
+        self.assertFalse(r["position"] and r["position"]["symbol"] == "ETH-USD")
+
+    def test_alt_momentum_allowed_when_btc_leads(self):
+        self.m.run(420, grind_up, grind_up)
+        self.m.run(6, lambda i: 1.0, lambda i: 1.004, vol_eth=SURGE)
+        pos = self.book.state()["position"]
+        self.assertIsNotNone(pos)
+        self.assertEqual(pos["symbol"], "ETH-USD")
+        self.assertEqual(pos["entry_market_regime"], "uptrend")
+
+    def test_btc_downtrend_exits_alt_momentum(self):
+        state, now, q = self._open(symbol="ETH-USD")
+        self.book._execute_pending(state, now)
+        state["regime_view"] = {"BTC-USD": {"regime": "downtrend"}, "ETH-USD": {"regime": "uptrend"}}
+        state["quotes"]["ETH-USD"] = dict(q, timestamp=now+5)
+        self.book._manage(state, state["position"], now+6)
+        self.assertEqual(state["pending"]["reason"], "market_downtrend")
+
+    def test_btc_downtrend_blocks_alt_dip_buys(self):
+        state = self.book.state()
+        state["regime_view"] = {"BTC-USD": {"regime": "downtrend"}, "ETH-USD": {"regime": "consolidation"}}
+        self.assertFalse(self.book._market_allows(state, "ETH-USD", "mean_reversion"))
+        self.assertTrue(self.book._market_allows(state, "BTC-USD", "breakout"), "the leader is not filtered by itself")
+
     # ---------- execution ----------
-    def _open(self, family="breakout", budget="250"):
+    def _open(self, family="breakout", budget="250", symbol="BTC-USD"):
         self.m.run(400, grind_up)
         state = self.book.state()
         state.update(position=None, cash="500", trades=[], halt="", floor_breached=False, peak="500")
         now = state["last_at"]+10
-        q = dict(state["quotes"]["BTC-USD"], timestamp=now-1)
-        state["quotes"]["BTC-USD"] = q
-        state["pending"] = {"side": "buy", "symbol": "BTC-USD", "budget": budget, "created": state["last_at"],
+        q = dict(state["quotes"][symbol], timestamp=now-1)
+        state["quotes"][symbol] = q
+        state["pending"] = {"side": "buy", "symbol": symbol, "budget": budget, "created": state["last_at"],
                             "reason": "entry:"+family, "regime": "uptrend", "atr_pct": "0.2", "stop_pct": "1",
                             "spread_bps": "2", "strategy": next(s.version for s in CATALOG if s.family == family)}
         return state, now, q
@@ -251,8 +298,37 @@ class HenryV2Test(unittest.TestCase):
         self.assertGreaterEqual(len(frame["BTC-USD"]), HENRY_V2_RULES["regime"]["min_hours"])
         book.close()
         snap = json.loads((root/"snapshot.json").read_text())
-        self.assertEqual(snap["rules_version"], "henry-raging-bull-v3")
+        self.assertEqual(snap["rules_version"], HENRY_V2_RULES["version"])
         self.assertEqual(snap["equity_usd"], "500.00")
+
+
+class HenryV2ReplayTest(unittest.TestCase):
+    def history(self):
+        h, p = {"BTC-USD": [], "ETH-USD": []}, {"BTC-USD": 100.0, "ETH-USD": 50.0}
+        for i in range(48*12):
+            for s in h:
+                o = p[s]
+                p[s] *= grind_up(i) if i < 40*12 else (1.004 if i < 44*12 else 0.995)
+                vol = "3000000" if 40*12 <= i < 40*12+3 else "1000000"
+                b = bar(EPOCH+i*300, round(p[s], 6), volume=vol)
+                b.update(open=str(round(o, 6)), high=str(max(D(b["high"]), D(str(round(o, 6))))),
+                         low=str(min(D(b["low"]), D(str(round(o, 6))))))
+                h[s].append(b)
+        return h
+
+    def test_replay_runs_live_rules_offline(self):
+        r = henry_v2_replay.replay(self.history())
+        self.assertEqual(r["rules_version"], HENRY_V2_RULES["version"])
+        self.assertGreaterEqual(r["warmup_hours"], HENRY_V2_RULES["regime"]["min_hours"])
+        self.assertGreater(r["closed_trades"], 0)
+        self.assertIn("uptrend", r["by_entry_regime"])
+        self.assertEqual(set(r["buy_and_hold_pct"]), {"BTC-USD", "ETH-USD"})
+
+    def test_sweep_restores_live_rules(self):
+        before = json.dumps(HENRY_V2_RULES, sort_keys=True)
+        rows = henry_v2_replay.sweep({k: v[:36*12] for k, v in self.history().items()})
+        self.assertEqual(len(rows), 12)
+        self.assertEqual(json.dumps(HENRY_V2_RULES, sort_keys=True), before)
 
 
 if __name__ == "__main__":

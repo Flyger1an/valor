@@ -17,7 +17,7 @@ BRANCH=${BRANCH:-henry-v2-raging-bull}
 SRC=${SRC:-/opt/valor-henry-v2/src}
 STATE=${STATE:-/var/lib/valor-henry-v2/deployed}
 NAME=valor-henry-v2
-FILES="evolver/evolver/trading/henry_v2.py evolver/evolver/trading/henry_v2_runner.py evolver/evolver/trading/strategies.py evolver/evolver/trading/contracts.py infra/trading/policy.demo.json"
+FILES="evolver/evolver/trading/henry_v2.py evolver/evolver/trading/henry_v2_runner.py evolver/evolver/trading/henry_v2_replay.py evolver/evolver/trading/strategies.py evolver/evolver/trading/contracts.py infra/trading/policy.demo.json"
 
 exec 9>/var/lock/valor-henry-v2-autodeploy.lock
 flock -n 9 || { echo "another deploy is running"; exit 0; }
@@ -73,13 +73,14 @@ fi
 
 CTX=$(mktemp -d)
 cp "$SRC"/evolver/evolver/trading/henry_v2.py "$SRC"/evolver/evolver/trading/henry_v2_runner.py \
+   "$SRC"/evolver/evolver/trading/henry_v2_replay.py \
    "$SRC"/evolver/evolver/trading/strategies.py "$SRC"/evolver/evolver/trading/contracts.py "$CTX"/
 cp "$SRC"/infra/trading/policy.demo.json "$CTX"/policy.json
 cat > "$CTX/Dockerfile" <<'DF'
 ARG BASE=scratch
 FROM ${BASE}
 USER root
-COPY --chown=10001:10001 henry_v2.py henry_v2_runner.py strategies.py contracts.py /app/evolver/trading/
+COPY --chown=10001:10001 henry_v2.py henry_v2_runner.py henry_v2_replay.py strategies.py contracts.py /app/evolver/trading/
 COPY --chown=10001:10001 policy.json /config/henry-v2-policy.json
 RUN mkdir -p /henry && chown 10001:10001 /henry
 USER 10001:10001
