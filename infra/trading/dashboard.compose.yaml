@@ -17,6 +17,7 @@ services:
     volumes:
       - source_outbox:/runtime:ro
       - experiment_state:/experiment:ro
+      - henry_v2_state:/henry:ro
       - /opt/valor-dashboard/config:/config:ro
       - /opt/valor-dashboard/socket:/socket:rw
     logging:
@@ -35,3 +36,6 @@ volumes:
   experiment_state:
     external: true
     name: valor-experiment_state
+  henry_v2_state:
+    external: true
+    name: valor-henry-v2_state

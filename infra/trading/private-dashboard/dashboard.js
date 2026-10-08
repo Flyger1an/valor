@@ -17,6 +17,45 @@ const rows = pairs => {
   pairs.forEach(([label, value]) => { const row = element("div"); row.append(element("dt", label), element("dd", value)); dl.append(row); });
   return dl;
 };
+const pct = value => typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) + "%" : "n/a";
+const price = value => typeof value === "number" && Number.isFinite(value) ? (Math.abs(value) < 1 ? value.toPrecision(4) : value.toFixed(2)) : "n/a";
+
+function renderHenryV2(h) {
+  const root = byId("henry-v2");
+  if (!h || h.status === "not_deployed") { paragraph(root, "Henry v2 is not deployed yet.", "muted"); return; }
+  if (h.status === "unavailable" || h.equity === undefined) { paragraph(root, "Henry v2 snapshot unavailable or invalid. Performance cannot be verified.", "notice"); return; }
+  const stale = failed || !h.captureFresh || Date.now() - Date.parse(h.timestamp) > 30_000;
+  paragraph(root, `Snapshot ${stale ? "STALE" : "current"} · ${h.frames} observations · ${h.rulesVersion} · started ${date(h.epoch)}`, stale ? "bad" : "ok");
+  if (h.halt || h.floorBreached) paragraph(root, h.floorBreached ? `Equity floor breached (${usd(h.floor)}). Henry v2 has stopped permanently.` : `Henry v2 stopped: ${h.halt}`, "notice");
+  const grid = element("div", undefined, "grid");
+  const card = element("article", undefined, "card");
+  card.append(element("h3", "Henry v2"), element("div", "Virtual equity", "label"), element("div", usd(h.equity), "equity"));
+  card.append(rows([["Return", pct(h.returnPct)], ["Net P&L", usd(h.netPnl)], ["Peak equity", usd(h.peakEquity)],
+    ["Maximum drawdown", pct(h.maxDrawdownPct)], ["Modeled fees", usd(h.fees)], ["Available cash", usd(h.cash)],
+    ["Equity floor", usd(h.floor)]]));
+  const stats = element("article", undefined, "card");
+  stats.append(element("h3", "Trade quality"));
+  stats.append(rows([["Closed / pressed", `${h.closedTrades ?? "n/a"} / ${h.pressedTrades ?? "n/a"}`],
+    ["Win rate", pct(h.winRatePct)], ["Average win", usd(h.avgWin)], ["Average loss", usd(h.avgLoss)],
+    ["Payoff ratio", typeof h.payoffRatio === "number" ? h.payoffRatio.toFixed(2) : "n/a"],
+    ["Best / worst", `${usd(h.bestTrade)} / ${usd(h.worstTrade)}`]]));
+  const live = element("article", undefined, "card");
+  live.append(element("h3", "Position"));
+  if (h.position) {
+    live.append(rows([["Symbol", h.position.symbol], ["Strategy", h.position.strategy], ["Average price", price(h.position.avgPrice)],
+      ["Trailing stop", price(h.position.stop)], ["High-water mark", price(h.position.highWater)],
+      ["Pressed", h.position.pressed ? "yes" : "no"]]));
+  } else paragraph(live, h.pending ? "Order pending at the next observed quote." : "Flat. Waiting for a signal.", "muted");
+  if (h.lastDecision) paragraph(live, `Last decision: ${h.lastDecision}`, "muted");
+  if (h.recentTrades?.length) {
+    const list = element("ul");
+    h.recentTrades.slice().reverse().forEach(t => list.append(element("li", `${t.symbol} · ${t.strategy} · ${usd(t.pnl)}${t.pressed ? " · pressed" : ""}`)));
+    live.append(list);
+  }
+  grid.append(card, stats, live);
+  root.append(grid);
+}
+
 let latest;
 let failed = false;
 let loading = false;
@@ -26,7 +65,8 @@ function render() {
   const expanded = new Set([...document.querySelectorAll("details[open]")].map(node => node.dataset.book));
   const e = latest.experiment, r = latest.runtime;
   const stale = failed || !e.timestamp || Date.now() - Date.parse(e.timestamp) > 30_000 || Date.parse(e.timestamp) > Date.now();
-  for (const id of ["study-period", "freshness", "books", "evidence", "costs", "source"]) byId(id).replaceChildren();
+  for (const id of ["study-period", "freshness", "books", "evidence", "costs", "source", "henry-v2"]) byId(id).replaceChildren();
+  renderHenryV2(latest.henryV2);
   if (!e.books) {
     paragraph(byId("freshness"), "The experiment snapshot is unavailable or invalid. Performance cannot be verified.", "notice");
   } else {
@@ -90,7 +130,7 @@ async function refresh() {
   try {
     const response = await fetch("/api/status", {cache: "no-store", signal: AbortSignal.timeout(8000)});
     if (!response.ok) {
-      if (response.status === 403) { latest = undefined; for (const id of ["study-period", "freshness", "books", "evidence", "costs", "source"]) byId(id).replaceChildren(); }
+      if (response.status === 403) { latest = undefined; for (const id of ["study-period", "freshness", "books", "evidence", "costs", "source", "henry-v2"]) byId(id).replaceChildren(); }
       throw new Error("Unavailable");
     }
     latest = await response.json(); failed = false;
