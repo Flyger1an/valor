@@ -43,6 +43,26 @@ docker compose -f infra/trading/henry-v2.compose.yaml run --rm henry-v2 \
 
 If the experiment container has a different name, `docker ps --format '{{.Names}} {{.Image}}'` shows it.
 
+## Auto-deploy from GitHub
+
+One-time install on the droplet (the repo is public, so no keys are needed):
+
+```bash
+git clone -q --depth 1 --branch henry-v2-raging-bull https://github.com/Flyger1an/valor.git /opt/valor-henry-v2/src
+sh /opt/valor-henry-v2/src/infra/trading/install-henry-v2-autodeploy.sh henry-v2-raging-bull
+```
+
+A systemd timer checks the branch every 5 minutes. When Henry v2's own files change, it runs his tests
+inside the running Valor image, rebuilds, proves the new image can open the journal, then swaps the
+container. Same rules resume the same journal; changed `HENRY_V2_RULES` start a fresh $500 run in a new
+volume and keep the old one. Failed tests or builds leave the running Henry v2 alone. Nothing else on
+the droplet is ever touched.
+
+- Watch a different branch: edit `/etc/default/valor-henry-v2`.
+- See what happened: `journalctl -u valor-henry-v2-autodeploy -n 30 --no-pager`
+- Deploy now instead of waiting: `systemctl start valor-henry-v2-autodeploy`
+- Pause auto-deploy: `systemctl disable --now valor-henry-v2-autodeploy.timer`
+
 ## Reading the data
 
 `snapshot.json` reports equity, return, max drawdown, win rate, average win and loss, payoff ratio,
