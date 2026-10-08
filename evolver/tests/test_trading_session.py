@@ -122,11 +122,11 @@ class SessionExperimentTests(unittest.TestCase):
         self.exp.close()
         self.temp.cleanup()
 
-    def event(self, old=None, new=None, at=NOW-110):
-        old, new = old or self.old, new or self.new
-        return {"type": "source_session_update", "id": "source-session:"+new.fingerprint, "observed_at": at,
-                "from_policy": old.fingerprint, "to_policy": new.fingerprint,
-                "old_source_policy": asdict(old), "new_source_policy": asdict(new)}
+    def event(self, new=None, at=NOW-110, from_policy=None):
+        new = new or self.new
+        return {"type": "session_policy_update", "id": "session:"+new.fingerprint, "observed_at": at,
+                "from_policy": from_policy or self.old.fingerprint, "to_policy": new.fingerprint,
+                "new_policy": asdict(new)}
 
     def write_source(self, policy_hash):
         root = Path(self.temp.name)/"source"
@@ -139,34 +139,47 @@ class SessionExperimentTests(unittest.TestCase):
             write_snapshot(root/path, value)
         return root
 
-    def test_frozen_books_accept_widened_source_inputs_and_replay(self):
+    def test_books_move_to_the_shared_session_and_restart_replays(self):
         before = copy.deepcopy(self.exp.state())
         identity = copy.deepcopy(self.exp.identity)
-        with self.assertRaises(ValueError):
-            capture(self.exp, self.write_source(self.new.fingerprint), NOW)  # not yet accepted: idle, no halt
+        prefix = list(self.exp.db.execute("SELECT * FROM experiment_events ORDER BY seq"))
         self.exp.apply(self.event())
         after = self.exp.state()
         self.assertEqual(self.exp.identity, identity)
-        self.assertEqual(self.exp.policy.fingerprint, self.old.fingerprint)  # its own rules stay frozen
+        self.assertEqual(after["universe"]["policy_hash"], self.new.fingerprint)
         for name, book in before["books"].items():
-            self.assertEqual(after["books"][name]["cash"], book["cash"])
+            for k in ("cash", "positions", "pending", "fills", "lots"):
+                self.assertEqual(after["books"][name][k], book[k])
         self.assertEqual(after["evidence"]["blocks"], before["evidence"]["blocks"])
-        self.assertEqual(self.exp.source_policy_hashes(), {self.old.fingerprint, self.new.fingerprint})
-        captured = capture(self.exp, self.write_source(self.new.fingerprint), NOW)
-        self.assertEqual(captured["policy_hash"], self.old.fingerprint)
-        self.assertTrue(self.exp.verify_replay()["verified"])
+        self.assertIn("session_boundary_partial_day", after["evidence"]["invalid_reasons"])
+        self.assertEqual(list(self.exp.db.execute("SELECT * FROM experiment_events ORDER BY seq"))[:len(prefix)], prefix)
         self.exp.close()
-        self.exp = Experiment(self.path, expanded_policy())  # restart with unchanged own policy
-        self.assertIn(self.new.fingerprint, self.exp.source_policy_hashes())
+        with self.assertRaises(ValueError):
+            Experiment(self.path, self.old)  # the old policy can no longer open the migrated study
+        self.exp = Experiment(self.path, self.new)  # restart with the shared 24/7 policy
+        self.assertTrue(self.exp.verify_replay()["verified"])
+        captured = capture(self.exp, self.write_source(self.new.fingerprint), NOW)
+        self.assertEqual(captured["policy_hash"], self.new.fingerprint)
+        with self.assertRaises(ValueError):
+            capture(self.exp, self.write_source(self.old.fingerprint), NOW)  # stale-policy source refused
 
     def test_malformed_boundary_is_refused_by_dry_projection(self):
-        bad = self.event(old=widen(self.old), new=widen(replace(self.old, max_trades_per_day=30)))
-        with self.assertRaises((ValueError, IntegrityError)):
-            self.exp._accept_source_session(copy.deepcopy(self.exp.state()), bad, NOW)
-        risky = self.event(new=replace(self.new, max_loss_per_trade=D(14)))
-        with self.assertRaises((ValueError, IntegrityError)):
-            self.exp._accept_source_session(copy.deepcopy(self.exp.state()), risky, NOW)
+        for bad in (self.event(new=replace(self.new, max_loss_per_trade=D(14))),
+                    self.event(from_policy="0"*64)):
+            with self.assertRaises((ValueError, IntegrityError)):
+                self.exp._activate_session(copy.deepcopy(self.exp.state()), bad, NOW)
         self.assertFalse(self.exp.state()["halt"])
+
+    def test_runner_command_applies_the_session_boundary(self):
+        from evolver.trading.experiment_runner import main
+        self.exp.close()
+        policies = Path(self.temp.name)
+        (policies/"old.json").write_text(json.dumps(asdict(self.old), default=str))
+        (policies/"new.json").write_text(json.dumps(asdict(self.new), default=str))
+        self.assertEqual(main(["expand-session", "--root", self.temp.name, "--policy", str(policies/"old.json"),
+                               "--new-policy", str(policies/"new.json")]), 0)
+        self.exp = Experiment(self.path, self.new)
+        self.assertEqual(self.exp.state()["universe"]["policy_hash"], self.new.fingerprint)
 
 
 class SessionNotifierTests(unittest.TestCase):

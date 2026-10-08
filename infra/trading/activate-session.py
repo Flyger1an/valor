@@ -8,8 +8,8 @@
 
 What changes: entry hours 13-20 UTC Mon-Fri -> all hours, all days; entry attempts 6/day -> 24/day;
 model calls 60/day -> 200/day. Nothing else in the policy can change (session.validate_session_expansion).
-The three virtual books keep their frozen rules; they only accept source files stamped with the new
-fingerprint. Any failure before services restart restores every database and config automatically.
+The live book and the three virtual books move to the SAME policy (one shared fingerprint), so the
+dashboard, notifier and mirror stay in sync. Cash, orders, fills and prior evidence are preserved. Any failure before services restart restores every database and config automatically.
 """
 import argparse
 import hashlib
@@ -122,13 +122,13 @@ def preflight(require_flat=True):
     db.close()
     assert not exp_state["halt"], "virtual experiment is halted; audit first"
     assert exp_state.get("universe", {}).get("policy_hash") == OLD, "virtual experiment policy unexpected"
-    assert not exp_state.get("source_sessions"), "source session already accepted by the experiment"
+    assert not exp_state.get("session_history"), "session boundary already applied to the experiment"
     free = shutil.disk_usage("/").free
     assert free > 2_000_000_000, "less than 2 GB free"
     return state, runtime, experiment, {"positions": positions, "pending": pending, "cash": meta.get("cash")}
 
 
-def build(base, tag, user):
+def build(base, tag, user, policy=None):
     ctx = HERE/("build-" + tag.split(":")[0].split("-")[-1])
     if ctx.exists():
         shutil.rmtree(ctx)
@@ -136,6 +136,9 @@ def build(base, tag, user):
     shutil.copytree(HERE/"trading", ctx/"trading")
     lines = [f"FROM {base}", "USER root", "RUN rm -rf /app/evolver/trading",
              "COPY trading /app/evolver/trading", "RUN find /app/evolver/trading -name '__pycache__' -prune -exec rm -rf {} +"]
+    if policy:
+        shutil.copy2(policy, ctx/"policy.json")
+        lines.append("COPY policy.json /config/experiment-policy.json")
     if user:
         lines.append(f"USER {user}")
     (ctx/"Dockerfile").write_text("\n".join(lines) + "\n")
@@ -176,18 +179,19 @@ deliveries={t:rows(alerts,t) for t in ['meta','outbox','historical_orders']}
 now=time.time()
 boundary=migrate_ledger(source,old,new,now)
 exp=Experiment(experimental,old)
-event={'type':'source_session_update','id':'source-session:'+new.fingerprint,'observed_at':now,
-       'from_policy':old.fingerprint,'to_policy':new.fingerprint,'old_source_policy':asdict(old),'new_source_policy':asdict(new)}
-exp._accept_source_session(copy.deepcopy(exp.state()),event,now)
+event={'type':'session_policy_update','id':'session:'+new.fingerprint,'observed_at':now,
+       'from_policy':old.fingerprint,'to_policy':new.fingerprint,'new_policy':asdict(new)}
+exp._activate_session(copy.deepcopy(exp.state()),event,now)
 report=exp.apply(event)
-assert exp.identity==identity and exp.policy.fingerprint==OLD
+assert exp.identity==identity
 after=exp.state()
 for name,book in state['books'].items():
  for k in ['cash','positions','pending','fills','lots','seen','attempts']:assert after['books'][name][k]==book[k],(name,k)
 assert after['evidence']['blocks']==state['evidence']['blocks']
 assert rows(experimental,'experiment_events')[:-1]==prefix
-assert exp.source_policy_hashes()=={OLD,NEW}
-exp.close();exp=Experiment(experimental,old);replay=exp.verify_replay()
+assert after['universe']['policy_hash']==NEW
+exp.close();exp=Experiment(experimental,new);replay=exp.verify_replay();report=exp.report()
+assert report['policy_hash']==NEW
 write_snapshot(Path('/experiment/snapshot.json'),exp.report());exp.close()
 migrate_config(alerts,read('old-notifications.json'),read('new-notifications.json'),now)
 record_feed_transition('/market',old,new,now)
@@ -309,10 +313,10 @@ def main():
     assert fingerprint(runtime, HERE/"repo/infra/trading/policy.demo.json") == NEW
     log("== staged images (overlay on the running images) + full test suites")
     build(runtime, new_runtime, state["valor-demo-worker-1"]["user"])
-    build(experiment, new_experiment, state["valor-experiment-ledgers-1"]["user"])
+    build(experiment, new_experiment, state["valor-experiment-ledgers-1"]["user"], HERE/"repo/infra/trading/policy.demo.json")
     in_image(new_experiment, "import json;from evolver.trading.contracts import Policy;"
-             f"assert Policy.from_dict(json.load(open('/config/experiment-policy.json'))).fingerprint=='{OLD}';print('ok')")
-    log("   experiment image keeps its frozen weekday policy")
+             f"assert Policy.from_dict(json.load(open('/config/experiment-policy.json'))).fingerprint=='{NEW}';print('ok')")
+    log("   experiment image carries the shared 24/7 policy")
     notifications_old = json.loads(CONFIGS["notifications.json"].read_text())
     log("== rehearsal: full migration against database copies")
     rehearse(new_runtime, notifications_old)
@@ -401,6 +405,7 @@ def main():
                 "source_flat_unhalted": not status.get("halt") and not status.get("positions"),
                 "feed_publishing_new_policy": quotes.get("policy_hash") == NEW and 0 <= time.time()-quotes["timestamp"] <= 30,
                 "experiment_running_unhalted": not snap.get("halt") and 0 <= time.time()-snap.get("timestamp", 0) <= 60,
+                "experiment_policy_new": snap.get("policy_hash") == NEW,
                 "images_pinned": all(images[n] == new_runtime for n in SOURCE)
                                  and images["valor-experiment-ledgers-1"] == new_experiment,
                 "unrelated_services_untouched": all(
