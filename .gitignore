@@ -37,3 +37,6 @@ tsconfig.tsbuildinfo
 # secrets hygiene: env backups + secret drops must never be stageable (defense in depth)
 .env.backup-*
 .secrets/
+
+# Isolated study credentials (examples remain tracked).
+infra/trading/*.env

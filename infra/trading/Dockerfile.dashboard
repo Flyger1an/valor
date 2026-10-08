@@ -1,0 +1,10 @@
+# Resolve the official node:22-alpine image to a digest before building.
+ARG VALOR_DASHBOARD_BASE
+FROM ${VALOR_DASHBOARD_BASE}
+WORKDIR /app
+COPY infra/trading/private-dashboard/package.json /app/package.json
+COPY --chown=10001:10001 infra/trading/private-dashboard/ /app/infra/trading/private-dashboard/
+COPY --chown=10001:10001 src/lib/trading/experiment-status.ts src/lib/trading/runtime-status.ts /app/src/lib/trading/
+USER 10001:10001
+ENV NODE_ENV=production
+ENTRYPOINT ["node", "/app/infra/trading/private-dashboard/server.mjs"]

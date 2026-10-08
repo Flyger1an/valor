@@ -1,6 +1,12 @@
 # SECURITY: never bake secrets into image layers (compose injects them via env_file at runtime)
 **/.env
 **/.env*.local
+**/*.env
+**/.env.backup-*
+**/.secrets/
+.claude/
+.valor/
+.deployment/
 
 # local research/shadow state + data blobs (mounted via the evolver_data volume at runtime)
 evolver/.x*_cache_*.pkl

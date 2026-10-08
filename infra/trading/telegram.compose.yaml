@@ -1,0 +1,38 @@
+name: valor-telegram
+services:
+  notifier:
+    image: ${VALOR_TELEGRAM_IMAGE:?Build and pin the notifier image first}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 96m
+    cpus: 0.10
+    pids_limit: 32
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=8m"]
+    volumes:
+      - source_state:/source:ro
+      - delivery_state:/state
+      - ${VALOR_TELEGRAM_CONFIG_DIR:?Choose a private configuration directory}:/config:ro
+      - ${VALOR_TELEGRAM_CREDENTIAL_DIR:?Operator must configure the existing bot credential}:/credentials:ro
+    healthcheck:
+      # Avoid importing the network client in a CPU-limited health-check process.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,time; d=json.load(open('/state/status.json')); raise SystemExit(0 if d.get('healthy') is True and 0 <= time.time()-d.get('timestamp',0) < 45 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "2m", max-file: "2"}
+volumes:
+  source_state:
+    name: ${VALOR_TRADING_STATE_VOLUME:-valor-demo_state}
+    external: true
+  delivery_state: {}

@@ -1,0 +1,45 @@
+name: valor-henry-v2
+
+services:
+  henry-v2:
+    image: ${VALOR_HENRY_V2_IMAGE:?set the built Henry v2 image}
+    pull_policy: never
+    restart: unless-stopped
+    read_only: true
+    network_mode: none
+    user: "10001:10001"
+    init: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 256m
+    cpus: 0.25
+    stop_grace_period: 20s
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    volumes:
+      - state:/henry
+      - source_market:/runtime/market:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json,time,sys;
+          s=json.load(open('/henry/snapshot.json'));
+          ok=s['mode']=='virtual_only' and s['frames']>0 and (0<=time.time()-s['timestamp']<=30 or s['floor_breached']);
+          sys.exit(0 if ok else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  state:
+    name: valor-henry-v2_state
+  source_market:
+    external: true
+    name: valor-demo_market
