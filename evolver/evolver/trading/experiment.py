@@ -30,6 +30,12 @@ RULES = {"version": "three-cash-books-v1", "starting_cash": "500", "maximum_days
          "kelly": KELLY_RULES}
 
 
+def session_fields(policy):
+    from .session import SESSION_FIELDS
+    return {f: list(getattr(policy, f)) if isinstance(getattr(policy, f), tuple) else getattr(policy, f)
+            for f in SESSION_FIELDS}
+
+
 class IntegrityError(ValueError):
     pass
 
@@ -90,6 +96,7 @@ def metrics(book, quotes):
 class Experiment:
     def __init__(self, path, policy: Policy, *, epoch=None, strategy=None):
         self.path, self.policy = Path(path), policy
+        self.base_policy, self._initial_session = policy, None
         if policy.mode == "live":
             raise ValueError("virtual experiment accepts paper/demo source policies only")
         if self.path.name != "experiment.sqlite":
@@ -110,8 +117,10 @@ class Experiment:
         row = self.db.execute("SELECT payload FROM experiment_meta WHERE key='identity'").fetchone()
         if row:
             self.identity = json.loads(row[0])
+            sessions = self.state().get("session_history", [])
+            self._initial_session = sessions[0]["previous_session"] if sessions else None
             if (self.state().get("universe", {}).get("policy_hash", self.identity["policy_hash"]) != policy.fingerprint
-                    or replace(policy, allowed_instruments=tuple(self.identity["symbols"])).fingerprint != self.identity["policy_hash"]
+                    or self._original_policy(policy).fingerprint != self.identity["policy_hash"]
                     or self.identity["rules"] != RULES
                     or (epoch is not None and epoch != self.identity["epoch"])
                     or (strategy is not None and strategy != self.identity["strategy"])):
@@ -136,12 +145,47 @@ class Experiment:
     def close(self):
         self.db.close()
 
+    def _original_policy(self, policy):
+        """The initialization policy implied by the current one and the recorded explicit boundaries."""
+        if self._initial_session:
+            policy = replace(policy, **{k: tuple(v) if isinstance(v, list) else v for k, v in self._initial_session.items()})
+        return replace(policy, allowed_instruments=tuple(self.identity["symbols"]))
+
     def symbols(self, state=None):
         state = self.state() if state is None else state
         return state.get("universe", {}).get("symbols", self.identity["symbols"])
 
     def policy_hash(self, state):
         return state.get("universe", {}).get("policy_hash", self.identity["policy_hash"])
+
+    def _policy_for(self, state):
+        """Session rules in force at this point of the journal (replay-exact across boundaries)."""
+        sessions = state.get("session_history", [])
+        values = sessions[-1]["session"] if sessions else self._initial_session
+        if not values:
+            return self.base_policy
+        return replace(self.base_policy, **{k: tuple(v) if isinstance(v, list) else v for k, v in values.items()})
+
+    def _activate_session(self, state, event, now):
+        """Move the books to the SAME widened session as the source runtime (one shared policy).
+        Cash, lots, orders, fills and prior evidence classifications are preserved; the boundary
+        day is excluded from Kelly evidence because its participation window changed mid-day."""
+        from .session import validate_session_expansion
+        old = replace(self.policy, allowed_instruments=tuple(self.symbols(state)))
+        new = Policy.from_dict(event["new_policy"])
+        change = validate_session_expansion(old, new)
+        if (event.get("from_policy") != self.policy_hash(state) or old.fingerprint != self.policy_hash(state)
+                or event.get("to_policy") != new.fingerprint or not state.get("universe")):
+            raise IntegrityError("invalid_session_boundary")
+        if self._initial_session is None:
+            self._initial_session = session_fields(old)
+        state.setdefault("session_history", []).append(
+            {"id": event["id"], "at": now, "from_policy": old.fingerprint, "to_policy": new.fingerprint, **change,
+             "previous_session": session_fields(old), "session": session_fields(new)})
+        state["universe"]["policy_hash"] = new.fingerprint
+        evidence = state["evidence"]
+        evidence["complete"] = False
+        evidence.setdefault("invalid_reasons", []).append("session_boundary_partial_day")
 
     def _decision_history(self, state, symbol):
         bars = state["histories"].get(symbol, [])
@@ -280,6 +324,13 @@ class Experiment:
             raise
 
     def _reduce(self, state, event):
+        self.policy = self._policy_for(state)
+        try:
+            self._reduce_event(state, event)
+        finally:
+            self.policy = self._policy_for(state)
+
+    def _reduce_event(self, state, event):
         kind, now = event["type"], float(event["observed_at"])
         if kind == "operator_quote_recovery":
             self._recover_quotes(state, event, now)
@@ -297,6 +348,8 @@ class Experiment:
             self._activate_evidence_v2(state, event, now)
         elif kind == "universe_policy_update":
             self._activate_universe(state, event, now)
+        elif kind == "session_policy_update":
+            self._activate_session(state, event, now)
         else:
             raise IntegrityError("unsupported_event_type")
         self._settlement_status(state, now)
@@ -959,6 +1012,7 @@ class Experiment:
             state["last_at"] = float(event["observed_at"])
             self._check_conservation(state)
             previous = row
+        self.policy = self._policy_for(self.state())
         if digest(state) != digest(self.state()):
             raise IntegrityError("replay_state_mismatch")
         return {"verified": True, "events": self.db.execute("SELECT count(*) FROM experiment_events").fetchone()[0],

@@ -168,7 +168,8 @@ class ApprovalEvidenceTests(unittest.TestCase):
         from evolver.trading.ledger import Ledger
         from evolver.trading.worker import Worker
         from evolver.trading.news import item
-        p=replace(self.p,allowed_instruments=universe_fixture.SIX)
+        p=replace(self.p,allowed_instruments=universe_fixture.SIX,trading_hours_utc=tuple(range(24)),
+                  trading_weekdays_utc=tuple(range(7)),max_model_calls_per_day=200,max_trades_per_day=24)
         root=self.root/'six';book=Ledger(root/'book.sqlite',p,PaperBroker.identity)
         try:
             worker=Worker(book,p,PaperBroker(book,p),*(root/s for s in ['state','outbox','inbox','market','research']))
@@ -185,7 +186,7 @@ class ApprovalEvidenceTests(unittest.TestCase):
                 'proceeds':'25.08000000','realized_pnl':'0.08000000'} for i in range(6)]
             self.assertEqual(sum(bool(c['candidate']) for c in facts['market_evidence']['symbols'].values()),6)
             def model(system,prompt):
-                self.assertLessEqual(len((system+prompt).encode()),24000)
+                self.assertLessEqual(len((system+prompt).encode()),23850)  # keep >=150 B headroom under the 24 KB hard cap
                 decoded=json.loads(prompt);value=decoded['snapshot']
                 self.assertEqual(value['news']['items'],facts['news']['items'])
                 if 'intent' in decoded:

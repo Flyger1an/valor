@@ -58,7 +58,8 @@ def migrate_config(state, old, new, now):
     validate_config(new)
     origin = old.get("acceptance_identity_policy_hash", old["policy_hash"])
     strip = lambda c: {k: v for k, v in c.items() if k not in {"policy_hash", "instruments", "acceptance_identity_policy_hash"}}
-    if (strip(old) != strip(new) or not set(old["instruments"]) < set(new["instruments"])
+    # Universe expansions add instruments; session expansions keep them identical.
+    if (strip(old) != strip(new) or not set(old["instruments"]) <= set(new["instruments"])
             or new.get("acceptance_identity_policy_hash") != origin or old["policy_hash"] == new["policy_hash"]):
         raise AlertError("invalid_notification_universe_migration")
     if not Path(state).is_file():

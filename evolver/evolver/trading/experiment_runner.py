@@ -104,12 +104,13 @@ def capture(experiment, source_root, now):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("init", "tick", "run", "report", "replay", "upgrade-evidence", "expand-universe", "recover-quotes"))
+    parser.add_argument("command", choices=("init", "tick", "run", "report", "replay", "upgrade-evidence", "expand-universe", "recover-quotes",
+                                                "expand-session"))
     parser.add_argument("--policy", default="infra/trading/policy.demo.json")
     parser.add_argument("--root", required=True, help="new isolated experiment directory")
     parser.add_argument("--source-root", help="existing read-only runtime root with market/outbox/news directories")
     parser.add_argument("--strategy", help="freeze an approved strategy at initialization")
-    parser.add_argument("--new-policy", help="expand-universe only: additive paper/demo policy")
+    parser.add_argument("--new-policy", help="expand-universe/expand-session: the widened paper/demo policy")
     parser.add_argument("--recovery-review", help="recover-quotes only: explicit failure-bound operator review JSON")
     parser.add_argument("--stay-running-after-completion", action="store_true",
                         help="run only: idle after the settled end state, without further observations")
@@ -151,6 +152,20 @@ def main(argv=None):
             report = experiment.apply({"type": "universe_policy_update", "id": "universe:"+new.fingerprint,
                 "observed_at": time.time(), "from_policy": policy.fingerprint,
                 "new_policy": asdict(new), "rules_hash": digest(KELLY_RULES_V3)})
+            write_snapshot(root/"snapshot.json", report)
+            print(encode(report))
+            return 0
+        if args.command == "expand-session":
+            if not args.new_policy:
+                parser.error("--new-policy is required for an explicit session boundary")
+            import copy
+            from dataclasses import asdict
+            new = Policy.from_dict(read_object(args.new_policy, limit=20_000))
+            event = {"type": "session_policy_update", "id": "session:"+new.fingerprint, "observed_at": time.time(),
+                     "from_policy": policy.fingerprint, "to_policy": new.fingerprint, "new_policy": asdict(new)}
+            # Dry projection first: a malformed boundary is refused, never journaled as a halt.
+            experiment._activate_session(copy.deepcopy(experiment.state()), event, event["observed_at"])
+            report = experiment.apply(event)
             write_snapshot(root/"snapshot.json", report)
             print(encode(report))
             return 0
