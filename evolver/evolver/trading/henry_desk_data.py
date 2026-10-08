@@ -11,6 +11,7 @@ volume differ slightly from what Henry trades live. Good for research; noted in 
 from __future__ import annotations
 
 import argparse
+import concurrent.futures as cf
 import csv
 import datetime as dt
 import gzip
@@ -67,6 +68,12 @@ def fetch_rows(url, tries=3):
     return None
 
 
+def parallel(urls, workers=8):
+    """Fetch archive files concurrently (a CDN, so a handful of workers is polite and fast)."""
+    with cf.ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(fetch_rows, urls))
+
+
 def _ms(value):
     v = int(value)
     return v//1000 if v > 10**14 else v  # newer dumps use microseconds
@@ -79,12 +86,15 @@ def klines(pair, months, log=print, offset=0):
     out = {}
     now = dt.datetime.now(dt.timezone.utc)
     month_list = months_back(months, shift_months(now, offset))
-    for ym in month_list[:-1]:
-        rows = fetch_rows(f"{BASE}/spot/monthly/klines/{pair}/1h/{pair}-1h-{ym}.zip")
+    urls = [f"{BASE}/spot/monthly/klines/{pair}/1h/{pair}-1h-{ym}.zip" for ym in month_list[:-1]]
+    missing = []
+    for ym, rows in zip(month_list[:-1], parallel(urls)):
         if rows is None:
-            log(f"  {pair} {ym}: not published")
+            missing.append(ym)
             continue
         _add(out, rows)
+    if missing:
+        log(f"  {pair}: no archive for {len(missing)} month(s) ({missing[0]} to {missing[-1]}; not listed yet or not published)")
     if offset:
         return out
     today = now.date()
@@ -106,10 +116,10 @@ def _add(out, rows):
 def funding(pair, months, log=print, offset=0):
     """{funding_time_seconds: rate_per_8h} from USD-M perp monthly funding dumps."""
     out = {}
-    for ym in months_back(months, shift_months(dt.datetime.now(dt.timezone.utc), offset))[:-1]:
-        rows = fetch_rows(f"{BASE}/futures/um/monthly/fundingRate/{pair}/{pair}-fundingRate-{ym}.zip")
+    month_list = months_back(months, shift_months(dt.datetime.now(dt.timezone.utc), offset))[:-1]
+    urls = [f"{BASE}/futures/um/monthly/fundingRate/{pair}/{pair}-fundingRate-{ym}.zip" for ym in month_list]
+    for ym, rows in zip(month_list, parallel(urls)):
         if rows is None:
-            log(f"  {pair} funding {ym}: not published")
             continue
         for r in rows:
             if len(r) >= 3 and r[0].isdigit():

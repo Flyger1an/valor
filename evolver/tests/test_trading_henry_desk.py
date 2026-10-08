@@ -245,10 +245,26 @@ class ReplayTest(unittest.TestCase):
         self.assertIn("return_pct", w)
         self.assertTrue(hd.DESK_RULES["bull_core"]["enabled"], "comparison restores the core")
 
+    def test_multi_year_gate_needs_most_years_profitable_and_no_disaster_year(self):
+        base = {"return_pct": 50.0, "max_drawdown_pct": 10.0, "profit_factor": 2.0, "trades": 100,
+                "halves_return_pct": [20.0, 20.0], "days": 1500}
+        good = rp.gate({**base, "by_year": {"2022": {"henry_pct": 10.0}, "2023": {"henry_pct": -5.0},
+                                            "2024": {"henry_pct": 30.0}, "2025": {"henry_pct": 4.0}}})
+        self.assertEqual(good["verdict"], "PASS")
+        lucky = rp.gate({**base, "by_year": {"2022": {"henry_pct": -8.0}, "2023": {"henry_pct": -6.0},
+                                             "2024": {"henry_pct": 90.0}, "2025": {"henry_pct": -3.0}}})
+        self.assertFalse(lucky["checks"]["most_years_profitable"]["pass"], "one lucky year cannot carry it")
+        disaster = rp.gate({**base, "by_year": {"2022": {"henry_pct": -25.0}, "2023": {"henry_pct": 20.0},
+                                                "2024": {"henry_pct": 30.0}}})
+        self.assertFalse(disaster["checks"]["no_disaster_year"]["pass"])
+        short = rp.gate({**base, "days": 190, "by_year": {"2026": {"henry_pct": -1.0}}})
+        self.assertNotIn("most_years_profitable", short["checks"], "year checks only apply to multi-year runs")
+
     def test_report_has_attribution_and_halves(self):
         r = rp.replay(market(seed=11, days=90))
         self.assertEqual(set(r["analyst_attribution"]), set(hd.DESK_RULES["weights"]))
         self.assertEqual(len(r["halves_return_pct"]), 2)
+        self.assertTrue(r["by_year"])
         self.assertIn(r["gate"]["verdict"], ("PASS", "FAIL"))
 
     def test_sweep_restores_rules(self):
@@ -277,6 +293,23 @@ class DataTest(unittest.TestCase):
         holdout = set(data_mod.months_back(6, data_mod.shift_months(now, 6))[:-1])
         self.assertFalse(studied & holdout)
         self.assertEqual(min(holdout), "2025-10")
+
+    def test_fetch_is_parallel_and_reports_missing_months_once(self):
+        calls, logs = [], []
+        original = data_mod.fetch_rows
+        try:
+            def fake(url):
+                calls.append(url)
+                return None if "-2024-0" in url else [["1767225600000", "1", "2", "0.5", "1.5", "10"]]
+            data_mod.fetch_rows = fake
+            import datetime as dt
+            out = data_mod.klines("WIFUSDT", 30, log=logs.append, offset=12)
+        finally:
+            data_mod.fetch_rows = original
+        self.assertEqual(len(calls), 30)
+        self.assertTrue(out)
+        self.assertEqual(len(logs), 1, "one summary line, not one per missing month")
+        self.assertIn("not listed yet", logs[0])
 
     def test_months_back_includes_current_month_last(self):
         import datetime as dt

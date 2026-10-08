@@ -25,7 +25,9 @@ from . import henry_desk as hd
 from .henry_desk_data import load
 
 GATE = {"min_return_pct": 0.0, "max_drawdown_pct": 25.0, "min_profit_factor": 1.2, "min_trades": 30,
-        "min_half_return_pct": -5.0}
+        "min_half_return_pct": -5.0,
+        # over multi-year data, one lucky year must not carry the result
+        "min_share_of_years_profitable": 0.5, "worst_year_floor_pct": -15.0, "min_days_for_year_checks": 540}
 SWEEP = {"conviction_min": [55.0, 60.0, 65.0], "rr_min": [1.5, 2.0, 2.5]}
 
 
@@ -161,6 +163,20 @@ def grade(series, book, curve, regime_hours, proposed, approved, sample_theses):
         attribution[name] = {"agreed_trades": len(agree), "avg_r_when_agreed": round(statistics.mean(agree), 3) if agree else None,
                              "disagreed_trades": len(disagree),
                              "avg_r_when_disagreed": round(statistics.mean(disagree), 3) if disagree else None}
+    import datetime as _dt
+    years = {}
+    for t, eq in curve:
+        y = _dt.datetime.fromtimestamp(t, _dt.timezone.utc).year
+        years.setdefault(y, [eq, eq])[1] = eq
+    by_year = {}
+    for y, (first, last) in sorted(years.items()):
+        btc = None
+        if leader is not None:
+            in_year = [k for k, tt in enumerate(leader.t) if _dt.datetime.fromtimestamp(tt, _dt.timezone.utc).year == y]
+            if in_year:
+                btc = round((leader.c[in_year[-1]]/leader.o[in_year[0]]-1)*100, 2)
+        by_year[str(y)] = {"henry_pct": round((last/first-1)*100, 2), "btc_hold_pct": btc,
+                           "trades": sum(1 for t in trades if _dt.datetime.fromtimestamp(t["closed"], _dt.timezone.utc).year == y)}
     half = len(curve)//2
     halves = [round((curve[half][1]/curve[0][1]-1)*100, 2) if curve else 0.0,
               round((curve[-1][1]/curve[half][1]-1)*100, 2) if curve else 0.0]
@@ -181,7 +197,7 @@ def grade(series, book, curve, regime_hours, proposed, approved, sample_theses):
         "stand_downs": book.pauses,
         "by_market_regime": by_regime, "by_setup": group("setup"), "by_direction": group("direction"),
         "by_exit": group("reason"), "by_symbol": group("symbol"), "analyst_attribution": attribution,
-        "halves_return_pct": halves, "buy_and_hold_pct": hold,
+        "halves_return_pct": halves, "buy_and_hold_pct": hold, "by_year": by_year,
         "recent_trades": trades[-12:], "sample_theses": sample_theses,
         "caveats": ["Binance archive prices (not Alpaca); spreads modeled; fills at next hour's open",
                     "shorts are simulated perpetuals: executing them needs a perp venue",
@@ -200,6 +216,14 @@ def gate(r):
         "both_halves": (min(r["halves_return_pct"]) >= GATE["min_half_return_pct"],
                         f"halves {r['halves_return_pct']} vs {GATE['min_half_return_pct']}% floor"),
     }
+    years = r.get("by_year", {})
+    if r["days"] >= GATE["min_days_for_year_checks"] and years:
+        vals = [v["henry_pct"] for v in years.values()]
+        share = sum(v > 0 for v in vals)/len(vals)
+        checks["most_years_profitable"] = (share >= GATE["min_share_of_years_profitable"],
+                                           f"{sum(v > 0 for v in vals)} of {len(vals)} calendar years positive")
+        checks["no_disaster_year"] = (min(vals) >= GATE["worst_year_floor_pct"],
+                                      f"worst year {min(vals)}% vs {GATE['worst_year_floor_pct']}% floor")
     return {"verdict": "PASS" if all(v[0] for v in checks.values()) else "FAIL",
             "checks": {k: {"pass": v[0], "detail": v[1]} for k, v in checks.items()}}
 
@@ -242,6 +266,10 @@ def show(r):
     print(f"  theses written {r['theses_written']}, approved {r['theses_approved']}, gapped out at fill {r['rejected_at_fill']}, "
           f"stand-downs after bad streaks {r['stand_downs']}")
     print("  buy and hold:", ", ".join(f"{k} {v}%" for k, v in r["buy_and_hold_pct"].items()))
+    if len(r.get("by_year", {})) > 1:
+        print("  by calendar year (Henry vs BTC hold):")
+        for y, v in r["by_year"].items():
+            print(f"     {y}   Henry {v['henry_pct']:>8}%   BTC {v['btc_hold_pct']:>8}%   trades {v['trades']}")
     print("  by market regime (Henry vs BTC hold over the same hours):")
     for k, v in r["by_market_regime"].items():
         print(f"     {k:10} {v['hours']:>5}h   Henry {v['henry_pct']:>7}%   BTC {v['btc_hold_pct']:>7}%")

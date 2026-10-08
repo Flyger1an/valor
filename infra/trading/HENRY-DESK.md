@@ -74,17 +74,22 @@ The gate: return > 0, max drawdown <= 25%, profit factor >= 1.2, at least 30 tra
 half of the period worse than -5%. Controls in the test suite: the desk must FAIL on trendless
 noise; a desk that passes on noise is fooling itself.
 
-## Out-of-sample holdout
+## Out-of-sample holdout: 4.5 years nobody has studied
 
-v2's changes were designed from the April to October 2026 replay. Grading v2 on that same data would
-be grading our own homework, so the deciding test is the six months BEFORE it, never looked at:
+v2's changes were designed from the April to October 2026 replay. The deciding test is everything
+BEFORE it: October 2021 to March 2026, which covers the 2022 crash (Luna, FTX), the 2023 range, the
+2024 ETF bull and 2025. BTC, ETH, ADA and SHIB have the full span; WIF joins in 2024 and SKY in 2025.
 
 ```bash
 docker run --rm -u 0 -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver \
-  --entrypoint python "$BASE" -m evolver.trading.henry_desk_data --months 6 --months-ago 6 --out /data/henry_desk_holdout.json.gz
+  --entrypoint python "$BASE" -m evolver.trading.henry_desk_data --months 54 --months-ago 6 --out /data/henry_desk_5y_holdout.json.gz
 docker run --rm --network none -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data:ro -e PYTHONPATH=/src/evolver \
-  -e PYTHONDONTWRITEBYTECODE=1 --entrypoint python "$BASE" -m evolver.trading.henry_desk_replay --data /data/henry_desk_holdout.json.gz
+  -e PYTHONDONTWRITEBYTECODE=1 --entrypoint python "$BASE" -m evolver.trading.henry_desk_replay --data /data/henry_desk_5y_holdout.json.gz
 ```
+
+On multi-year data the gate adds two checks: at least half the calendar years profitable, and no
+year worse than -15%, so one lucky year cannot carry the result. The report shows Henry vs BTC hold
+for every calendar year and every market regime.
 
 The desk is deployable only if it passes the gate on the holdout. Re-tuning after looking at the
 holdout spends it; the next honest test would then need fresh data (the forward live run).
