@@ -1,4 +1,4 @@
-# Henry v2 (henry-raging-bull-v2)
+# Henry v2 (henry-raging-bull-v3)
 
 A standalone, aggressive, cash-only virtual book. It is a fourth, separate study, not part of the
 three-book experiment. Baseline, kelly and henry v1 keep their journal, identity and rules unchanged.
@@ -7,17 +7,19 @@ three-book experiment. Baseline, kelly and henry v1 keep their journal, identity
 
 | | Three-book study | Henry v2 |
 |---|---|---|
-| Entries | one frozen strategy | all 9 approved strategies, all allowed symbols; breakout first, then EMA trend, then dip buys |
-| Hours | shared session | 24/7, no supervisor, news, session or daily-trade gate |
-| Sizing | caps / Kelly / all-cash | probe with 50% of cash, press the rest once up one stop distance with the trend intact |
-| Exits | fixed target, 12h max hold, first EMA cross | no target, no hold clock; trailing stop at 2x stop distance under the high-water mark (moves to breakeven once working); momentum trades also exit on 2 closes under the slow EMA |
+| Regime | none | 1h bars built from 5m: uptrend, consolidation, transition or downtrend, from a 20h EMA, its 5h slope and 24h efficiency (net move / total path). Seeded from the feed's history.json so a fresh run is not blind |
+| Entries | one frozen strategy | uptrend: breakouts and EMA trend entries. consolidation: dip buys only. transition and downtrend: cash. Strongest 24h coin wins ties, 24/7, no supervisor, news, session or daily-trade gate |
+| Sizing | caps / Kelly / all-cash | probe with 50% of cash, press the rest only in an uptrend once up 2 stop distances with the 5m trend intact |
+| Stops | fixed 1-3% | 2.5x ATR (5m), clamped 0.8% to 6%; once working, trail 3x ATR under the high-water mark, never below true round-trip breakeven |
+| Exits | fixed target, 12h max hold, first EMA cross | no target or hold clock. Momentum: trailing stop, 2 closes under the slow EMA, or the regime turning to downtrend. Dip buys: stop or the range middle |
 | Loss limits | daily loss, drawdown halts | none, except the equity floor |
 | Floor | n/a | equity under $250 halts permanently and liquidates |
 | Leverage | none | none (Alpaca spot crypto cannot do margin, so leveraged data would be meaningless) |
 
 Realism kept on purpose: fills at the next observed quote, adverse slippage, modeled fees both
 sides. v2 liquidity: entries may use the larger of 1% of bar volume or $2,000 per bar (Alpaca reports
-only its own thin volume); exits always fill the whole position. Each position is one trade record.
+only its own thin volume); exits always fill the whole position. Each position is one trade record,
+tagged with its entry and exit regime, family, stop size, ATR and spread. Quotes wider than 1.5% are ignored as bad data.
 Exchange increments and minimums and closed bars only are also kept.
 
 ## Deploy on the droplet
@@ -66,6 +68,10 @@ the droplet is ever touched.
 - Pause auto-deploy: `systemctl disable --now valor-henry-v2-autodeploy.timer`
 
 ## Reading the data
+
+`regimes` shows what Henry thinks each coin is doing right now, and `by_entry_regime` totals trades,
+wins and PnL per regime: the answer to where he actually makes money.
+
 
 `snapshot.json` reports equity, return, max drawdown, win rate, average win and loss, payoff ratio,
 best and worst trade, how many trades were pressed, the open position with its live trailing stop,

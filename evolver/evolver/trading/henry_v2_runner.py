@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .contracts import Policy, decimal as D, encode
 from .engine import write_snapshot
-from .henry_v2 import HenryV2, IntegrityError, digest
+from .henry_v2 import HENRY_V2_RULES, HenryV2, IntegrityError, digest, hourly_bars
 from .ipc import read_object
 
 
@@ -46,9 +46,34 @@ def capture(book: HenryV2, source_root, now):
             if key in rules:
                 q[key] = rules[key]
         quotes[symbol] = q
-    return {"type": "frame", "id": f"henry-v2:{now}:{digest(quotes)[:16]}", "observed_at": now,
-            "source": prices.get("source"), "quotes": quotes, "bars": bars,
-            "liquidity_basis": "modeled: 1% of preceding closed five-minute bar volume"}
+    frame = {"type": "frame", "id": f"henry-v2:{now}:{digest(quotes)[:16]}", "observed_at": now,
+             "source": prices.get("source"), "quotes": quotes, "bars": bars,
+             "liquidity_basis": "modeled: max(1% of preceding closed 5m bar volume, liquidity floor)"}
+    seed = hourly_seed(book, state, source, now)
+    if seed:
+        frame["hourly_seed"] = seed
+    return frame
+
+
+def hourly_seed(book, state, source, now):
+    """Warm the 1h regime view from the feed's deeper history.json (read-only), so a fresh run
+    does not need 30 hours of live bars. Checked about every five minutes while any symbol is short."""
+    need = HENRY_V2_RULES["regime"]["min_hours"]
+    short = [s for s in book.identity["symbols"] if len(state["hourly"].get(s, [])) < need]
+    if not short or state["frames"] % 60:
+        return {}
+    try:
+        deep = read_object(source/"market"/"history.json", {}, limit=50_000_000)
+    except (ValueError, OSError):
+        return {}
+    keep, seed = HENRY_V2_RULES["regime"]["retained_hours"], {}
+    for symbol in short:
+        history = [b for b in deep.get("histories", {}).get(symbol, []) if b["timestamp"]+300 <= now]
+        known = [b["timestamp"] for b in state["hourly"].get(symbol, [])]
+        hours = hourly_bars(history, now, known)[-keep:]
+        if hours:
+            seed[symbol] = hours
+    return seed
 
 
 def main(argv=None):

@@ -6,8 +6,12 @@ read-only. Nothing here can place a real order, touch the source ledger, or chan
 three-book experiment.
 
 Personality (versioned in HENRY_V2_RULES):
-- Hunts every approved strategy on every allowed symbol, 24/7. No supervisor, news,
-  session window or daily-loss gate.
+- Reads the market regime on 1h bars first: uptrend -> breakouts and trend entries, full
+  aggression; consolidation -> dip buys only, take profit at the range middle; downtrend or an
+  unclear transition -> cash (long-only spot cannot profit from it). Every trade is tagged with its regime.
+- Hunts every approved strategy on every allowed symbol, 24/7, picking the strongest coin.
+  No supervisor, news, session window or daily-loss gate.
+- Stops and trails are sized from each coin's own volatility (ATR), not a fixed percent.
 - Probe then press: opens with half of spendable cash, adds the rest once the trade is
   working by at least one stop distance while the trend is intact.
 - Lets winners run: no fixed take-profit and no hold clock. Exits only on a trailing
@@ -34,27 +38,58 @@ from .contracts import decimal as D, encode
 from .strategies import BY_VERSION, CATALOG, ema, entry_signal
 
 HENRY_V2_RULES = {
-    "version": "henry-raging-bull-v2",
+    "version": "henry-raging-bull-v3",
     "starting_cash": "500",
     "equity_floor": "250",
     "entry_tranche": "0.5",
-    "press_after_stop_multiples": "1",
-    "trail_stop_multiples": "2",
-    "trend_break_closes": 2,
     "max_symbols": 1,
     "min_notional": "10",
     "family_priority": ["breakout", "ema_trend", "mean_reversion"],
+    "ranking": "family priority, then 24h relative strength on 1h bars",
+    "regime": {"timeframe": "1h bars built from closed 5m bars", "ema_hours": 20, "slope_lookback_hours": 5,
+               "efficiency_window_hours": 24, "trend_efficiency_min": "0.30", "range_efficiency_max": "0.20",
+               "min_hours": 30, "retained_hours": 240},
+    "regime_routes": {"uptrend": ["breakout", "ema_trend"], "consolidation": ["mean_reversion"],
+                      "transition": [], "downtrend": [], "warming_up": []},
+    "press_regimes": ["uptrend"],
+    "exit_on_downtrend": True,
+    "range_target": "dip buys take profit at the 5m slow-window mean",
+    "atr_bars": 14, "stop_atr": "2.5", "trail_atr": "3", "stop_pct_min": "0.8", "stop_pct_max": "6",
+    "press_after_stop_distances": "2",
+    "trend_break_closes": 2,
+    "broken_quote_spread_bps": "150",
     "execution": "next-observed-quote IOC; adverse slippage; modeled fees",
     "entry_liquidity": "max(1% of last closed bar volume, liquidity_floor_usd) per bar",
     "liquidity_floor_usd": "2000",
     "exit_liquidity": "uncapped: exits always fill the whole position at bid less slippage",
-    "trade_record": "one round trip per position, including presses and partial exits",
+    "trade_record": "one round trip per position, tagged with entry and exit regime",
     "gates_removed": ["supervisor", "news", "session_hours", "daily_loss_limit", "drawdown_halt",
                       "max_trades_per_day", "max_spread", "per_trade_loss_cap", "fixed_target", "max_hold"],
     "leverage": "none",
 }
 QUOTE_MAX_AGE = 30
 BAR_SECONDS = 300
+HOUR = 3600
+
+
+def hourly_bars(bars, now, known=()):
+    """Aggregate closed 5m bars into closed 1h bars. An hour is used only when the retained 5m
+    window covers its start (never a truncated hour) and it closed at least ten minutes ago."""
+    if not bars:
+        return []
+    first, groups = float(bars[0]["timestamp"]), {}
+    for bar in bars:
+        t = float(bar["timestamp"])
+        groups.setdefault(t-t % HOUR, []).append(bar)
+    known, out = set(known), []
+    for h in sorted(groups):
+        if h in known or h < first or now < h+HOUR+600:
+            continue
+        g = groups[h]
+        out.append({"timestamp": h, "open": g[0]["open"], "close": g[-1]["close"],
+                    "high": str(max(D(b["high"]) for b in g)), "low": str(min(D(b["low"]) for b in g)),
+                    "volume": str(sum((D(b["volume"]) for b in g), D(0))), "bars": len(g)})
+    return out
 
 
 class IntegrityError(ValueError):
@@ -110,7 +145,7 @@ class HenryV2:
         return {"cash": cash, "position": None, "pending": None, "trades": [], "fills": 0,
                 "histories": {}, "quotes": {}, "liquidity_used": {}, "peak": cash, "max_drawdown_pct": "0",
                 "halt": "", "floor_breached": False, "frames": 0, "last_at": self.identity["epoch"],
-                "fees_paid": "0", "skips": {}, "last_decision": None}
+                "fees_paid": "0", "skips": {}, "last_decision": None, "hourly": {}, "regime_view": {}}
 
     def state(self):
         return json.loads(self.db.execute("SELECT payload FROM meta WHERE key='state'").fetchone()[0])
@@ -203,6 +238,27 @@ class HenryV2:
                     raise IntegrityError("closed_bar_revision")
                 bars[t] = bar
             state["histories"][symbol] = [bars[t] for t in sorted(bars)[-400:]]
+        keep = HENRY_V2_RULES["regime"]["retained_hours"]
+        for symbol, seeded in frame.get("hourly_seed", {}).items():
+            if symbol not in self.identity["symbols"]:
+                raise IntegrityError("unexpected_seed_instrument")
+            hours = {b["timestamp"]: b for b in state["hourly"].get(symbol, [])}
+            for bar in seeded:  # existing hours win; malformed seed bars are ignored, never trusted
+                t = float(bar["timestamp"])
+                try:
+                    lo, hi, op, close = (D(bar[k]) for k in ("low", "high", "open", "close"))
+                except (KeyError, ValueError):
+                    continue
+                if t % HOUR or t+HOUR > now or t in hours or not 0 < lo <= min(op, close) <= max(op, close) <= hi:
+                    continue
+                hours[t] = bar
+            state["hourly"][symbol] = [hours[t] for t in sorted(hours)[-keep:]]
+        for symbol in self.identity["symbols"]:
+            existing = state["hourly"].get(symbol, [])
+            fresh = hourly_bars(state["histories"].get(symbol, []), now, (b["timestamp"] for b in existing))
+            if fresh:
+                hours = {b["timestamp"]: b for b in existing+fresh}
+                state["hourly"][symbol] = [hours[t] for t in sorted(hours)[-keep:]]
         for symbol, q in frame.get("quotes", {}).items():
             if symbol not in self.identity["symbols"]:
                 raise IntegrityError("unexpected_quote_instrument")
@@ -294,12 +350,14 @@ class HenryV2:
                            invested=str(D(pos.get("invested", pos["cost"]))+value+cost),
                            stop=str(max(D(pos["stop"]), total_cost/qty*(1+bps/10000))))
             else:
-                spec = BY_VERSION[order["strategy"]]
-                stop = price*(1-D(spec.stop_fraction))
+                stop_pct = D(order["stop_pct"])
                 state["position"] = {"symbol": order["symbol"], "strategy": order["strategy"], "opened": now,
                                      "quantity": str(quantity), "cost": str(value+cost),
                                      "avg_price": str((value+cost)/quantity), "entry_price": str(price),
-                                     "stop": str(stop), "high_water": str(price), "pressed": False}
+                                     "stop": str(price*(1-stop_pct/100)), "stop_pct": str(stop_pct),
+                                     "high_water": str(price), "pressed": False,
+                                     "entry_regime": order["regime"], "entry_spread_bps": order["spread_bps"],
+                                     "entry_atr_pct": order["atr_pct"], "family": BY_VERSION[order["strategy"]].family}
         else:
             pos = state["position"]
             proceeds = value-cost
@@ -315,11 +373,16 @@ class HenryV2:
             trade = {"symbol": pos["symbol"], "strategy": pos["strategy"], "opened": pos["opened"], "closed": now,
                      "pnl_usd": str(realized.quantize(D(".01"))),
                      "return_pct": str((realized/invested*100).quantize(D(".01"))) if invested > 0 else "0",
-                     "pressed": pos["pressed"], "reason": order["reason"], "hold_minutes": int((now-pos["opened"])/60)}
+                     "pressed": pos["pressed"], "reason": order["reason"], "hold_minutes": int((now-pos["opened"])/60),
+                     "family": pos["family"], "entry_regime": pos["entry_regime"],
+                     "exit_regime": state["regime_view"].get(pos["symbol"], {}).get("regime"),
+                     "stop_pct": pos["stop_pct"], "entry_atr_pct": pos["entry_atr_pct"],
+                     "entry_spread_bps": pos["entry_spread_bps"]}
             state["trades"] = (state["trades"]+[trade])[-500:]
             state["position"] = None
 
     def _decide(self, state, now):
+        state["regime_view"] = {sym: self._regime(state, sym) for sym in self.identity["symbols"]}
         pos = state["position"]
         if pos:
             self._manage(state, pos, now)
@@ -329,58 +392,113 @@ class HenryV2:
         choice = self._best_signal(state, now)
         if not choice:
             return
-        symbol, spec = choice
+        symbol, spec, regime, spread_bps = choice
         budget = D(state["cash"])*D(HENRY_V2_RULES["entry_tranche"])
         if budget < D(HENRY_V2_RULES["min_notional"]):
             budget = D(state["cash"])
         if budget < D(HENRY_V2_RULES["min_notional"]):
             state["halt"], state["floor_breached"] = "bankroll_no_longer_executable", True
             return
+        atr_pct = self._atr_pct(state["histories"].get(symbol, []))
         state["pending"] = {"side": "buy", "symbol": symbol, "strategy": spec.version, "budget": str(budget),
-                            "created": now, "reason": "entry:"+spec.family}
-        state["last_decision"] = {"at": now, "action": "enter", "symbol": symbol, "strategy": spec.version}
+                            "created": now, "reason": "entry:"+spec.family, "regime": regime,
+                            "atr_pct": str(atr_pct), "stop_pct": str(self._clamp_pct(atr_pct*D(HENRY_V2_RULES["stop_atr"]))),
+                            "spread_bps": str(spread_bps)}
+        state["last_decision"] = {"at": now, "action": "enter", "symbol": symbol, "strategy": spec.version, "regime": regime}
+
+    # ---------- market reading ----------
+    def _regime(self, state, symbol):
+        r = HENRY_V2_RULES["regime"]
+        closes = [float(b["close"]) for b in state["hourly"].get(symbol, [])]
+        if len(closes) < r["min_hours"]:
+            return {"regime": "warming_up", "hours": len(closes)}
+        w, lag = r["efficiency_window_hours"], r["slope_lookback_hours"]
+        now_ema, then_ema = ema(closes, r["ema_hours"]), ema(closes[:-lag], r["ema_hours"])
+        window = closes[-w-1:]
+        path = sum(abs(window[i]-window[i-1]) for i in range(1, len(window)))
+        efficiency = abs(window[-1]-window[0])/path if path else 0.0
+        last = closes[-1]
+        if efficiency <= float(r["range_efficiency_max"]):
+            label = "consolidation"
+        elif last > now_ema > then_ema and efficiency >= float(r["trend_efficiency_min"]):
+            label = "uptrend"
+        elif last < now_ema < then_ema and efficiency >= float(r["trend_efficiency_min"]):
+            label = "downtrend"
+        else:
+            label = "transition"
+        return {"regime": label, "efficiency": round(efficiency, 3),
+                "strength_24h_pct": round((last/window[0]-1)*100, 2),
+                "ema_slope_pct": round((now_ema/then_ema-1)*100, 3), "hours": len(closes)}
+
+    def _atr_pct(self, bars):
+        n = HENRY_V2_RULES["atr_bars"]
+        if len(bars) < n+1:
+            return D("1")
+        ranges = []
+        for prev, bar in zip(bars[-n-1:-1], bars[-n:]):
+            pc = D(prev["close"])
+            ranges.append(max(D(bar["high"])-D(bar["low"]), abs(D(bar["high"])-pc), abs(D(bar["low"])-pc)))
+        return (sum(ranges, D(0))/n/D(bars[-1]["close"])*100).quantize(D(".0001"))
+
+    def _clamp_pct(self, value):
+        return min(max(value, D(HENRY_V2_RULES["stop_pct_min"])), D(HENRY_V2_RULES["stop_pct_max"])).quantize(D(".0001"))
 
     def _best_signal(self, state, now):
-        priority = HENRY_V2_RULES["family_priority"]
+        priority, routes = HENRY_V2_RULES["family_priority"], HENRY_V2_RULES["regime_routes"]
         candidates = []
         for symbol in self.identity["symbols"]:
-            bars = state["histories"].get(symbol, [])
-            if not self._fresh(state, symbol, now) or not self._bars_fresh(bars, now):
+            bars, q = state["histories"].get(symbol, []), self._fresh(state, symbol, now)
+            if not q or not self._bars_fresh(bars, now):
                 continue
+            spread_bps = ((D(q["ask"])-D(q["bid"]))/D(q["ask"])*10000).quantize(D(".1"))
+            if spread_bps > D(HENRY_V2_RULES["broken_quote_spread_bps"]):
+                continue  # data-quality guard, not a strategy gate
+            view = state["regime_view"].get(symbol) or self._regime(state, symbol)
+            allowed = routes[view["regime"]]
             for spec in CATALOG:
-                if entry_signal(spec, bars):
-                    lookback = bars[-spec.slow-1]["close"] if len(bars) > spec.slow else bars[0]["close"]
-                    momentum = D(bars[-1]["close"])/D(lookback)-1
-                    candidates.append((priority.index(spec.family), -momentum, symbol, spec.version, spec))
+                if spec.family in allowed and entry_signal(spec, bars):
+                    candidates.append((priority.index(spec.family), -view.get("strength_24h_pct", 0), symbol,
+                                       spec.version, spec, view["regime"], spread_bps))
         if not candidates:
             return None
         best = sorted(candidates, key=lambda c: c[:4])[0]
-        return best[2], best[4]
+        return best[2], best[4], best[5], best[6]
 
     def _manage(self, state, pos, now):
         q = self._fresh(state, pos["symbol"], now)
         if not q:
             return
         spec = BY_VERSION[pos["strategy"]]
-        bid, stop_frac = D(q["bid"]), D(spec.stop_fraction)
+        bars = state["histories"].get(pos["symbol"], [])
+        regime = state["regime_view"].get(pos["symbol"], {}).get("regime")
+        bid, stop_pct = D(q["bid"]), D(pos["stop_pct"])/100
         hwm = max(D(pos["high_water"]), bid)
         pos["high_water"] = str(hwm)
-        trailed = hwm*(1-D(HENRY_V2_RULES["trail_stop_multiples"])*stop_frac)
-        if bid >= D(pos["avg_price"])*(1+stop_frac):
-            pos["stop"] = str(max(D(pos["stop"]), trailed, D(pos["avg_price"])*(1+D(self.identity["fee_bps"])/10000)))
+        if bid >= D(pos["avg_price"])*(1+stop_pct):
+            trail = self._clamp_pct(self._atr_pct(bars)*D(HENRY_V2_RULES["trail_atr"]))/100
+            # True breakeven: exit fee and exit slippage on top of the fee-inclusive average cost.
+            breakeven = D(pos["avg_price"])*(1+(D(self.identity["fee_bps"])+D(self.identity["slippage_bps"]))/10000)
+            pos["stop"] = str(max(D(pos["stop"]), hwm*(1-trail), breakeven))
         if state["halt"]:
             return self._exit(state, pos, now, "floor_liquidation")
         if bid <= D(pos["stop"]):
             return self._exit(state, pos, now, "trailing_stop" if D(pos["stop"]) >= D(pos["avg_price"]) else "stop_loss")
-        bars = state["histories"].get(pos["symbol"], [])
-        # A dip buy sits below trend by design; only momentum entries can be invalidated by a trend break.
-        if spec.family != "mean_reversion" and self._trend_broken(spec, bars):
+        if HENRY_V2_RULES["exit_on_downtrend"] and regime == "downtrend":
+            return self._exit(state, pos, now, "regime_downtrend")
+        if spec.family == "mean_reversion":
+            closes = [D(b["close"]) for b in bars[-spec.slow:]]
+            if len(closes) == spec.slow and D(bars[-1]["close"]) >= sum(closes, D(0))/len(closes):
+                return self._exit(state, pos, now, "range_target")
+            return  # dip buys are never pressed and never judged by trend
+        if self._trend_broken(spec, bars):
             return self._exit(state, pos, now, "trend_break")
-        if (not pos["pressed"] and bid >= D(pos["entry_price"])*(1+D(HENRY_V2_RULES["press_after_stop_multiples"])*stop_frac)
+        if (not pos["pressed"] and pos["entry_regime"] in HENRY_V2_RULES["press_regimes"]
+                and regime in HENRY_V2_RULES["press_regimes"]
+                and bid >= D(pos["entry_price"])*(1+D(HENRY_V2_RULES["press_after_stop_distances"])*stop_pct)
                 and self._trend_intact(spec, bars) and D(state["cash"]) >= D(HENRY_V2_RULES["min_notional"])):
             state["pending"] = {"side": "buy", "symbol": pos["symbol"], "strategy": pos["strategy"],
                                 "budget": state["cash"], "created": now, "reason": "press_winner"}
-            state["last_decision"] = {"at": now, "action": "press", "symbol": pos["symbol"]}
+            state["last_decision"] = {"at": now, "action": "press", "symbol": pos["symbol"], "regime": regime}
 
     def _trend_intact(self, spec, bars):
         closes = [float(b["close"]) for b in bars[-spec.slow*3:]]
@@ -409,6 +527,13 @@ class HenryV2:
         avg_win = sum(wins, D(0))/len(wins) if wins else D(0)
         avg_loss = sum(losses, D(0))/len(losses) if losses else D(0)
         pos = state["position"]
+        by_regime = {}
+        for t in trades:
+            g = by_regime.setdefault(t.get("entry_regime", "unknown"), {"trades": 0, "wins": 0, "pnl_usd": D(0)})
+            g["trades"] += 1
+            g["wins"] += D(t["pnl_usd"]) > 0
+            g["pnl_usd"] += D(t["pnl_usd"])
+        by_regime = {k: {**v, "pnl_usd": str(v["pnl_usd"])} for k, v in by_regime.items()}
         return {"book": "henry_v2", "mode": "virtual_only", "rules_version": HENRY_V2_RULES["version"],
                 "identity_hash": digest(self.identity), "epoch": self.identity["epoch"],
                 "timestamp": state["last_at"], "frames": state["frames"], "halt": state["halt"],
@@ -423,6 +548,10 @@ class HenryV2:
                 "payoff_ratio": str((avg_win/-avg_loss).quantize(D(".01"))) if avg_loss < 0 and wins else None,
                 "best_trade_usd": str(max(pnls)) if pnls else None, "worst_trade_usd": str(min(pnls)) if pnls else None,
                 "pressed_trades": sum(1 for t in trades if t["pressed"]),
-                "position": {k: pos[k] for k in ("symbol", "strategy", "quantity", "avg_price", "stop", "high_water", "pressed")} if pos else None,
+                "position": {k: pos[k] for k in ("symbol", "strategy", "quantity", "avg_price", "stop", "stop_pct",
+                                                 "high_water", "pressed", "entry_regime")} if pos else None,
+                "regimes": {s: v.get("regime") for s, v in state["regime_view"].items()},
+                "regime_detail": state["regime_view"],
+                "by_entry_regime": by_regime,
                 "pending": state["pending"], "last_decision": state["last_decision"],
                 "recent_trades": trades[-10:], "skips": state["skips"]}
