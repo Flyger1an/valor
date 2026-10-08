@@ -181,12 +181,31 @@ class ActivityJournal:
                 "identity": self.book.get("identity"),
                 "admission_sha256": hashlib.sha256(rows[0][1].encode()).hexdigest()}
 
+    def _accepted_identities(self, current):
+        """The current book identity plus identities it held before RECORDED offline policy
+        migrations (universe/session boundaries written by their migrate_ledger functions).
+        Same broker only; an unrecorded policy or broker change still fails closed."""
+        previous = {}
+        for key in ("universe_history", "session_history"):
+            for boundary in self.book.get(key) or []:
+                if isinstance(boundary, dict) and all(isinstance(boundary.get(k), str) for k in ("from_policy", "to_policy")):
+                    previous[boundary["to_policy"]] = boundary["from_policy"]
+        # Walk back only along an unbroken recorded chain that ends at the CURRENT policy.
+        accepted, policy = [current], current.get("policy")
+        while policy in previous and len(accepted) <= 64:
+            policy = previous.pop(policy)
+            accepted.append({**current, "policy": policy})
+        return accepted
+
     def _validate_review(self, item, review, now, event="accounting.cash_journal_reviewed"):
         if not isinstance(review, dict):
             raise AccountingError("cash journal requires verified funding classification")
         evidence, reviewer = review.get("evidence_sha256"), review.get("reviewed_by")
+        context = self._admission_context()
+        identity = context.pop("identity")
         if (review.get("activity_sha256") != activity_digest(item)
-                or any(review.get(k) != v for k, v in self._admission_context().items())
+                or review.get("identity") not in self._accepted_identities(identity)
+                or any(review.get(k) != v for k, v in context.items())
                 or not isinstance(evidence, str) or len(evidence) != 64
                 or any(c not in "0123456789abcdef" for c in evidence)
                 or not isinstance(reviewer, str) or not reviewer.strip()):
