@@ -34,7 +34,7 @@ from .contracts import decimal as D, encode
 from .strategies import BY_VERSION, CATALOG, ema, entry_signal
 
 HENRY_V2_RULES = {
-    "version": "henry-raging-bull-v1",
+    "version": "henry-raging-bull-v2",
     "starting_cash": "500",
     "equity_floor": "250",
     "entry_tranche": "0.5",
@@ -44,7 +44,11 @@ HENRY_V2_RULES = {
     "max_symbols": 1,
     "min_notional": "10",
     "family_priority": ["breakout", "ema_trend", "mean_reversion"],
-    "execution": "next-observed-quote IOC; adverse slippage; modeled fees; 1% bar-volume capacity",
+    "execution": "next-observed-quote IOC; adverse slippage; modeled fees",
+    "entry_liquidity": "max(1% of last closed bar volume, liquidity_floor_usd) per bar",
+    "liquidity_floor_usd": "2000",
+    "exit_liquidity": "uncapped: exits always fill the whole position at bid less slippage",
+    "trade_record": "one round trip per position, including presses and partial exits",
     "gates_removed": ["supervisor", "news", "session_hours", "daily_loss_limit", "drawdown_halt",
                       "max_trades_per_day", "max_spread", "per_trade_loss_cap", "fixed_target", "max_hold"],
     "leverage": "none",
@@ -259,13 +263,14 @@ class HenryV2:
         bucket = str(q.get("capacity_bucket", q["timestamp"]))
         used = state["liquidity_used"].get(order["symbol"], {})
         consumed = D(used["quantity"]) if used.get("bucket") == bucket else D(0)
-        available = max(D(0), D(q.get("capacity", "Infinity"))-consumed)
+        capacity = max(D(q.get("capacity", "0")), D(HENRY_V2_RULES["liquidity_floor_usd"])/price)
+        available = max(D(0), capacity-consumed)
         if buy:
             budget = min(D(order["budget"]), D(state["cash"]))
             quantity = floor_to(min(budget/(price*(1+bps/10000)), available), step)
         else:
-            quantity = floor_to(min(D(state["position"]["quantity"]), available), step)
-        if quantity <= 0 or quantity < minimum or buy and quantity*price < D(HENRY_V2_RULES["min_notional"]):
+            quantity = D(state["position"]["quantity"])  # exits are never liquidity-capped
+        if quantity <= 0 or buy and (quantity < minimum or quantity*price < D(HENRY_V2_RULES["min_notional"])):
             self._skip(state, "unfilled_price_or_liquidity")
             return
         value = quantity*price
@@ -286,6 +291,7 @@ class HenryV2:
                 total_cost = D(pos["cost"])+value+cost
                 qty = D(pos["quantity"])+quantity
                 pos.update(quantity=str(qty), cost=str(total_cost), avg_price=str(total_cost/qty), pressed=True,
+                           invested=str(D(pos.get("invested", pos["cost"]))+value+cost),
                            stop=str(max(D(pos["stop"]), total_cost/qty*(1+bps/10000))))
             else:
                 spec = BY_VERSION[order["strategy"]]
@@ -300,15 +306,18 @@ class HenryV2:
             remaining = D(pos["quantity"])-quantity
             share = D(pos["cost"])*quantity/D(pos["quantity"])
             state["cash"] = str(D(state["cash"])+proceeds)
-            pnl = proceeds-share
+            realized = D(pos.get("realized", "0"))+proceeds-share
+            if remaining > 0:
+                pos.update(quantity=str(remaining), cost=str(D(pos["cost"])-share), realized=str(realized),
+                           invested=str(D(pos.get("invested", pos["cost"]))))
+                return
+            invested = D(pos.get("invested", pos["cost"]))
             trade = {"symbol": pos["symbol"], "strategy": pos["strategy"], "opened": pos["opened"], "closed": now,
-                     "pnl_usd": str(pnl.quantize(D(".01"))), "return_pct": str((pnl/share*100).quantize(D(".01"))),
+                     "pnl_usd": str(realized.quantize(D(".01"))),
+                     "return_pct": str((realized/invested*100).quantize(D(".01"))) if invested > 0 else "0",
                      "pressed": pos["pressed"], "reason": order["reason"], "hold_minutes": int((now-pos["opened"])/60)}
             state["trades"] = (state["trades"]+[trade])[-500:]
-            if remaining > 0:
-                pos.update(quantity=str(remaining), cost=str(D(pos["cost"])-share))
-            else:
-                state["position"] = None
+            state["position"] = None
 
     def _decide(self, state, now):
         pos = state["position"]

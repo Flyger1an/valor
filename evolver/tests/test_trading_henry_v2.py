@@ -133,6 +133,36 @@ class HenryV2Test(unittest.TestCase):
         self.assertEqual(reopened.identity["rules"], HENRY_V2_RULES)
         self.book = reopened
 
+    def test_exit_fills_whole_position_despite_thin_volume(self):
+        self.warm()
+        self.rally(1)
+        self.assertIsNotNone(self.book.report()["position"])
+        state = self.book.state()
+        now = state["last_at"]+10
+        symbol = state["position"]["symbol"]
+        q = dict(state["quotes"][symbol])
+        state["pending"] = {"side": "sell", "symbol": symbol, "strategy": state["position"]["strategy"],
+                            "created": state["last_at"], "reason": "stop_loss"}
+        q.update(timestamp=now-1, capacity="0.0000001")  # almost no modeled volume
+        state["quotes"][symbol] = q
+        self.book._execute_pending(state, now)
+        self.assertIsNone(state["position"], "a stop must exit in one fill")
+        self.assertEqual(len(state["trades"]), 1)
+
+    def test_entry_uses_liquidity_floor_on_thin_volume(self):
+        self.m = Market(self.book)
+        for i in range(300):
+            self.m.step({"BTC-USD": 1.0 + (0.0003 if i % 2 else -0.0003), "ETH-USD": 1.0})
+        state = self.book.state()
+        now = state["last_at"]+10
+        q = dict(state["quotes"]["BTC-USD"], timestamp=now-1, capacity="0.0001")
+        state["quotes"]["BTC-USD"] = q
+        state["pending"] = {"side": "buy", "symbol": "BTC-USD", "strategy": next(s.version for s in __import__("evolver.trading.strategies", fromlist=["CATALOG"]).CATALOG if s.family == "breakout"),
+                            "budget": "250", "created": state["last_at"], "reason": "entry:breakout"}
+        self.book._execute_pending(state, now)
+        self.assertIsNotNone(state["position"], "entry fills up to the $2,000 floor even when bar volume is thin")
+        self.assertGreater(D(state["position"]["cost"]), D("240"))
+
     def test_conflicting_duplicate_halts(self):
         self.warm(5)
         state = self.book.state()

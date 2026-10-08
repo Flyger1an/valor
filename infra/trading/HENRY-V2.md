@@ -1,4 +1,4 @@
-# Henry v2 (henry-raging-bull-v1)
+# Henry v2 (henry-raging-bull-v2)
 
 A standalone, aggressive, cash-only virtual book. It is a fourth, separate study, not part of the
 three-book experiment. Baseline, kelly and henry v1 keep their journal, identity and rules unchanged.
@@ -16,6 +16,8 @@ three-book experiment. Baseline, kelly and henry v1 keep their journal, identity
 | Leverage | none | none (Alpaca spot crypto cannot do margin, so leveraged data would be meaningless) |
 
 Realism kept on purpose: fills at the next observed quote, adverse slippage, modeled fees both
+sides. v2 liquidity: entries may use the larger of 1% of bar volume or $2,000 per bar (Alpaca reports
+only its own thin volume); exits always fill the whole position. Each position is one trade record.
 sides, a 1% bar-volume liquidity cap, exchange increments and minimums, closed bars only.
 
 ## Deploy on the droplet
