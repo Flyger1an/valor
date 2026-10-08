@@ -101,6 +101,13 @@ class BudgetedModel:
                 "pricing": "configured estimates; excludes VPS, data and taxes"}
 
 
+# A lease spans many five-minute bars, while a closed-bar signal lives for one. Pausing
+# because no candidate exists at supervision time therefore blocks every later candidate.
+SUPERVISOR_PAPER = ("\nPaper/demo: a lease permits entries for its TTL; every order still needs two exact-trade approvals. "
+                    "Resume when data, accounting and news are healthy; no current candidate is not a reason to pause. "
+                    "Pause only for a named problem.")
+
+
 def promotion_reviews(policy, evidence, analyst, reviewer):
     result = {}
     expected = {"verdict": "approve or reject", "evidence_hash": evidence["evidence_hash"],
@@ -143,7 +150,8 @@ def process_request(request, policy, analyst, reviewer, now):
                               "A candidate blocked only by the current supervisor pause may still be evaluated on its price evidence; "
                               "this never waives other gates or the independent exact-trade reviews. "
                               "Unavailable history and absent signals must remain explicit, never invented. "
-                              "Recent candles are a bounded excerpt; the evidence hash identifies the retained complete calculation window.",
+                              "Recent candles are a bounded excerpt; the evidence hash identifies the retained complete calculation window."
+                              + (SUPERVISOR_PAPER if policy.mode != "live" else ""),
                               encode({"policy": asdict(policy), "snapshot": snapshot, "required_output": schema})))
         if set(result) != set(schema):
             raise ValueError("invalid supervision output")
