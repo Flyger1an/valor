@@ -1,4 +1,4 @@
-# Henry, research-desk edition (henry-desk-v1)
+# Henry, research-desk edition (henry-desk-v2)
 
 Henry as a small trading research desk: analysts write notes, a regime playbook proposes setups,
 nothing trades without a written thesis that clears every check, a risk manager sizes it, and an
@@ -26,9 +26,17 @@ LLM reviewer may veto (live only). Candidate status: it goes live only after a P
 Shorts are simulated perpetuals (fees both ways, funding every 8h, 1x collateral), labeled
 `simulated_perp`. Executing them needs a perp venue; Alpaca spot cannot short.
 
+## Bull core
+
+When BTC's regime is bull, its daily trend is up and its 14-day daily efficiency is >= 0.3, the desk
+holds half the book in BTC as a core long, separate from its two tactical slots. The core exits when
+BTC's daily trend turns down or the regime turns bear (12% catastrophe stop), then waits 72h before
+re-entering. Every replay also prints the result WITHOUT the core so its value is measured, not assumed.
+
 ## A thesis must pass every check
 
 reward-to-risk >= 2, target >= 2.5x round-trip cost, stop >= 2.5x round-trip cost away,
+structure must not oppose the trade (v1 replay: -0.69R when it disagreed, +0.31R when it agreed),
 conviction >= 60 (weighted analyst agreement), stop and target on the correct sides, and for alts,
 BTC not in the opposite regime. The LLM reviewer can then veto with a cited reason; it can never
 create or resize a trade, and if it is unavailable it abstains and the desk decision stands.
@@ -65,6 +73,21 @@ docker run --rm --network none -v /opt/henry-desk:/src:ro -v /opt/henry-desk-dat
 The gate: return > 0, max drawdown <= 25%, profit factor >= 1.2, at least 30 trades, and neither
 half of the period worse than -5%. Controls in the test suite: the desk must FAIL on trendless
 noise; a desk that passes on noise is fooling itself.
+
+## Out-of-sample holdout
+
+v2's changes were designed from the April to October 2026 replay. Grading v2 on that same data would
+be grading our own homework, so the deciding test is the six months BEFORE it, never looked at:
+
+```bash
+docker run --rm -u 0 -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver \
+  --entrypoint python "$BASE" -m evolver.trading.henry_desk_data --months 6 --months-ago 6 --out /data/henry_desk_holdout.json.gz
+docker run --rm --network none -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data:ro -e PYTHONPATH=/src/evolver \
+  -e PYTHONDONTWRITEBYTECODE=1 --entrypoint python "$BASE" -m evolver.trading.henry_desk_replay --data /data/henry_desk_holdout.json.gz
+```
+
+The desk is deployable only if it passes the gate on the holdout. Re-tuning after looking at the
+holdout spends it; the next honest test would then need fresh data (the forward live run).
 
 ## What the replay cannot show
 

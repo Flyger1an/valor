@@ -33,6 +33,14 @@ SYMBOLS = {
 }
 
 
+def shift_months(when, k):
+    """`when` moved back k calendar months (day clamped to 28 so every month is valid)."""
+    y, m = when.year, when.month-k
+    while m <= 0:
+        y, m = y-1, m+12
+    return when.replace(year=y, month=m, day=min(when.day, 28))
+
+
 def months_back(n, end=None):
     end = end or dt.datetime.now(dt.timezone.utc)
     y, m, out = end.year, end.month, []
@@ -64,18 +72,22 @@ def _ms(value):
     return v//1000 if v > 10**14 else v  # newer dumps use microseconds
 
 
-def klines(pair, months, log=print):
+def klines(pair, months, log=print, offset=0):
     """{hour_start_seconds: [open, high, low, close, volume]} from monthly files, then the
-    current month's daily files (monthly dumps publish after the month ends)."""
+    current month's daily files (monthly dumps publish after the month ends). With an offset,
+    the window ends `offset` months ago and only complete monthly files are used."""
     out = {}
-    month_list = months_back(months)
+    now = dt.datetime.now(dt.timezone.utc)
+    month_list = months_back(months, shift_months(now, offset))
     for ym in month_list[:-1]:
         rows = fetch_rows(f"{BASE}/spot/monthly/klines/{pair}/1h/{pair}-1h-{ym}.zip")
         if rows is None:
             log(f"  {pair} {ym}: not published")
             continue
         _add(out, rows)
-    today = dt.datetime.now(dt.timezone.utc).date()
+    if offset:
+        return out
+    today = now.date()
     day = today.replace(day=1)
     while day < today:
         rows = fetch_rows(f"{BASE}/spot/daily/klines/{pair}/1h/{pair}-1h-{day.isoformat()}.zip")
@@ -91,10 +103,10 @@ def _add(out, rows):
             out[_ms(r[0])//1000] = [float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])]
 
 
-def funding(pair, months, log=print):
+def funding(pair, months, log=print, offset=0):
     """{funding_time_seconds: rate_per_8h} from USD-M perp monthly funding dumps."""
     out = {}
-    for ym in months_back(months)[:-1]:
+    for ym in months_back(months, shift_months(dt.datetime.now(dt.timezone.utc), offset))[:-1]:
         rows = fetch_rows(f"{BASE}/futures/um/monthly/fundingRate/{pair}/{pair}-fundingRate-{ym}.zip")
         if rows is None:
             log(f"  {pair} funding {ym}: not published")
@@ -105,15 +117,15 @@ def funding(pair, months, log=print):
     return out
 
 
-def build(months=6, symbols=None, log=print):
+def build(months=6, symbols=None, log=print, offset=0):
     data = {"source": "binance_public_archive", "built_at": time.time(), "months": months,
-            "bar": "1h", "symbols": {}, "missing": {}}
+            "months_ago_end": offset, "bar": "1h", "symbols": {}, "missing": {}}
     for sym, (spot, perp, _mult) in SYMBOLS.items():
         if symbols and sym not in symbols:
             continue
         log(f"{sym}: {spot} klines, {perp} funding")
-        bars = klines(spot, months, log)
-        fund = funding(perp, months, log)
+        bars = klines(spot, months, log, offset)
+        fund = funding(perp, months, log, offset)
         if not bars:
             data["missing"][sym] = "no spot klines in the archive"
             continue
@@ -134,8 +146,10 @@ def main(argv=None):
     p.add_argument("--months", type=int, default=6)
     p.add_argument("--out", required=True)
     p.add_argument("--symbols", help="comma-separated subset of " + ",".join(SYMBOLS))
+    p.add_argument("--months-ago", type=int, default=0,
+                   help="end the window this many months ago (e.g. 6 for an out-of-sample holdout)")
     args = p.parse_args(argv)
-    data = build(args.months, set(args.symbols.split(",")) if args.symbols else None)
+    data = build(args.months, set(args.symbols.split(",")) if args.symbols else None, offset=args.months_ago)
     with gzip.open(args.out, "wt") as f:
         json.dump(data, f, separators=(",", ":"))
     print(f"wrote {args.out}: {len(data['symbols'])} symbols, missing {data['missing'] or 'none'}")

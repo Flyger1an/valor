@@ -56,6 +56,13 @@ def replay(series, keep_theses=0):
             if i is not None:
                 book.open(th, s.o[i], t, marks)
         book.pending = []
+        if getattr(book, "core_order", None) and leader is not None and t in leader.index:
+            action = book.core_order
+            book.core_order = None
+            if action == "hold":
+                book.open_core(hd.DESK_RULES["bull_core"]["symbol"], leader.o[leader.index[t]], t, marks)
+            elif action == "exit" and book.core():
+                book.close(book.core(), leader.o[leader.index[t]], t, "core_regime_exit")
         # 2. manage open positions on this bar, settle funding
         for sym, s in series.items():
             i = s.index.get(t)
@@ -76,6 +83,12 @@ def replay(series, keep_theses=0):
         lr = hd.analyst_regime(leader, leader.index[t])["label"] if leader and t in leader.index else None
         curve.append((t, eq))
         regime_hours.append(lr)
+        # the bull core is a market call, not a trade idea: it ignores the performance throttle
+        core_sym = hd.DESK_RULES["bull_core"]["symbol"]
+        if hd.DESK_RULES["bull_core"]["enabled"] and core_sym in series and t in series[core_sym].index and not book.halted:
+            sig = hd.bull_core_signal(series[core_sym], series[core_sym].index[t])
+            if (sig == "hold" and not book.core()) or (sig == "exit" and book.core()):
+                book.core_order = sig
         if book.halted or book.standing_down(t):
             continue
         # 3. the desk writes theses on this close; the best approved ones queue for the next open
@@ -86,8 +99,8 @@ def replay(series, keep_theses=0):
         if keep_theses and good and len(sample_theses) < keep_theses:
             sample_theses.extend(good[:keep_theses-len(sample_theses)])
         good.sort(key=lambda th: (-th["conviction"], -th["reward_to_risk"]))
-        open_syms = {p["symbol"] for p in book.positions}
-        slots = hd.DESK_RULES["max_positions"]-len(book.positions)
+        open_syms = {p["symbol"] for p in book.tactical()}
+        slots = hd.DESK_RULES["max_positions"]-len(book.tactical())
         for th in good:
             if slots <= 0:
                 break
@@ -206,6 +219,17 @@ def sweep(series):
     return sorted(rows, key=lambda x: -x["return_pct"])
 
 
+def without_core(series):
+    original = hd.DESK_RULES["bull_core"]["enabled"]
+    try:
+        hd.DESK_RULES["bull_core"]["enabled"] = False
+        r = replay(series)
+    finally:
+        hd.DESK_RULES["bull_core"]["enabled"] = original
+    return {k: r[k] for k in ("return_pct", "max_drawdown_pct", "trades", "profit_factor", "halves_return_pct")} | {
+        "gate": r["gate"]["verdict"]}
+
+
 def show(r):
     g = r["gate"]
     print(f"Henry desk {r['rules_version']}: {r['days']} days, {len(r['symbols'])} coins  ->  GATE {g['verdict']}")
@@ -230,6 +254,10 @@ def show(r):
         print(f"     {k:12} agreed {v['agreed_trades']:>3} -> {v['avg_r_when_agreed']}   "
               f"disagreed {v['disagreed_trades']:>3} -> {v['avg_r_when_disagreed']}")
     print(f"  halves: {r['halves_return_pct']}")
+    if "without_core" in r:
+        w = r["without_core"]
+        print(f"  WITHOUT the bull core: {w['return_pct']}%  dd {w['max_drawdown_pct']}%  trades {w['trades']}  "
+              f"pf {w['profit_factor']}  halves {w['halves_return_pct']}  gate {w['gate']}")
     for t in r["recent_trades"]:
         print(f"     {t['symbol']:9} {t['setup']:22} {t['direction']:5} {t['pnl_usd']:>8.2f} R {t['r_multiple']:>6} "
               f"{t['reason']:13} {t['hours']}h conv {t['conviction']}")
@@ -246,6 +274,7 @@ def main(argv=None):
     args = p.parse_args(argv)
     series = series_from(load(args.data))
     r = replay(series, keep_theses=args.theses)
+    r["without_core"] = without_core(series)
     show(r)
     for th in r["sample_theses"]:
         print(json.dumps(th, indent=1, default=str))

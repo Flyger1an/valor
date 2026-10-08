@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 HOUR, H4, DAY = 3600, 4*3600, 86400
 
 DESK_RULES = {
-    "version": "henry-desk-v1",
+    "version": "henry-desk-v2",
     "starting_cash": 500.0,
     "equity_floor": 250.0,
     "fee_bps": 25.0, "slippage_bps": 5.0,
@@ -41,6 +41,13 @@ DESK_RULES = {
     "performance_throttle": {"window": 20, "min_trades": 10, "half_size_below_avg_r": 0.0,
                              "pause_below_avg_r": -0.3, "pause_hours": 72},
     "stop_cost_multiple": 2.5,        # stop distance must be >= this x round-trip cost
+    # Replay v1: when structure disagreed, trades averaged -0.69R; when it agreed, +0.31R.
+    "structure_veto_below": -0.2,     # aligned structure score below this blocks the trade
+    # Replay v1 caught ~40% of the bull: a desk holds beta when the whole market is trending up.
+    "bull_core": {"enabled": True, "symbol": "BTC-USD", "fraction": 0.5, "catastrophe_stop": 0.12,
+                  "daily_efficiency_days": 14, "daily_efficiency_min": 0.3, "cooldown_hours": 72,
+                  "enter": "BTC regime bull, daily trend up, and 14-day daily efficiency >= 0.3",
+                  "exit": "BTC daily trend turns down or regime turns bear; then 72h before re-entry"},
     "conviction_min": 60.0,
     "rr_min": 2.0,
     "edge_multiple": 2.5,             # expected move must be >= this x round-trip cost
@@ -178,8 +185,9 @@ def clamp(x, lo=-1.0, hi=1.0):
 def analyst_regime(s, i):
     r = DESK_RULES["regime"]
     j4, jd = s.done4[i], s.doned[i]
-    if j4 < r["efficiency_4h_bars"]:
-        return {"label": "warming_up", "score": 0.0, "conf": 0.0, "notes": ["not enough 4h history"]}
+    if j4 < r["efficiency_4h_bars"] or jd < r["ema_1d"]+r["slope_1d_bars"]:
+        return {"label": "warming_up", "score": 0.0, "conf": 0.0,
+                "notes": ["waiting for enough 4h and daily history; the desk does not trade half-blind"]}
 
     def trend(closes, ema, j, lag):
         if j < lag:
@@ -188,7 +196,7 @@ def analyst_regime(s, i):
         down = closes[j] < ema[j] and ema[j] < ema[j-lag]
         return 1 if up else -1 if down else 0
     t4 = trend(s.c4, s.ema4, j4, r["slope_4h_bars"])
-    td = trend(s.cd, s.emad, jd, r["slope_1d_bars"]) if jd >= r["ema_1d"] else None
+    td = trend(s.cd, s.emad, jd, r["slope_1d_bars"])
     eff = efficiency(s.c4, j4, r["efficiency_4h_bars"])
     trending = eff >= r["trend_efficiency_min"]
     if t4 > 0 and trending and td != -1:
@@ -334,6 +342,9 @@ def write_thesis(s, i, notes, setup, leader_regime):
                            f"{move:.2f}% target vs {cost*DESK_RULES['edge_multiple']:.2f}% needed"),
         "conviction": (score >= DESK_RULES["conviction_min"], f"{score} vs {DESK_RULES['conviction_min']} minimum"),
         "stop_on_correct_side": ((stop < entry < target) if direction > 0 else (target < entry < stop), "geometry"),
+        "structure_does_not_oppose": (direction*notes["structure"]["score"] >= DESK_RULES["structure_veto_below"],
+                                      f"structure says {direction*notes['structure']['score']:+.2f} for this side "
+                                      f"(veto below {DESK_RULES['structure_veto_below']})"),
         "stop_wide_enough": (risk/entry*100 >= cost*DESK_RULES["stop_cost_multiple"],
                              f"{risk/entry*100:.2f}% stop vs {cost*DESK_RULES['stop_cost_multiple']:.2f}% needed so costs stay small in R"),
     }
@@ -348,6 +359,23 @@ def write_thesis(s, i, notes, setup, leader_regime):
             "evidence": {k: v["notes"] for k, v in notes.items()},
             "checks": {k: {"pass": v[0], "detail": v[1]} for k, v in checks.items()},
             "approved_by_desk": all(v[0] for v in checks.values())}
+
+
+def bull_core_signal(leader, i):
+    """'hold' while BTC trends up on 4h and daily, 'exit' once the daily turns down or the regime
+    is bear, None in between (hysteresis: a wobble into 'range' does not churn the core)."""
+    if leader is None or i is None:
+        return None
+    reg = analyst_regime(leader, i)
+    if reg["label"] == "warming_up":
+        return None
+    cfg = DESK_RULES["bull_core"]
+    daily_eff = efficiency(leader.cd, leader.doned[i], cfg["daily_efficiency_days"])
+    if reg["label"] == "bull" and reg.get("trend_1d") == 1 and daily_eff >= cfg["daily_efficiency_min"]:
+        return "hold"
+    if reg["label"] == "bear" or reg.get("trend_1d") == -1:
+        return "exit"
+    return None
 
 
 def null_reviewer(thesis):
@@ -472,10 +500,40 @@ class Book:
             room = min(room, self.cash*0.995)
         return max(0.0, min(qty, room/thesis["entry_ref"]))
 
-    def open(self, thesis, bar_open, t, marks):
-        if self.halted or len(self.positions) >= DESK_RULES["max_positions"]:
+    def tactical(self):
+        return [p for p in self.positions if not p.get("core")]
+
+    def core(self):
+        return next((p for p in self.positions if p.get("core")), None)
+
+    def open_core(self, symbol, bar_open, t, marks):
+        cfg = DESK_RULES["bull_core"]
+        if self.halted or self.core() or t < getattr(self, "core_cooldown_until", 0):
             return None
-        if any(p["symbol"] == thesis["symbol"] for p in self.positions):
+        eq = self.equity(marks)
+        price = self._fill_price(symbol, bar_open, 1)
+        notional = min(cfg["fraction"]*eq, self.cash*0.995,
+                       DESK_RULES["max_gross_exposure"]*eq-self.gross_exposure(marks))
+        if notional < 10:
+            return None
+        thesis = {"symbol": symbol, "setup": "bull_core", "direction": "long", "execution": "spot", "regime": "bull",
+                  "stop": price*(1-cfg["catastrophe_stop"]), "target": price*100, "runner": True, "conviction": 70.0,
+                  "conviction_parts": {}, "reward_to_risk": 0, "expected_move_pct": 0,
+                  "reason": "market-wide uptrend: hold beta in the leader", "entry_ref": price}
+        qty = notional/price
+        fee = self._fee(notional)
+        self.friction += fee+abs(price-bar_open)*qty
+        self.cash -= notional+fee
+        pos = {"symbol": symbol, "dir": 1, "qty": qty, "entry": price, "margin": 0.0, "stop": thesis["stop"],
+               "target": thesis["target"], "runner": True, "risk_per_unit": price*cfg["catastrophe_stop"], "opened": t,
+               "best": price, "funding": 0.0, "fee_in": fee, "thesis": thesis, "target_hit": False, "core": True}
+        self.positions.append(pos)
+        return pos
+
+    def open(self, thesis, bar_open, t, marks):
+        if self.halted or len(self.tactical()) >= DESK_RULES["max_positions"]:
+            return None
+        if any(p["symbol"] == thesis["symbol"] and not p.get("core") for p in self.positions):
             return None
         d = 1 if thesis["direction"] == "long" else -1
         qty = self.size(thesis, marks)
@@ -517,6 +575,8 @@ class Book:
             pnl = gain-fee-pos["fee_in"]+pos["funding"]
         risk_usd = pos["risk_per_unit"]*pos["qty"]
         th = pos["thesis"]
+        if pos.get("core"):
+            self.core_cooldown_until = t+DESK_RULES["bull_core"]["cooldown_hours"]*HOUR
         self.trades.append({"symbol": pos["symbol"], "setup": th["setup"], "direction": th["direction"],
                             "execution": th["execution"], "regime": th["regime"], "opened": pos["opened"], "closed": t,
                             "hours": round((t-pos["opened"])/HOUR, 1), "entry": pos["entry"], "exit": price,
@@ -538,6 +598,10 @@ class Book:
     def manage(self, pos, bar, t, regime_label, atr):
         """bar = (open, high, low, close) of the bar that just closed at t."""
         o, h, l, c = bar
+        if pos.get("core"):  # the core only answers to its catastrophe stop and the core signal
+            if l <= pos["stop"]:
+                return self.close(pos, min(o, pos["stop"]), t, "core_catastrophe_stop")
+            return None
         d, r = pos["dir"], pos["risk_per_unit"]
         m = DESK_RULES["management"]
         if d > 0:

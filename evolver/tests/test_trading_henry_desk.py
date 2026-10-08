@@ -69,7 +69,7 @@ class FeaturesTest(unittest.TestCase):
 
 class AnalystTest(unittest.TestCase):
     def setUp(self):
-        self.s = market(days=120)
+        self.s = market(days=200)  # each leg 50 days: room for the 25-day daily warmup
         self.desk = hd.Desk(self.s)
         self.seg = len(self.s["BTC-USD"].t)//4
 
@@ -96,7 +96,8 @@ class AnalystTest(unittest.TestCase):
         self.assertIsNotNone(found)
         for key in ("regime", "structure", "volatility", "positioning", "cross_asset", "execution"):
             self.assertIn(key, found["evidence"])
-        for key in ("reward_to_risk", "pays_for_costs", "conviction", "stop_on_correct_side", "stop_wide_enough"):
+        for key in ("reward_to_risk", "pays_for_costs", "conviction", "stop_on_correct_side", "stop_wide_enough",
+                    "structure_does_not_oppose"):
             self.assertIn(key, found["checks"])
         self.assertEqual(found["approved_by_desk"], all(c["pass"] for c in found["checks"].values()))
 
@@ -122,6 +123,32 @@ class AnalystTest(unittest.TestCase):
         th = hd.write_thesis(s, i, notes, setup, "bear")
         self.assertFalse(th["checks"]["market_alignment"]["pass"])
         self.assertFalse(th["approved_by_desk"])
+
+
+    def test_structure_vetoes_shorting_the_bottom_of_the_range(self):
+        s = self.s["ETH-USD"]
+        i = 2000
+        notes = self.desk.analyze("ETH-USD", s.t[i])[1]
+        notes["structure"] = {**notes["structure"], "score": 0.56}  # price near the 7d low: cheap
+        setup = ("bear_rally_short", -1, s.c[i]*1.03, s.c[i]*0.9, False, "test")
+        th = hd.write_thesis(s, i, notes, setup, "bear")
+        self.assertFalse(th["checks"]["structure_does_not_oppose"]["pass"])
+        self.assertFalse(th["approved_by_desk"])
+
+    def test_desk_waits_for_the_daily_view(self):
+        btc = self.s["BTC-USD"]
+        need = (hd.DESK_RULES["regime"]["ema_1d"]+hd.DESK_RULES["regime"]["slope_1d_bars"])*24
+        self.assertEqual(hd.analyst_regime(btc, need-30)["label"], "warming_up")
+        self.assertNotEqual(hd.analyst_regime(btc, need+30)["label"], "warming_up")
+        self.assertIsNotNone(hd.analyst_regime(btc, need+30)["trend_1d"])
+
+    def test_bull_core_holds_in_the_bull_leg_and_exits_in_the_bear_leg(self):
+        btc, seg = self.s["BTC-USD"], self.seg
+        sigs = lambda lo, hi: [hd.bull_core_signal(btc, k) for k in range(lo, hi)]  # noqa: E731
+        bull, bear = sigs(seg//2, seg), sigs(2*seg+seg//2, 3*seg)
+        self.assertIn("hold", bull)
+        self.assertNotIn("hold", bear)
+        self.assertIn("exit", bear)
 
 
 class BookTest(unittest.TestCase):
@@ -172,6 +199,26 @@ class BookTest(unittest.TestCase):
         self.assertIn(pos, b.positions, "runner keeps going past the target")
         self.assertGreater(pos["stop"], 100.0, "and its stop has moved into profit")
 
+    def test_core_ignores_tactical_management_and_cools_down_after_exit(self):
+        b = hd.Book()
+        pos = b.open_core("BTC-USD", 100.0, START, {"BTC-USD": 100.0})
+        self.assertTrue(pos["core"])
+        self.assertAlmostEqual(pos["qty"]*pos["entry"], 250, delta=3)  # half the book
+        self.assertIsNone(b.manage(pos, (100, 101, 95, 96), START+3600, "bear", 1.0), "no regime-flip exit for core")
+        self.assertIn(pos, b.positions)
+        b.manage(pos, (90, 90, 87, 88), START+7200, "bear", 1.0)  # through the 12% catastrophe stop
+        self.assertEqual(b.trades[-1]["reason"], "core_catastrophe_stop")
+        self.assertIsNone(b.open_core("BTC-USD", 88.0, START+3*3600, {"BTC-USD": 88.0}), "cooldown blocks re-entry")
+        later = START+7200+hd.DESK_RULES["bull_core"]["cooldown_hours"]*3600+1
+        self.assertIsNotNone(b.open_core("BTC-USD", 88.0, later, {"BTC-USD": 88.0}))
+
+    def test_core_does_not_use_a_tactical_slot(self):
+        b = hd.Book()
+        b.open_core("BTC-USD", 100.0, START, {"BTC-USD": 100.0})
+        th = self.thesis(direction="short", sym="ETH-USD")
+        self.assertIsNotNone(b.open(th, 100.0, START, {"BTC-USD": 100.0, "ETH-USD": 100.0}))
+        self.assertEqual(len(b.tactical()), 1)
+
     def test_performance_throttle_stands_down_after_a_bad_streak(self):
         b = hd.Book()
         for k in range(12):
@@ -191,6 +238,12 @@ class ReplayTest(unittest.TestCase):
         noise = rp.replay(market(seed=3, days=150, drift=0.0))
         self.assertEqual(noise["gate"]["verdict"], "FAIL", "a desk that passes on noise is fooling itself")
         self.assertLess(noise["max_drawdown_pct"], 30, "the risk manager contains damage when there is no edge")
+
+    def test_replay_reports_the_desk_without_its_core(self):
+        series = market(seed=11, days=90)
+        w = rp.without_core(series)
+        self.assertIn("return_pct", w)
+        self.assertTrue(hd.DESK_RULES["bull_core"]["enabled"], "comparison restores the core")
 
     def test_report_has_attribution_and_halves(self):
         r = rp.replay(market(seed=11, days=90))
@@ -216,6 +269,14 @@ class DataTest(unittest.TestCase):
         data_mod._add(out, [["1767225600000", "1", "2", "0.5", "1.5", "10"],
                             ["1767229200000000", "1.5", "2", "1", "1.8", "12"], ["open_time", "x"]])
         self.assertEqual(sorted(out), [1767225600, 1767229200])
+
+    def test_holdout_window_does_not_overlap_the_studied_window(self):
+        import datetime as dt
+        now = dt.datetime(2026, 10, 8, tzinfo=dt.timezone.utc)
+        studied = set(data_mod.months_back(6, now))
+        holdout = set(data_mod.months_back(6, data_mod.shift_months(now, 6))[:-1])
+        self.assertFalse(studied & holdout)
+        self.assertEqual(min(holdout), "2025-10")
 
     def test_months_back_includes_current_month_last(self):
         import datetime as dt
