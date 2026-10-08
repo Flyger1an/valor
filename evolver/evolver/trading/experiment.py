@@ -145,10 +145,10 @@ class Experiment:
 
     def _decision_history(self, state, symbol):
         bars = state["histories"].get(symbol, [])
-        if "history_cutoffs" not in state:
+        if "history_cutoffs" not in state and "recovery_history_cutoff" not in state:
             return bars  # Existing journal decisions retain their original semantics.
         from .history import contiguous
-        return contiguous(bars, state["history_cutoffs"].get(symbol, 0))
+        return contiguous(bars, max(state.get("history_cutoffs", {}).get(symbol, 0), state.get("recovery_history_cutoff", 0)))
 
     def _required_marks(self, book, state, symbol):
         return set(book["positions"]) | {symbol} if state.get("universe") else self.symbols(state)
@@ -227,6 +227,21 @@ class Experiment:
             if old and old[0] == event_hash:
                 self.db.rollback()
                 return self.report(state)
+            if event.get("type") == "operator_quote_recovery":
+                # A bad review must leave the original halt and failure evidence untouched.
+                if old:
+                    raise IntegrityError("conflicting_recovery_review")
+                tail = self.db.execute("SELECT * FROM experiment_events ORDER BY seq DESC LIMIT 1").fetchone()
+                self._check_recovery_tail(event, tail)
+                projected = copy.deepcopy(state)
+                self._reduce(projected, event)
+                projected["last_at"] = float(event["observed_at"])
+                self._check_conservation(projected)
+                self.db.execute("INSERT INTO experiment_events(id,observed_at,hash,payload) VALUES (?,?,?,?)",
+                                (event["id"], projected["last_at"], event_hash, payload))
+                self._save(projected)
+                self.db.commit()
+                return self.report(projected)
             if state["halt"]:
                 raise IntegrityError("experiment already stopped: "+state["halt"])
             try:
@@ -244,10 +259,12 @@ class Experiment:
             except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
                 # Retain the last balanced state, plus durable failure evidence. Never reset cash.
                 reason = str(exc) if isinstance(exc, IntegrityError) else "invalid_input_"+type(exc).__name__
+                prior_state_hash = digest(state)
                 state["halt"] = reason
                 for book in state["books"].values():
                     book["safety_events"].append({"at": state["last_at"], "reason": reason})
-                failure = {"type": "integrity_failure", "reason": reason, "rejected_hash": event_hash}
+                failure = {"type": "integrity_failure", "reason": reason, "rejected_hash": event_hash,
+                           "prior_state_hash": prior_state_hash, "rejected_event": event}
                 self.db.execute("INSERT INTO experiment_events(id,observed_at,hash,payload) VALUES (?,?,?,?)",
                                 ("failure:"+event_hash, state["last_at"], digest(failure), encode(failure)))
                 self._save(state)
@@ -264,6 +281,9 @@ class Experiment:
 
     def _reduce(self, state, event):
         kind, now = event["type"], float(event["observed_at"])
+        if kind == "operator_quote_recovery":
+            self._recover_quotes(state, event, now)
+            return  # This review creates no observation, settlement, signal, or order.
         if kind == "frame":
             self._frame(state, event, now)
         elif kind == "fee_settlement":
@@ -280,6 +300,73 @@ class Experiment:
         else:
             raise IntegrityError("unsupported_event_type")
         self._settlement_status(state, now)
+
+    def recover_quotes(self, review, market, now):
+        """Explicit local operator command only; neither capture nor a model can invoke it."""
+        return self.apply({"type": "operator_quote_recovery", "id": "quote-recovery:"+review["id"],
+                           "observed_at": now, "review": review, "market": market})
+
+    @staticmethod
+    def _check_recovery_tail(event, tail):
+        if tail is None:
+            raise IntegrityError("recovery_requires_last_failure")
+        failure = json.loads(tail["payload"])
+        expected = {"seq": tail["seq"], "id": tail["id"], "hash": tail["hash"],
+                    "reason": failure.get("reason"), "rejected_hash": failure.get("rejected_hash")}
+        if (failure.get("type") != "integrity_failure" or digest(failure) != tail["hash"]
+                or event.get("review", {}).get("failure") != expected):
+            raise IntegrityError("recovery_failure_binding_mismatch")
+        if "rejected_event" not in failure and event["review"].get("original_cause") != "unknown_original_frame_not_retained":
+            raise IntegrityError("recovery_must_preserve_unknown_original_cause")
+
+    def _recover_quotes(self, state, event, now):
+        from .quote_admission import violations, MAX_BATCH_BYTES
+        review, market = event["review"], event["market"]
+        if (self.policy.mode not in {"paper", "demo"}
+                or state["halt"] not in {"future_or_rewound_quote", "same_timestamp_quote_revision"}
+                or state.get("evidence_policy_version") != KELLY_RULES_V3["version"]
+                or review.get("failure", {}).get("reason") != state["halt"]
+                or review.get("failed_state_hash") != digest(state)
+                or review.get("identity_hash") != digest(self.identity)
+                or review.get("policy_hash") != self.policy_hash(state)
+                or not math.isfinite(now) or not state["last_at"] < now < self.identity["epoch"]+90*86400):
+            raise IntegrityError("recovery_state_binding_mismatch")
+        if (set(review) != {"id", "reviewed_by", "reason", "evidence_hash", "original_cause", "failure",
+                            "failed_state_hash", "identity_hash", "policy_hash"}
+                or any(not isinstance(review[k], str) or not 1 <= len(review[k]) <= 2000
+                       for k in ("id", "reviewed_by", "reason", "original_cause"))
+                or len(event["id"]) > 180 or event["id"] != "quote-recovery:"+review["id"]
+                or not isinstance(review["evidence_hash"], str) or len(review["evidence_hash"]) != 64
+                or any(c not in "0123456789abcdef" for c in review["evidence_hash"])):
+            raise IntegrityError("invalid_operator_recovery_review")
+        # Deliberately narrower than generic flatness: this incident has never filled a virtual order.
+        if any(D(b["cash"]) != 500 or b["positions"] or b["pending"] or b["fills"] or b["lots"]
+               or b["halt"] or b["daily_halt"] for b in state["books"].values()):
+            raise IntegrityError("recovery_requires_untouched_flat_books")
+        venue = "us" if state.get("source") == "alpaca" else state.get("source")
+        previous = {"source": state.get("source"), "venue": venue, "policy_hash": self.policy_hash(state),
+                    "timestamp": state["last_at"], "quotes": state["quotes"]}
+        if (len(encode(market).encode()) > MAX_BATCH_BYTES
+                or market.get("source") != previous["source"] or market.get("venue") != venue
+                or market.get("policy_hash") != self.policy_hash(state)
+                or not 0 <= now-float(D(market["timestamp"])) <= 30
+                or set(market["quotes"]) != set(self.symbols(state))
+                or violations(market, previous, self.symbols(state))
+                or any(not 0 <= now-Quote(s,q["bid"],q["ask"],q["timestamp"]).timestamp <= 30
+                       for s,q in market["quotes"].items())):
+            raise IntegrityError("recovery_requires_fresh_monotonic_quotes")
+        cutoff = (int(now)//300+1)*300
+        evidence = state["evidence"]
+        state.setdefault("recovery_history", []).append({"id": event["id"], "at": now, "review": review,
+            "market_hash": digest(market), "market_received_at": market["timestamp"],
+            "last_market_observation_at": state.get("evidence_last_observation_at"), "history_cutoff": cutoff,
+            "prior_current_day": {k: copy.deepcopy(v) for k,v in evidence.items() if k != "blocks"},
+            "prior_completed_blocks": len(evidence["blocks"]), "reclassified_blocks": 0})
+        evidence["complete"] = False
+        evidence.setdefault("invalid_reasons", []).append("reviewed_quote_recovery_partial_day")
+        state["recovery_history_cutoff"] = cutoff
+        state["recovery_quote_watermarks"] = copy.deepcopy(market["quotes"])
+        state["halt"] = ""
 
     def _check_conservation(self, state):
         for book in state["books"].values():
@@ -483,9 +570,12 @@ class Experiment:
                 raise IntegrityError("unexpected_instrument")
             q = Quote(symbol, raw["bid"], raw["ask"], raw["timestamp"])
             previous = state["quotes"].get(symbol)
+            reviewed = state.get("recovery_quote_watermarks", {}).get(symbol)
+            if reviewed and (not previous or reviewed["timestamp"] > previous["timestamp"]):
+                previous = reviewed
             if previous and q.timestamp == previous["timestamp"] and any(D(raw[k]) != D(previous[k]) for k in ("bid", "ask")):
                 raise IntegrityError("same_timestamp_quote_revision")
-            if q.timestamp > now or q.timestamp < state["quotes"].get(symbol, {}).get("timestamp", 0):
+            if q.timestamp > now or previous and q.timestamp < previous["timestamp"]:
                 raise IntegrityError("future_or_rewound_quote")
             for key in ("buy_capacity", "sell_capacity", "increment"):
                 if D(raw[key]) < 0 or key == "increment" and D(raw[key]) == 0:
@@ -631,9 +721,9 @@ class Experiment:
             return "book_halted_before_fill"
         if symbol in state.get("history_unavailable_symbols", []):
             return "history_unavailable_before_fill"
-        if state.get("history_cutoffs", {}).get(symbol, 0) >= order["created"]:
+        if max(state.get("history_cutoffs", {}).get(symbol, 0), state.get("recovery_history_cutoff", 0)) >= order["created"]:
             return "history_changed_before_fill"
-        if "history_cutoffs" in state:
+        if "history_cutoffs" in state or "recovery_history_cutoff" in state:
             bars = self._decision_history(state, symbol)
             spec = BY_VERSION[self.identity["strategy"]]
             if len(bars) < spec.slow*3+1 or not 0 <= now-bars[-1]["timestamp"]-300 <= 600:
@@ -824,6 +914,12 @@ class Experiment:
                 "age_seconds": state["last_at"]-state["quotes"][s]["timestamp"] if s in state["quotes"] else None,
                 "fresh": s in state["quotes"] and 0 <= state["last_at"]-state["quotes"][s]["timestamp"] <= 30}
                 for s in self.symbols(state)}
+        if state.get("recovery_history"):
+            result.update(recovery_history=state["recovery_history"], recovery_history_cutoff=state["recovery_history_cutoff"],
+                          last_market_observation_at=state.get("evidence_last_observation_at"))
+            for symbol in self.symbols(state):
+                result["quote_status"][symbol]["history_available"] = (len(self._decision_history(state, symbol))
+                    >= BY_VERSION[self.identity["strategy"]].slow*3+1 and symbol not in state.get("history_unavailable_symbols", []))
         for name in BOOKS:
             book = state["books"][name]
             m = metrics(book, state["quotes"])
@@ -841,18 +937,28 @@ class Experiment:
     def verify_replay(self):
         """Replay into memory only; an existing experiment can never be reset by this command."""
         state = self.initial_state()
+        previous = None
         for row in self.db.execute("SELECT * FROM experiment_events ORDER BY seq"):
             event = json.loads(row["payload"])
             if digest(event) != row["hash"]:
                 raise IntegrityError("journal_hash_mismatch")
             if event["type"] == "integrity_failure":
+                if ("prior_state_hash" in event and event["prior_state_hash"] != digest(state)
+                        or "rejected_event" in event and digest(event["rejected_event"]) != event["rejected_hash"]):
+                    raise IntegrityError("rejected_event_evidence_mismatch")
                 state["halt"] = event["reason"]
                 for book in state["books"].values():
                     book["safety_events"].append({"at": state["last_at"], "reason": event["reason"]})
+                previous = row
                 continue
+            if event["type"] == "operator_quote_recovery":
+                self._check_recovery_tail(event, previous)
+            elif state["halt"]:
+                raise IntegrityError("journal_event_after_halt")
             self._reduce(state, event)
             state["last_at"] = float(event["observed_at"])
             self._check_conservation(state)
+            previous = row
         if digest(state) != digest(self.state()):
             raise IntegrityError("replay_state_mismatch")
         return {"verified": True, "events": self.db.execute("SELECT count(*) FROM experiment_events").fetchone()[0],

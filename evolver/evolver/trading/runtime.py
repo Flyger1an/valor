@@ -71,7 +71,8 @@ class Feed:
                   "venue": getattr(self.provider, "venue", self.provider.source),
                   "increments": self.increments, "instrument_rules": self.instrument_rules,
                   "symbols": list(self.policy.allowed_instruments)}
-        write_snapshot(self.target / "quotes.json", {**header, "quotes": {s: asdict(q) for s, q in quotes.items()}})
+        from .quote_admission import publish
+        publish(self.target, {**header, "quotes": {s: asdict(q) for s, q in quotes.items()}}, self.policy.allowed_instruments)
         if now < self.next_bars or self.bar_thread is not None and self.bar_thread.is_alive():
             return
         self.next_bars = now + 60

@@ -104,12 +104,13 @@ def capture(experiment, source_root, now):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("init", "tick", "run", "report", "replay", "upgrade-evidence", "expand-universe"))
+    parser.add_argument("command", choices=("init", "tick", "run", "report", "replay", "upgrade-evidence", "expand-universe", "recover-quotes"))
     parser.add_argument("--policy", default="infra/trading/policy.demo.json")
     parser.add_argument("--root", required=True, help="new isolated experiment directory")
     parser.add_argument("--source-root", help="existing read-only runtime root with market/outbox/news directories")
     parser.add_argument("--strategy", help="freeze an approved strategy at initialization")
     parser.add_argument("--new-policy", help="expand-universe only: additive paper/demo policy")
+    parser.add_argument("--recovery-review", help="recover-quotes only: explicit failure-bound operator review JSON")
     parser.add_argument("--stay-running-after-completion", action="store_true",
                         help="run only: idle after the settled end state, without further observations")
     args = parser.parse_args(argv)
@@ -120,7 +121,7 @@ def main(argv=None):
         source = Path(args.source_root).resolve()
         if root == source or root in source.parents or source in root.parents:
             parser.error("experiment and source directories must be separate, non-nested paths")
-    if args.command in {"tick", "run"} and not args.source_root:
+    if args.command in {"tick", "run", "recover-quotes"} and not args.source_root:
         parser.error("--source-root is required; this command never starts a market feed")
     path = root/"experiment.sqlite"
     if args.command != "init" and not path.exists():
@@ -133,6 +134,15 @@ def main(argv=None):
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     experiment = Experiment(path, policy, epoch=time.time() if args.command == "init" else None, strategy=args.strategy)
     try:
+        if args.command == "recover-quotes":
+            if not args.recovery_review:
+                parser.error("--recovery-review is required; halts never recover automatically")
+            review = read_object(args.recovery_review, limit=20_000)
+            market = read_object(source/"market"/"quotes.json", limit=100_000)
+            report = experiment.recover_quotes(review, market, time.time())
+            write_snapshot(root/"snapshot.json", report)
+            print(encode(report))
+            return 0
         if args.command == "expand-universe":
             if not args.new_policy:
                 parser.error("--new-policy is required for an explicit universe boundary")
@@ -166,6 +176,14 @@ def main(argv=None):
             signal.signal(sig, lambda *_: stop.set())
         report = experiment.report()
         while not stop.is_set():
+            if report["halt"]:
+                if args.command == "tick":
+                    raise IntegrityError("experiment already stopped: "+report["halt"])
+                print(encode({"event": "experiment_halted", "reason": report["halt"],
+                              "last_at": report["timestamp"], "mode": "virtual_only"}), flush=True)
+                while not stop.wait(30):
+                    pass
+                return 0
             if (report["timestamp"] >= report["evaluation_end"] and all(
                     b["positions"] == 0 and b["pending_orders"] == 0 and not b["provisional_fees"] for b in report["books"])):
                 print(encode({"event": "evaluation_complete", "mode": "virtual_only"}), flush=True)
@@ -177,8 +195,10 @@ def main(argv=None):
                 report = experiment.apply(capture(experiment, args.source_root, time.time()))
                 write_snapshot(root/"snapshot.json", report)
             except IntegrityError:
-                write_snapshot(root/"snapshot.json", experiment.report())
-                raise
+                report = experiment.report()
+                write_snapshot(root/"snapshot.json", report)
+                if args.command == "tick":
+                    raise
             except (ValueError, OSError, KeyError):
                 # No fabricated observations during outages. Snapshot ages visibly; future gaps are recorded.
                 if args.command == "tick":
