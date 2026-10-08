@@ -18,7 +18,7 @@ three-book experiment. Baseline, kelly and henry v1 keep their journal, identity
 Realism kept on purpose: fills at the next observed quote, adverse slippage, modeled fees both
 sides. v2 liquidity: entries may use the larger of 1% of bar volume or $2,000 per bar (Alpaca reports
 only its own thin volume); exits always fill the whole position. Each position is one trade record.
-sides, a 1% bar-volume liquidity cap, exchange increments and minimums, closed bars only.
+Exchange increments and minimums and closed bars only are also kept.
 
 ## Deploy on the droplet
 
