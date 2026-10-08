@@ -14,10 +14,15 @@ MAX_REJECTION_BYTES = 250_000
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 
 
-def violations(batch, previous, symbols):
-    """No clock tolerance, retiming, quote omission, or stale-price refresh."""
+def violations(batch, previous, symbols, transitions=()):
+    """No clock tolerance, retiming, quote omission, or stale-price refresh.
+
+    A policy change is accepted only as an exact operator-declared from/to transition.
+    """
     errors = []
-    if previous and any(batch.get(k) != previous.get(k) for k in ('source', 'venue', 'policy_hash')):
+    declared = previous and (previous.get('policy_hash'), batch.get('policy_hash')) in set(transitions)
+    if previous and (any(batch.get(k) != previous.get(k) for k in ('source', 'venue'))
+                     or batch.get('policy_hash') != previous.get('policy_hash') and not declared):
         errors.append({'reason': 'quote_provenance_changed'})
     receipt = float(D(batch['timestamp']))
     if receipt <= 0:
@@ -58,7 +63,9 @@ def publish(target, batch, symbols):
         raise ValueError('quote batch exceeds size limit')
     batch = json.loads(encoded)
     previous = read_object(target / 'quotes.json', {}, limit=MAX_BATCH_BYTES)
-    errors = violations(batch, previous, symbols)
+    declared = read_object(target / 'policy-transitions.json', {'transitions': []}, limit=100_000)
+    transitions = [(t['from'], t['to']) for t in declared.get('transitions', [])]
+    errors = violations(batch, previous, symbols, transitions)
     if errors:
         record = {'kind': 'rejected_quote_batch_v1', 'batch': batch, 'previous': previous, 'violations': errors}
         archive = target / 'quote-rejections'

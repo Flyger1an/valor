@@ -143,6 +143,26 @@ class Experiment:
     def policy_hash(self, state):
         return state.get("universe", {}).get("policy_hash", self.identity["policy_hash"])
 
+    def source_policy_hashes(self, state=None):
+        """Source runtime fingerprints whose files this frozen study may read as inputs."""
+        state = self.state() if state is None else state
+        return {self.policy_hash(state)} | {s["to_policy"] for s in state.get("source_sessions", [])}
+
+    def _accept_source_session(self, state, event, now):
+        """The SOURCE widened its entry session. These books keep their own frozen rules; only the
+        accepted input provenance grows. No cash, order, signal or evidence classification changes."""
+        from .session import validate_session_expansion
+        prior = state.get("source_sessions", [])
+        expected_from = prior[-1]["to_policy"] if prior else self.policy_hash(state)
+        old, new = Policy.from_dict(event["old_source_policy"]), Policy.from_dict(event["new_source_policy"])
+        change = validate_session_expansion(old, new)
+        if (event.get("from_policy") != expected_from or old.fingerprint != expected_from
+                or event.get("to_policy") != new.fingerprint):
+            raise IntegrityError("invalid_source_session_boundary")
+        state.setdefault("source_sessions", []).append(
+            {"id": event["id"], "at": now, "from_policy": old.fingerprint, "to_policy": new.fingerprint,
+             **change, "experiment_rules_changed": False})
+
     def _decision_history(self, state, symbol):
         bars = state["histories"].get(symbol, [])
         if "history_cutoffs" not in state and "recovery_history_cutoff" not in state:
@@ -297,6 +317,8 @@ class Experiment:
             self._activate_evidence_v2(state, event, now)
         elif kind == "universe_policy_update":
             self._activate_universe(state, event, now)
+        elif kind == "source_session_update":
+            self._accept_source_session(state, event, now)
         else:
             raise IntegrityError("unsupported_event_type")
         self._settlement_status(state, now)

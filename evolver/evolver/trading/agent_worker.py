@@ -103,9 +103,18 @@ class BudgetedModel:
 
 # A lease spans many five-minute bars, while a closed-bar signal lives for one. Pausing
 # because no candidate exists at supervision time therefore blocks every later candidate.
-SUPERVISOR_PAPER = ("\nPaper/demo: a lease permits entries for its TTL; every order still needs two exact-trade approvals. "
-                    "Resume when data, accounting and news are healthy; no current candidate is not a reason to pause. "
-                    "Pause only for a named problem.")
+SUPERVISOR_PAPER = ("\nPaper/demo: a lease spans its TTL; trades still need two approvals. Resume when healthy; "
+                    "no current candidate is not a reason to pause. Pause only for a named problem.")
+
+
+def prompt_policy(policy):
+    """Exact policy facts with a compact spelling for a full 24/7 session (prompt budget only)."""
+    facts = asdict(policy)
+    if tuple(policy.trading_hours_utc) == tuple(range(24)):
+        facts["trading_hours_utc"] = "all 24 UTC hours"
+    if tuple(policy.trading_weekdays_utc) == tuple(range(7)):
+        facts["trading_weekdays_utc"] = "all 7 days"
+    return facts
 
 
 def promotion_reviews(policy, evidence, analyst, reviewer):
@@ -147,12 +156,12 @@ def process_request(request, policy, analyst, reviewer, now):
                   "reason": "Explain opportunity, recent strategy outcomes, costs, news and health. Restore risk only on improved evidence, never just to recover losses."}
         result = parse_object(analyst(SYSTEM + "\nSupervise an experiment. Paper exploration is allowed inside the policy; simulated profits do not validate live trading. "
                               "Use market_evidence for actual closed-candle signals, indicators, candidates, and explicit blockers. "
-                              "A candidate blocked only by the current supervisor pause may still be evaluated on its price evidence; "
-                              "this never waives other gates or the independent exact-trade reviews. "
+                              "A candidate blocked only by the supervisor pause may still be judged on its price evidence; "
+                              "this never waives other gates or the exact-trade reviews. "
                               "Unavailable history and absent signals must remain explicit, never invented. "
                               "Recent candles are a bounded excerpt; the evidence hash identifies the retained complete calculation window."
                               + (SUPERVISOR_PAPER if policy.mode != "live" else ""),
-                              encode({"policy": asdict(policy), "snapshot": snapshot, "required_output": schema})))
+                              encode({"policy": prompt_policy(policy), "snapshot": snapshot, "required_output": schema})))
         if set(result) != set(schema):
             raise ValueError("invalid supervision output")
         if result["action"] not in {"pause_entries", "resume_entries", "reduce_risk"} or not 0 < decimal(result["risk_scale"]) <= 1:
