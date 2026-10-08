@@ -303,8 +303,21 @@ class AlpacaBroker:
         for row in self.book.db.execute("SELECT client_id,report FROM alpaca_receipts WHERE report IS NOT NULL"):
             if json.loads(row["report"])["status"] in {"open", "partial"}:
                 expected_open.add(row["client_id"])
-        if set(a["open_order_ids"]) != expected_open:
-            raise AccountingError("unknown or missing open orders")
+        live_open = set(a["open_order_ids"])
+        if live_open - expected_open:
+            raise AccountingError("unknown or missing open orders")  # a broker order we never reserved
+        if expected_open - live_open:
+            # Race: an order looked up as open filled/cancelled before this account snapshot. Refresh
+            # each by its durable client ID; only a still-open-yet-unlisted order is a real mismatch.
+            for cid in expected_open - live_open:
+                fresh = self.lookup(cid)
+                if fresh is None or fresh.status in {"open", "partial"}:
+                    raise AccountingError("unknown or missing open orders")
+            with self.book.db:
+                self.book.set("entry_pause", "order_state_refresh")
+                self.book.event(now, "broker.order_state_refreshed",
+                                {"client_ids": sorted(expected_open - live_open)})
+            return False  # re-ingest the new fills on the next cycle; never infer them here
         gross = {s: q for s, q in projection["positions"].items() if q}
         effective = projection["effective_positions"]
         actual = {s: q for s, q in a["positions"].items() if q}
