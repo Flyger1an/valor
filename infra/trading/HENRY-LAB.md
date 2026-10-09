@@ -65,3 +65,47 @@ docker run --rm -u 0 --network none -v /opt/henry-desk:/src:ro -v /opt/henry-des
   -e PYTHONDONTWRITEBYTECODE=1 --entrypoint python "$BASE" -m evolver.trading.henry_lab test \
   --data /data/henry_lab_2017_2021.json.gz --lessons /data/henry_lessons.json --ledger /data/henry_test_ledger.json
 ```
+
+## Promoting one candidate (declared, one shot)
+
+Training on Oct 2021 to Oct 2026 produced no survivors. The best candidate was the daily 50-day trend
+(long only, alts follow BTC): +120%, Sharpe 0.73 against a luck bar of 1.04. It is promoted for a
+single test on 2017-21. The lessons file records that it missed the luck bar. If it fails, no second
+candidate gets promoted onto the same holdout.
+
+```bash
+docker run --rm -u 0 --network none -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver \
+  --entrypoint python "$BASE" -m evolver.trading.henry_lab promote --lessons /data/henry_lessons.json \
+  --id "btc_filter=True|family=ma_trend|ma=50|side=long|tf=1d" --reason "best training candidate; declared single bet" \
+  --out /data/henry_lessons_ma50.json
+docker run --rm -u 0 --network none -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver \
+  --entrypoint python "$BASE" -m evolver.trading.henry_lab test --data /data/henry_lab_2017_2021.json.gz \
+  --lessons /data/henry_lessons_ma50.json --ledger /data/henry_test_ledger.json
+```
+
+# Funding carry lab (henry-carry-v1)
+
+The trade: long spot plus short perp, equal notional. Funding is collected, the basis comes from daily
+perp prices, and costs cover 4 legs. Capital is 1.5x notional, and legs are resized after a 30% move.
+See `evolver/trading/henry_carry.py` for the rules. Two questions are judged separately:
+
+- **Is the premium real?** Always-on carry, no luck bar (one hypothesis). It must be positive in at
+  least 60% of blocks, and mean funding must be at least 3 standard errors above zero.
+- **Does timing help?** 36 variants. Each must beat the luck bar from day-shuffled funding and also
+  beat always-on carry.
+
+Train on Oct 2021 to Oct 2026, then test once on 2017-21. Binance perps start in Sep 2019, so the
+effective test era is Sep 2019 to Sep 2021. Every result also shows the cost of using Alpaca's 25 bps
+spot fee. Execution needs a perp venue you can legally use, and exchange risk is not in any backtest.
+
+```bash
+docker run --rm -u 0 -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver --entrypoint python "$BASE" \
+  -m evolver.trading.henry_desk_data --months 60 --perp --out /data/carry_train.json.gz
+docker run --rm -u 0 -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver --entrypoint python "$BASE" \
+  -m evolver.trading.henry_desk_data --months 50 --months-ago 60 --perp --out /data/carry_test.json.gz
+docker run --rm -u 0 --network none -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver \
+  --entrypoint python "$BASE" -m evolver.trading.henry_carry train --data /data/carry_train.json.gz --out /data/carry_lessons.json
+docker run --rm -u 0 --network none -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver \
+  --entrypoint python "$BASE" -m evolver.trading.henry_carry test --data /data/carry_test.json.gz \
+  --lessons /data/carry_lessons.json --ledger /data/henry_test_ledger.json
+```

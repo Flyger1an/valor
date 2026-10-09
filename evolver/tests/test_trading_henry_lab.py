@@ -182,6 +182,20 @@ class TestingTest(unittest.TestCase):
             self.assertEqual(second["previous_tests_of_these_lessons"], 1)
             self.assertEqual(len(json.loads(Path(ledger).read_text())), 2)
 
+    def test_promote_freezes_one_named_setup_and_records_why(self):
+        lessons = self.lessons()
+        cfg = lessons["chosen"][0]
+        lessons.update(leaderboard=[{"id": cfg["id"], "why_not": ["Sharpe 0.7 does not beat the luck bar 1.0"],
+                                     "sharpe": 0.7}], setups_tested=60, family_summary={})
+        out = L.promote(lessons, cfg["id"], "best training candidate")
+        self.assertEqual(out["chosen"], [cfg])
+        self.assertEqual(out["promoted"]["rank_on_training_leaderboard"], 1)
+        self.assertEqual(out["fingerprint"], L.fingerprint(out))
+        r = L.test(market(seed=3), out)
+        self.assertTrue(r["promoted"]["missed"])
+        with self.assertRaises(ValueError):
+            L.promote(lessons, "family=nope", "x")
+
     def test_nothing_learned_means_nothing_tested(self):
         lessons = {**self.lessons(), "chosen": []}
         lessons["fingerprint"] = L.fingerprint(lessons)

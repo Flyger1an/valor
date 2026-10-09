@@ -536,6 +536,8 @@ def train(data, shuffles=2, log=print):
 
 def fingerprint(lessons):
     core = {k: lessons[k] for k in ("lab", "chosen", "selection_rules", "luck_bar_sharpe", "trained_on")}
+    if lessons.get("promoted"):
+        core["promoted"] = lessons["promoted"]
     return hashlib.sha256(json.dumps(core, sort_keys=True, default=str).encode()).hexdigest()
 
 
@@ -579,7 +581,7 @@ def test(data, lessons, ledger_path=None):
               "checks": {k: {"pass": v[0], "detail": v[1]} for k, v in checks.items()},
               "result": s, "btc_hold": {k: hold[k] for k in ("return_pct", "sharpe", "max_drawdown_pct", "by_year")},
               "by_regime": regime_breakdown(daily, data), "fingerprint": lessons["fingerprint"],
-              "previous_tests_of_these_lessons": len(prior),
+              "previous_tests_of_these_lessons": len(prior), "promoted": lessons.get("promoted"),
               "per_setup": {cfg["id"]: {k: v for k, v in stats(*run_config(cfg, data, leader)).items() if k != "blocks"}
                             for cfg in lessons["chosen"]}}
     if ledger_path:
@@ -588,6 +590,24 @@ def test(data, lessons, ledger_path=None):
                         "return_pct": s["return_pct"], "at": dt.datetime.now(dt.timezone.utc).isoformat()})
         Path(ledger_path).write_text(json.dumps(entries, indent=1))
     return result
+
+
+def promote(lessons, setup_id, reason):
+    """Freeze ONE named setup from the training leaderboard for a one-shot test, even though it
+    missed the training rules. The record says so: a promotion is a single, declared bet; promoting
+    a second setup after the first fails turns the holdout into another round of searching."""
+    row = next((b for b in lessons["leaderboard"] if b["id"] == setup_id), None)
+    cfg = next((c for c in library() if c["id"] == setup_id), None)
+    if row is None or cfg is None:
+        raise ValueError("setup not on the training leaderboard: "+setup_id)
+    out = {k: lessons[k] for k in ("lab", "selection_rules", "luck_bar_sharpe", "trained_on", "setups_tested",
+                                   "family_summary", "leaderboard")}
+    out.update(chosen=[cfg], survivors=0, training_result=row,
+               promoted={"id": setup_id, "reason": reason, "missed": row["why_not"],
+                         "from_lessons": lessons["fingerprint"],
+                         "rank_on_training_leaderboard": [b["id"] for b in lessons["leaderboard"]].index(setup_id)+1})
+    out["fingerprint"] = fingerprint(out)
+    return out
 
 
 # ------------------------------------------------------------------ CLI
@@ -623,6 +643,8 @@ def show_test(r):
     if "checks" not in r:
         print("  ", r.get("reason"))
         return
+    if r.get("promoted"):
+        print(f"  promoted setup (missed training rules: {'; '.join(r['promoted']['missed'])})")
     if r["previous_tests_of_these_lessons"]:
         print(f"  !! these lessons were already tested {r['previous_tests_of_these_lessons']} time(s): "
               "this holdout is spent for them; treat this result as in-sample")
@@ -651,7 +673,18 @@ def main(argv=None):
     te.add_argument("--data", action="append", required=True)
     te.add_argument("--lessons", required=True)
     te.add_argument("--ledger")
+    pr = sub.add_parser("promote")
+    pr.add_argument("--lessons", required=True)
+    pr.add_argument("--id", required=True)
+    pr.add_argument("--reason", required=True)
+    pr.add_argument("--out", required=True)
     args = p.parse_args(argv)
+    if args.cmd == "promote":
+        out = promote(json.loads(Path(args.lessons).read_text()), args.id, args.reason)
+        Path(args.out).write_text(json.dumps(out, default=str))
+        print(f"promoted {args.id} (training rank {out['promoted']['rank_on_training_leaderboard']}), "
+              f"fingerprint {out['fingerprint'][:16]}; test it once")
+        return 0
     data = merge([load(x) for x in args.data])
     if args.cmd == "train":
         lessons = train(data, args.shuffles)

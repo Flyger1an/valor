@@ -127,21 +127,36 @@ def funding(pair, months, log=print, offset=0):
     return out
 
 
-def build(months=6, symbols=None, log=print, offset=0):
+def perp_daily(pair, months, mult, offset=0):
+    """[[day_start_seconds, open, high, low, close]] of the USD-M perp, in SPOT units (1000SHIB / 1000)."""
+    month_list = months_back(months, shift_months(dt.datetime.now(dt.timezone.utc), offset))[:-1]
+    urls = [f"{BASE}/futures/um/monthly/klines/{pair}/1d/{pair}-1d-{ym}.zip" for ym in month_list]
+    out = {}
+    for rows in parallel(urls):
+        for r in rows or []:
+            if r and r[0].isdigit():
+                out[_ms(r[0])//1000] = [float(r[k])/mult for k in (1, 2, 3, 4)]
+    return [[t, *out[t]] for t in sorted(out)]
+
+
+def build(months=6, symbols=None, log=print, offset=0, perp=False):
     data = {"source": "binance_public_archive", "built_at": time.time(), "months": months,
             "months_ago_end": offset, "bar": "1h", "symbols": {}, "missing": {}}
-    for sym, (spot, perp, _mult) in SYMBOLS.items():
+    for sym, (spot, perp_pair, mult) in SYMBOLS.items():
         if symbols and sym not in symbols:
             continue
-        log(f"{sym}: {spot} klines, {perp} funding")
+        log(f"{sym}: {spot} klines, {perp_pair} funding" + (" and perp prices" if perp else ""))
         bars = klines(spot, months, log, offset)
-        fund = funding(perp, months, log, offset)
+        fund = funding(perp_pair, months, log, offset)
         if not bars:
             data["missing"][sym] = "no spot klines in the archive"
             continue
-        data["symbols"][sym] = {"pair": spot, "perp": perp,
+        data["symbols"][sym] = {"pair": spot, "perp": perp_pair,
                                 "bars": [[t, *bars[t]] for t in sorted(bars)],
                                 "funding": [[t, fund[t]] for t in sorted(fund)]}
+        if perp:
+            data["symbols"][sym]["perp_daily"] = perp_daily(perp_pair, months, mult, offset)
+            log(f"  {len(data['symbols'][sym]['perp_daily'])} perp daily bars")
         log(f"  {len(bars)} hourly bars, {len(fund)} funding prints")
     return data
 
@@ -156,10 +171,11 @@ def main(argv=None):
     p.add_argument("--months", type=int, default=6)
     p.add_argument("--out", required=True)
     p.add_argument("--symbols", help="comma-separated subset of " + ",".join(SYMBOLS))
+    p.add_argument("--perp", action="store_true", help="also fetch daily perp prices (needed for carry basis)")
     p.add_argument("--months-ago", type=int, default=0,
                    help="end the window this many months ago (e.g. 6 for an out-of-sample holdout)")
     args = p.parse_args(argv)
-    data = build(args.months, set(args.symbols.split(",")) if args.symbols else None, offset=args.months_ago)
+    data = build(args.months, set(args.symbols.split(",")) if args.symbols else None, offset=args.months_ago, perp=args.perp)
     with gzip.open(args.out, "wt") as f:
         json.dump(data, f, separators=(",", ":"))
     print(f"wrote {args.out}: {len(data['symbols'])} symbols, missing {data['missing'] or 'none'}")
