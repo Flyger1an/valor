@@ -217,3 +217,12 @@ bootstrap. A pass earns a live paper book. The live months are the real holdout.
 docker run --rm -u 0 --network none -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver \
   --entrypoint python "$BASE" -m evolver.trading.henry_rotation run --data /data/tradfi.json.gz
 ```
+
+## Result, Oct 8 2026: ETF rotation FAIL (4 of 9 checks failed). No stocks book.
+
+From Aug 2003 to Oct 2026, it made 11.3%/yr, the same as SPY (11.3%/yr), with Sharpe 0.66 vs 0.67
+and a 35.7% drawdown vs 55.2%. It won the first half (Sharpe 0.82 vs 0.54) and lost the second
+(0.51 vs 0.82). It was worse than simply holding all 16 ETFs equally (Sharpe 0.74). The bootstrap
+shows it beating SPY's Sharpe in 49.7% of resamples, a coin toss. It held up under extra lag and
+double costs; the problem is the edge, not execution. What it offers is SPY's return with a third
+less drawdown, which comes from diversification, not momentum.
