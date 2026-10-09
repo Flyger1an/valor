@@ -200,3 +200,20 @@ FX mostly mean-reverts at this horizon.
 
 These datasets are now seen. Any new stocks or FX hypothesis needs a fresh holdout (other country
 indexes, other periods) and a new declared scorecard.
+
+# ETF rotation (henry_rotation): one declared test on the ETFs we would trade
+
+A different idea from trend timing, taken from the published momentum research and not fitted
+here. Every month, hold the 3 of 16 US-listed ETFs with the best 12-month return, a third each. A
+pick that is down over 12 months goes to cash. Trades fill a day late, at stock costs. The full
+rule and scorecard are in the module docstring, declared before the first run.
+
+It passes only if, against holding SPY over the same days: its Sharpe is at least SPY's, its
+drawdown is at most 75% of SPY's, both halves of the period hold up, it beats the equal-weight
+basket, and it survives an extra day of lag, double costs, 6 of 9 neighboring settings and a paired
+bootstrap. A pass earns a live paper book. The live months are the real holdout.
+
+```bash
+docker run --rm -u 0 --network none -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver \
+  --entrypoint python "$BASE" -m evolver.trading.henry_rotation run --data /data/tradfi.json.gz
+```
