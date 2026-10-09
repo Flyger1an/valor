@@ -4,7 +4,9 @@
 # When the trend book's own inputs change on the watched branch: run its tests inside the running Valor
 # image, rebuild, and swap the container.
 #   - Same TREND_RULES   -> same volume; the journal resumes untouched.
-#   - Changed TREND_RULES -> a NEW volume, freshly seeded; the old volume is kept.
+#   - Changed TREND_RULES -> a NEW volume: universe screened once, freshly seeded; the old volume is kept.
+# Two containers: valor-henry-trend-feed (network, Alpaca public data -> market volume) and
+# valor-henry-trend (no network, reads the market volume read-only).
 # Never touches the three-book study, the source ledger, the worker, or any other service.
 set -eu
 
@@ -31,7 +33,8 @@ else
 fi
 COMMIT=$(git -C "$SRC" rev-parse HEAD)
 INPUTS=$(cd "$SRC" && cat $FILES | sha256sum | cut -d' ' -f1)
-if [ "$INPUTS" = "$(cat "$STATE.inputs" 2>/dev/null || true)" ] && docker ps -q --filter "name=^${NAME}$" --filter status=running | grep -q .; then
+running() { docker ps -q --filter "name=^$1$" --filter status=running | grep -q .; }
+if [ "$INPUTS" = "$(cat "$STATE.inputs" 2>/dev/null || true)" ] && running "$NAME" && running "$NAME-feed"; then
   exit 0
 fi
 
@@ -61,7 +64,7 @@ FROM ${BASE}
 USER root
 COPY --chown=10001:10001 henry_trend.py henry_trend_runner.py henry_trend_feed.py henry_lab.py henry_desk_data.py contracts.py /app/evolver/trading/
 COPY --chown=10001:10001 policy.json /config/henry-trend-policy.json
-RUN mkdir -p /henry && chown 10001:10001 /henry
+RUN mkdir -p /henry /market && chown 10001:10001 /henry /market
 USER 10001:10001
 ENTRYPOINT ["python", "-m", "evolver.trading.henry_trend_runner"]
 DF
@@ -75,25 +78,40 @@ else
   VOLUME="valor-henry-trend-${RULES_HASH}_state"; FRESH=yes
   log "rules $RULES_VERSION ($RULES_HASH): new book in $VOLUME"
 fi
+MARKET="${VOLUME%_state}_market"
 RO="--read-only --user 10001:10001 --init --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 32 \
  --memory 384m --cpus 0.25 --tmpfs /tmp:rw,noexec,nosuid,size=16m -v $VOLUME:/henry"
 FEED="docker run --rm $RO --entrypoint python $TAG -m evolver.trading.henry_trend_feed --policy /config/henry-trend-policy.json"
 
+has() { docker run --rm --network none $RO --entrypoint python "$TAG" -c "import os,sys; sys.exit(0 if os.path.exists('$1') else 1)"; }
 if [ "$FRESH" = yes ]; then
-  $FEED seed --out /henry/daily_seed.json || { log "seed FAILED (network?)"; exit 1; }
-  $FEED shadow --out /henry/shadow.json || log "shadow unavailable for now; the daily job will retry"
-  docker run --rm --network none $RO "$TAG" init --root /henry --policy /config/henry-trend-policy.json --seed /henry/daily_seed.json >/dev/null \
-    || { log "init FAILED"; exit 1; }
+  if ! has /henry/universe.json; then
+    $FEED screen --out /henry/universe.json || { log "universe screen FAILED (Alpaca unreachable?)"; exit 1; }
+  fi
+  if ! has /henry/henry_trend.sqlite; then
+    $FEED seed --out /henry/daily_seed.json || { log "seed FAILED (network?)"; exit 1; }
+    $FEED shadow --out /henry/shadow.json || log "shadow unavailable for now; the daily job will retry"
+    docker run --rm --network none $RO "$TAG" init --root /henry --policy /config/henry-trend-policy.json --seed /henry/daily_seed.json >/dev/null \
+      || { log "init FAILED"; exit 1; }
+  fi
 fi
 CHECK=$(docker run --rm --network none $RO --entrypoint python "$TAG" -c \
   "from evolver.trading.henry_trend import TrendBook; b=TrendBook('/henry/henry_trend.sqlite'); r=b.report(); b.close(); print(r['rules_version'], r['equity_usd'], r['daily_history_days'])" 2>&1) \
   || { echo "$CHECK" | tail -5; log "new image cannot open $VOLUME; keeping the running book"; exit 1; }
 log "journal check ok: $CHECK"
 
+FEEDRO="--read-only --user 10001:10001 --init --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 32 \
+ --memory 256m --cpus 0.25 --tmpfs /tmp:rw,noexec,nosuid,size=16m -v $VOLUME:/henry:ro -v $MARKET:/market"
+docker stop -t 20 "$NAME-feed" >/dev/null 2>&1 || true
+docker rm "$NAME-feed" >/dev/null 2>&1 || true
+docker run -d --name "$NAME-feed" --restart unless-stopped --log-opt max-size=5m --log-opt max-file=2 \
+  --label valor.henry-trend.commit="$COMMIT" $FEEDRO --entrypoint python "$TAG" \
+  -m evolver.trading.henry_trend_feed live --policy /config/henry-trend-policy.json --out /market >/dev/null
+sleep 20
 docker stop -t 20 "$NAME" >/dev/null 2>&1 || true
 docker rm "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" --restart unless-stopped --network none --log-opt max-size=5m --log-opt max-file=2 \
-  --label valor.henry-trend.commit="$COMMIT" $RO -v valor-demo_market:/runtime/market:ro \
+  --label valor.henry-trend.commit="$COMMIT" $RO -v "$MARKET":/runtime/market:ro \
   "$TAG" run --root /henry --policy /config/henry-trend-policy.json --source-root /runtime >/dev/null
 
 echo "$INPUTS" > "$STATE.inputs"; echo "$RULES_HASH" > "$STATE.rules"; echo "$VOLUME" > "$STATE.volume"

@@ -1,4 +1,4 @@
-# Henry, live (paper): the 50-day trend rule (henry-trend-v1)
+# Henry, live (paper): the 50-day trend rule (henry-trend-v2, wide universe)
 
 Henry now trades the one rule that held up in every test:
 
@@ -11,6 +11,26 @@ Henry now trades the one rule that held up in every test:
   - On collapsed coins it lost 12% of what holding lost.
   - Still works with a day of lag, at double costs, with all 6 neighboring moving averages, and in
     100% of bootstrap resamples.
+
+## v2: more coins (Oct 8 2026)
+
+v1 traded the study's 6 coins. v2 runs the same rule on up to 20 Alpaca coins, picked once by a
+declared, mechanical screen (`UNIVERSE` in `henry_trend.py`), never by past returns:
+
+- candidates: 41 Alpaca USD coins; stablecoins and gold tokens are never candidates
+- eligible: at least 365 days of Alpaca daily history, and a median quoted spread of 50 bps or less
+  over 3 samples
+- ranked by 30-day average daily dollar volume on Alpaca; the top 20 are picked; BTC is always in
+  (it is the filter for the alts)
+- frozen for the life of the book; a re-screen starts a new book
+
+Why this is allowed: the battery already showed the rule working on 30 unseen coins at once
+(Sharpe 1.39 vs 1.08 for holding, 2017-21). More coins means more independent bets on one rule.
+
+What changed around it: the book has its own feed container (`valor-henry-trend-feed`, Alpaca
+public quotes every 10 s and 5-minute bars every 60 s) instead of the study's 6-coin feed. The
+book itself still has no network. Starting cash is $5,000 (20 sleeves of $250; at $500 most
+vol-targeted alt entries would fall under the $10 minimum). v1's journal is kept in its old volume.
 
 ## The rule (the lab's code, run unchanged)
 
@@ -49,10 +69,14 @@ journal.
 git clone -q --depth 1 --branch henry-desk-candidate https://github.com/Flyger1an/valor.git /opt/valor-henry-trend/src 2>/dev/null || true
 sh /opt/valor-henry-trend/src/infra/trading/install-henry-trend.sh
 
+# the picked coins and every candidate's screen evidence
+docker exec valor-henry-trend python -c "import json;d=json.load(open('/henry/universe.json'));print(d['symbols']);[print(s,r) for s,r in d['candidates'].items()]"
+
 # scoreboard
 docker exec valor-henry-trend python -m evolver.trading.henry_trend_runner report --root /henry --policy /config/henry-trend-policy.json
 
 # logs
 journalctl -u valor-henry-trend-deploy -n 20 --no-pager
 journalctl -u valor-henry-trend-daily -n 20 --no-pager
+docker logs --tail 20 valor-henry-trend-feed
 ```

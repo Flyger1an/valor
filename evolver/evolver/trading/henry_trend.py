@@ -1,12 +1,15 @@
 """Henry, live (paper): the frozen daily 50-day trend rule that passed the lab and the battery.
 
+v2 widens the book from the study's 6 coins to a declared, mechanically screened universe of up
+to 20 Alpaca coins (UNIVERSE below), with its own Alpaca feed. The rule itself is unchanged.
+
 Once a day, at the UTC daily close, the rule decides for each coin, using henry_lab.simulate,
 the exact code that was tested, run on the coin's daily bars:
   - hold while price is above a rising 50-day average; exit when that breaks
   - alts only enter while BTC is above its own 100-day average
   - each coin is one equal sleeve of the book, sized to a 2.5% daily-volatility target, never levered
   - a 3 ATR protective stop trails each position and is watched on live quotes all day
-Daily bars are built from the feed's closed 5-minute bars, after an initial seed of daily history.
+Daily bars are built from the trend feed's closed 5-minute Alpaca bars, after a seed of daily history.
 
 Paper fills at the next observed quote with adverse slippage and 25 bps fees. Nothing here can place
 a real order.
@@ -29,9 +32,21 @@ from .contracts import encode
 
 RULE = {"family": "ma_trend", "tf": "1d", "ma": 50, "side": "long", "btc_filter": True}
 RULE["id"] = L.config_id(RULE)
+# Declared before the screen ever ran. Picked by liquidity and data, never by past returns.
+UNIVERSE = {
+    "venue": "alpaca_us_crypto",
+    "candidates": ["AAVE", "ADA", "ALGO", "APT", "ARB", "ATOM", "AVAX", "BAT", "BCH", "BONK", "BTC", "CRV", "DOGE",
+                   "DOT", "ETC", "ETH", "FIL", "GRT", "HBAR", "HYPE", "LDO", "LINK", "LTC", "MKR", "NEAR", "ONDO", "PEPE",
+                   "POL", "RENDER", "SHIB", "SKY", "SOL", "SUI", "SUSHI", "TRUMP", "UNI", "WIF", "XLM", "XRP", "XTZ", "YFI"],
+    "excluded": "stablecoins and asset-backed tokens (USDT, USDC, USDG, DAI, PAXG, XAUT) are never candidates",
+    "min_history_days": 365, "max_median_spread_bps": 50.0, "spread_samples": 3,
+    "rank_by": "30-day average daily dollar volume on Alpaca", "top": 20, "always": ["BTC-USD"], "min_eligible": 10,
+    "frozen": "for the life of this book; a re-screen starts a new book",
+}
 TREND_RULES = {
-    "version": "henry-trend-v1", "rule": RULE["id"], "starting_cash": 500.0, "fee_bps": 25.0, "slippage_bps": 5.0,
-    "decision": "UTC daily close, built from the feed's closed 5-minute bars",
+    "version": "henry-trend-v2", "rule": RULE["id"], "starting_cash": 5000.0, "fee_bps": 25.0, "slippage_bps": 5.0,
+    "universe": UNIVERSE,
+    "decision": "UTC daily close, built from the trend feed's closed 5-minute Alpaca bars",
     "sizing": "equal sleeves (equity / coins), each at the lab's vol-targeted fraction, no leverage",
     "kill_switches": {"max_drawdown_pct": 35.0, "shadow_divergence_days": 3},
     "evidence": "lab one-shot PASS on 2017-21; robustness battery PASS (Bitstamp 2011-17, 30 unseen coins, stress)",
@@ -54,7 +69,7 @@ def day_of(t):
 
 
 class TrendBook:
-    def __init__(self, path, *, symbols=None, epoch=None):
+    def __init__(self, path, *, symbols=None, epoch=None, universe_hash=None):
         self.path = Path(path)
         if self.path.name != "henry_trend.sqlite":
             raise ValueError("the trend book uses its own henry_trend.sqlite")
@@ -75,6 +90,8 @@ class TrendBook:
             self.db.close()
             raise ValueError("initialization needs the symbols and an epoch")
         self.identity = {"rules": TREND_RULES, "epoch": epoch, "symbols": sorted(symbols)}
+        if universe_hash:
+            self.identity["universe_screen"] = universe_hash
         with self.db:
             self.db.execute("INSERT INTO meta VALUES ('identity',?)", (encode(self.identity),))
             self._save(self.initial_state())
@@ -341,6 +358,7 @@ class TrendBook:
                 "positions": {s: {"qty": round(p["qty"], 8), "entry": p["entry"], "stop": p["stop"]} for s, p in state["positions"].items()},
                 "pending": state["pending"], "latest_decision": latest, "recent_trades": state["trades"][-10:],
                 "closed_trades": len(state["trades"]),
+                "coins": self.identity["symbols"],
                 "daily_history_days": {s: len(v) for s, v in state["daily"].items()},
                 "shadow": shadow_check(state, shadow), "skips": state["skips"]}
 

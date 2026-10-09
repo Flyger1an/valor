@@ -19,6 +19,7 @@ from pathlib import Path
 from .contracts import Policy, encode
 from .engine import write_snapshot
 from .henry_trend import TrendBook, IntegrityError, digest
+from .henry_trend_feed import symbols_for
 from .ipc import read_object
 
 
@@ -72,7 +73,9 @@ def main(argv=None):
     lock = (root/"henry_trend.lock").open("a")
     if args.command in ("init", "run", "tick"):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    book = TrendBook(path, symbols=policy.allowed_instruments, epoch=time.time() if args.command == "init" else None)
+    universe = root/"universe.json"
+    book = TrendBook(path, symbols=symbols_for(universe, args.policy), epoch=time.time() if args.command == "init" else None,
+                     universe_hash=hashlib.sha256(universe.read_bytes()).hexdigest() if universe.exists() else None)
     shadow_path = Path(args.shadow) if args.shadow else root/"shadow.json"
     seed_path = Path(args.seed) if args.seed else root/"daily_seed.json"
 

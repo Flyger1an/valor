@@ -6,6 +6,7 @@ from pathlib import Path
 
 from evolver.trading import henry_lab as L
 from evolver.trading import henry_trend as T
+from evolver.trading import henry_trend_feed as F
 from evolver.trading import henry_trend_runner as R
 
 DAY = 86400
@@ -71,7 +72,7 @@ class TrendBookTest(unittest.TestCase):
         st = self.book.state()
         self.assertEqual(set(st["positions"]), {"BTC-USD", "ETH-USD"})
         for p in st["positions"].values():
-            self.assertLessEqual(p["cost"], 500/3+1, "each coin is one equal sleeve at most")
+            self.assertLessEqual(p["cost"], T.TREND_RULES["starting_cash"]/3*1.003, "each coin is one equal sleeve at most")
         days = [d["day"] for d in st["decisions"]]
         self.assertEqual(days, [D0-DAY, D0], "decides on the seeded day at start, then once per close")
 
@@ -103,7 +104,7 @@ class TrendBookTest(unittest.TestCase):
         st = self.book.state()
         for p in st["positions"].values():
             p["stop"] = None  # isolate the kill switch from the stop
-        st["peak"] = 1000.0
+        st["peak"] = T.TREND_RULES["starting_cash"]*2
         self.book.db.execute("INSERT OR REPLACE INTO meta VALUES ('state',?)", (json.dumps(st),))
         self.book.db.commit()
         self.feed.frame(D0+DAY+1200)
@@ -177,6 +178,93 @@ class RunnerTest(unittest.TestCase):
             f2 = R.capture(book, src, now+30)
             self.assertNotIn("BTC-USD", f2["bars"])
             book.close()
+
+
+class UniverseAndFeedTest(unittest.TestCase):
+    def test_screen_ranks_by_liquidity_and_applies_every_declared_filter(self):
+        rule = dict(T.UNIVERSE, candidates=["BTC", "ETH", "NEW", "WIDE", "GONE", "THIN", "DEAD"], top=3, min_eligible=3)
+        now_day = D0+10*DAY
+
+        def daily(sym):
+            n = {"NEW-USD": 100, "GONE-USD": 0}.get(sym, 400)
+            if sym == "DEAD-USD":
+                raise OSError("unlisted")
+            vol = {"BTC-USD": 10.0, "ETH-USD": 50.0, "WIDE-USD": 90.0, "THIN-USD": 1.0}.get(sym, 5.0)
+            return [[now_day-(n-k)*DAY, 1, 1, 1, 100.0, vol] for k in range(n)]
+
+        def quotes(symbols):
+            return {s: {"bid": 100.0, "ask": 101.0 if s == "WIDE-USD" else 100.1, "timestamp": 0} for s in symbols}
+        out = F.screen(rule, daily=daily, quotes=quotes, sleep=lambda _: None)
+        self.assertEqual(out["symbols"], ["BTC-USD", "ETH-USD", "THIN-USD"])
+        c = out["candidates"]
+        self.assertIn("days of history", c["NEW-USD"]["why"])
+        self.assertIn("spread", c["WIDE-USD"]["why"])
+        self.assertEqual(c["GONE-USD"]["why"], "not listed on Alpaca")
+        self.assertIn("no Alpaca data", c["DEAD-USD"]["why"])
+        self.assertEqual(c["ETH-USD"]["rank"], 1)
+
+    def test_screen_always_keeps_the_leader(self):
+        rule = dict(T.UNIVERSE, candidates=["BTC", "A", "B"], top=2, min_eligible=2)
+        daily = lambda s: [[D0-(400-k)*DAY, 1, 1, 1, 1.0, 1.0 if s == "BTC-USD" else 99.0] for k in range(400)]  # noqa: E731
+        quotes = lambda syms: {s: {"bid": 1.0, "ask": 1.0, "timestamp": 0} for s in syms}  # noqa: E731
+        out = F.screen(rule, daily=daily, quotes=quotes, sleep=lambda _: None)
+        self.assertIn("BTC-USD", out["symbols"])
+        self.assertEqual(len(out["symbols"]), 2)
+        with self.assertRaises(ValueError):   # no quotes at all: refuse, never a blind BTC-only book
+            F.screen(rule, daily=daily, quotes=lambda syms: {}, sleep=lambda _: None)
+        with self.assertRaises(ValueError):   # too few eligible coins
+            F.screen(dict(rule, min_eligible=5), daily=daily, quotes=quotes, sleep=lambda _: None)
+
+    def test_book_uses_the_universe_file_and_live_feed_files_flow_into_capture(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root/"universe.json").write_text(json.dumps({"symbols": ["ETH-USD", "BTC-USD"]}))
+            self.assertEqual(F.symbols_for(root/"universe.json", "/nonexistent"), ["BTC-USD", "ETH-USD"])
+            now = D0+3600
+
+            def bars(symbols, start, at):
+                return {s: [{"timestamp": float(t), "open": 1.0, "high": 1.1, "low": 0.9, "close": 1.0, "volume": 2.0}
+                            for t in range(int(at)-1800, int(at)-299, 300)] for s in symbols}
+            feed = F.LiveFeed(["BTC-USD", "ETH-USD"], root/"rt"/"market",
+                              quotes=lambda syms: {s: {"bid": 1.0, "ask": 1.001, "timestamp": now-2} for s in syms}, bars=bars)
+            feed.tick(now)
+            feed.tick(now+10)   # quotes only; bars wait 60 s
+            self.assertEqual(len(feed.histories["BTC-USD"]), 6)
+            book = T.TrendBook(root/"henry_trend.sqlite", symbols=["BTC-USD", "ETH-USD"], epoch=D0, universe_hash="abc")
+            frame = R.capture(book, root/"rt", now+10)
+            self.assertEqual(set(frame["quotes"]), {"BTC-USD", "ETH-USD"})
+            self.assertEqual(len(frame["bars"]["ETH-USD"]), 6)
+            self.assertEqual(book.identity["universe_screen"], "abc")
+            book.close()
+            again = F.LiveFeed(["BTC-USD", "ETH-USD"], root/"rt"/"market", quotes=lambda s: {}, bars=lambda *a: {})
+            self.assertEqual(len(again.histories["ETH-USD"]), 6, "restart keeps the bars already written")
+
+    def test_twenty_coin_feed_file_stays_under_the_books_read_limit(self):
+        with tempfile.TemporaryDirectory() as d:
+            syms = [f"C{k:02d}-USD" for k in range(20)]
+            now = D0+5*DAY
+
+            def bars(symbols, start, at):
+                return {s: [{"timestamp": float(t), "open": 12345.678901, "high": 12399.123456, "low": 12300.987654,
+                             "close": 12350.456789, "volume": 1234.56789012}
+                            for t in range(int(at)-3*DAY, int(at)-299, 300)] for s in symbols}
+            feed = F.LiveFeed(syms, Path(d)/"market", quotes=lambda s: {}, bars=bars)
+            feed.tick(now)
+            size = (Path(d)/"market"/"signals.json").stat().st_size
+            self.assertLess(size, 2_000_000*0.8, f"{size} bytes")
+            self.assertEqual(len(feed.histories["C00-USD"]), F.KEEP_BARS)
+
+    def test_seed_falls_back_per_coin(self):
+        old_a, old_b = F.alpaca_daily, F.binance_daily
+        try:
+            F.alpaca_daily = lambda syms, days=420: {"BTC-USD": seed_bars(300)}
+            F.binance_daily = lambda s, days=420: seed_bars(250)
+            out = F.seed(["BTC-USD", "SOL-USD"])
+            self.assertEqual(len(out["daily"]["BTC-USD"]), 300)
+            self.assertEqual(len(out["daily"]["SOL-USD"]), 250)
+            self.assertIn("binance_archive_daily for SOL-USD", out["source"])
+        finally:
+            F.alpaca_daily, F.binance_daily = old_a, old_b
 
 
 if __name__ == "__main__":
