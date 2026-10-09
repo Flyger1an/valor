@@ -5,6 +5,45 @@ import json
 from .contracts import decimal as D
 
 
+def protection_current(book, now):
+    """Assess retained receipts without treating an old complete flag as live evidence.
+
+    This is a reporting gate only. It performs no broker calls, cancellations,
+    submissions, or recovery; a failed check means coverage is not verified.
+    """
+    value = book.get("protection", {})
+    if book.policy.mode not in {"demo", "live"} or value.get("complete") is not True:
+        return False
+    try:
+        for stamp in (value.get("checked_at"), book.get("broker_reconciled_at")):
+            if not 0 <= D(now) - D(stamp) <= book.policy.max_quote_age_seconds:
+                return False
+        positions = book.positions()
+        coverage = value.get("positions", {})
+        if set(positions) != set(coverage):
+            return False
+        active = {o["client_id"]: o for o in book.orders(pending_only=True, include_protection=True)
+                  if o["purpose"] == "protection"}
+        covered = set()
+        for symbol, position in positions.items():
+            proof = coverage[symbol]
+            order = active.get(proof.get("client_id"))
+            if proof.get("status") != "broker_held" or not order or order["status"] not in {"open", "partial"}:
+                return False
+            intent = json.loads(order["intent"])
+            remaining = D(intent["quantity"]) - D(order["quantity"])
+            residual = D(proof.get("residual_quantity", "0"))
+            increment = D(book.get("asset_increments", {})[symbol])
+            if (intent["instrument"] != symbol or intent["side"] != "sell" or remaining <= 0
+                    or remaining != D(proof["quantity"]) or not 0 <= residual < increment
+                    or remaining + residual != D(position["quantity"])):
+                return False
+            covered.add(order["client_id"])
+        return covered == set(active)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def assess(book, now):
     mode = book.policy.mode
     strategy_entries = {o["client_id"]: o for o in book.orders()
@@ -27,7 +66,7 @@ def assess(book, now):
         "three_fee_posting_days": len(fee_days) >= 3,
         "accounting_current": bool(accounting) and accounting.get("balance_match") == "confirmed"
                               and not accounting.get("fees_provisional") and not accounting.get("order_activity_lag"),
-        "broker_protection_current": book.get("protection", {}).get("complete", False),
+        "broker_protection_current": protection_current(book, now),
         "news_current": not book.get("news", {}).get("required") or not book.get("news", {}).get("entry_blocked", True),
         "no_unresolved_incident": not book.get("halt") and not book.get("entry_pause")
                                  and not book.orders(pending_only=True),

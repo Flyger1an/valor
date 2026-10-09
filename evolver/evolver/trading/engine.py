@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import os
 import time
@@ -35,9 +36,27 @@ class Engine:
     def _reconcile(self, now):
         if hasattr(self.broker, "reconcile"):
             try:
-                return self.broker.reconcile(now)
+                reconciled = self.broker.reconcile(now)
+                previous = self.book.get("reconciliation_error", {})
+                if reconciled and previous.get("active"):
+                    with self.book.db:
+                        self.book.set("reconciliation_error", {**previous, "active": False, "resolved_at": now})
+                        self.book.event(now, "broker.reconciliation_recovered", {"error_id": previous["error_id"]})
+                return reconciled
             except Exception as exc:
                 from .accounting import AccountingError
+                detail = exc.diagnostic() if isinstance(exc, AccountingError) else {
+                    "code": "broker_unavailable", "reason": "Broker reconciliation is unavailable", "details": {}}
+                error_id = hashlib.sha256(encode(detail).encode()).hexdigest()
+                previous = self.book.get("reconciliation_error", {})
+                repeated = previous.get("active") and previous.get("error_id") == error_id
+                failure = {**detail, "error_id": error_id, "active": True, "last_seen_at": now,
+                           "first_seen_at": previous["first_seen_at"] if repeated else now,
+                           "occurrences": previous["occurrences"]+1 if repeated else 1}
+                with self.book.db:
+                    self.book.set("reconciliation_error", failure)
+                    if not repeated:
+                        self.book.event(now, "broker.reconciliation_failed", failure)
                 if isinstance(exc, AccountingError):
                     self.book.halt("broker_accounting_mismatch", now)
                 with self.book.db:
@@ -141,6 +160,7 @@ class Engine:
                 "entry_pause": self.book.get("entry_pause", ""),
                 "news": self.book.get("news", {"required": False}),
                 "accounting": self.book.get("accounting", {}),
+                "reconciliation_error": self.book.get("reconciliation_error", {}),
                 "protection": self.book.get("protection", {"complete": self.policy.mode == "paper", "kind": "local_paper"}),
                 "dust": dust,
                 "protective_orders": [o for o in self.book.orders(pending_only=True, include_protection=True)

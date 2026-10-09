@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -78,6 +79,16 @@ class Worker:
     def _invalidate(self, request, reason, now):
         self.mailbox.invalidate(request, reason, now)
         self.book.event(now, reason, {"request": request["id"]})
+
+    @staticmethod
+    def _trade_review_blocked(snapshot):
+        # Reconciliation/protective work runs first in Engine.tick. Do not spend
+        # discretionary review calls on an uncertain account or duplicate exit.
+        # A supervisor pause alone must still permit a reviewed risk-reducing exit.
+        return bool(snapshot["halt"] or snapshot["pending_orders"] or snapshot["entry_pause"] in {
+            "broker_reconciliation_unavailable", "unresolved_order", "activity_lag",
+            "order_preparation_unconfirmed", "order_state_refresh",
+        })
 
     def _history_matches(self, request, now, symbol=None):
         from .history import binding_valid
@@ -248,6 +259,7 @@ class Worker:
                                "reason": "three consecutive losing closes after promotion"})
 
     def tick(self, now):
+        report_started = time.monotonic()
         self._news(now)
         quotes = self.quotes()
         snapshot = self.engine.tick(quotes, [], now)  # protective checks NEVER wait for a model
@@ -266,9 +278,11 @@ class Worker:
         pending = self.book.get("pending_reviews", {})
         for cid, item in list(pending.items()):
             request = item["request"]
-            if not self._history_matches(request, now, item["intent"]["instrument"]):
+            snapshot = self.engine.snapshot(quotes, now)
+            blocked = self._trade_review_blocked(snapshot)
+            if blocked or not self._history_matches(request, now, item["intent"]["instrument"]):
                 with self.book.db:
-                    self._invalidate(request, "review.history_changed", now)
+                    self._invalidate(request, "review.execution_blocked" if blocked else "review.history_changed", now)
                     seen = self.book.get("seen_signals", {})
                     self.book.set("seen_signals", {k: v for k, v in seen.items() if v != cid})
                 del pending[cid]
@@ -299,8 +313,8 @@ class Worker:
             del pending[cid]
         from .history import source_reason, window
         bars = self._history_data()
-        if not source_reason(bars, self.policy, now):
-            snapshot = self.engine.snapshot(quotes, now)
+        snapshot = self.engine.snapshot(quotes, now)
+        if not self._trade_review_blocked(snapshot) and not source_reason(bars, self.policy, now):
             seen = self.book.get("seen_signals", {})
             spec = BY_VERSION[self.book.get("active_strategy")]
             clean = {}
@@ -343,7 +357,9 @@ class Worker:
         from .costs import cost_summary
         snapshot["costs"] = cost_summary(snapshot, usage, now)
         from .readiness import assess
-        snapshot["readiness"] = assess(self.book, now)
+        # Receipt checks can complete after the tick's input timestamp. Evaluate
+        # reporting freshness at the end of that work without changing its clock.
+        snapshot["readiness"] = assess(self.book, now + max(0, time.monotonic() - report_started))
         snapshot["unaccounted_costs"] = snapshot["costs"]["unverified_costs"]
         if "estimated_cost_usd" in usage:
             snapshot["estimated_pnl_after_model_costs"] = str(decimal(snapshot["costs"]["net_trading_pnl_usd"]) - decimal(usage["estimated_cost_usd"]))
