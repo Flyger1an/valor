@@ -177,3 +177,26 @@ docker run --rm -u 0 -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e
 docker run --rm -u 0 --network none -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver \
   --entrypoint python "$BASE" -m evolver.trading.henry_tradfi run --data /data/tradfi.json.gz
 ```
+
+## Result, Oct 8 2026: stocks FAIL, FX FAIL. No stocks or FX book gets built on this rule.
+
+**Stocks: FAIL** on one check out of 7. In the FTSE 100, the rule's drawdown (57.4%) was worse than
+holding (52.6%). Everything else passed: it was profitable in 7 of 7 datasets and lost less than
+holding in all 6 named S&P crashes (2008: -22% vs -57%; COVID: -4% vs -34%) and in the Nikkei
+1990-92 bust (-3% vs -63%). It also cleared every stress test. But it earns roughly half of
+buy-and-hold (ETF basket 4.4%/yr vs 10.7%/yr), and its Sharpe beats holding in only 3 of 7 datasets
+(Nasdaq, Russell, Nikkei). In stocks it works as crash insurance that costs about half the return,
+not as an edge. That matches the published work on moving-average timing for equity indexes.
+
+**FX: FAIL** on all 7 checks. All 9 pairs lost money (portfolio -2.3%/yr, Sharpe -0.28, drawdown
+64%), and every neighboring MA was negative. Without the intrabar stop fills (the lag and
+double-cost paths) it sits around Sharpe 0, which suggests Yahoo's FX highs and lows trigger bad
+stops. It is still nowhere near the gate either way. At a 50-day horizon, FX since the late 1990s
+has no trend to ride.
+
+Why crypto and not these: crypto's big moves are huge and its crashes are 80%+, so stepping aside
+pays. Stocks drift up steadily, so time out of the market costs more than the crashes it avoids.
+FX mostly mean-reverts at this horizon.
+
+These datasets are now seen. Any new stocks or FX hypothesis needs a fresh holdout (other country
+indexes, other periods) and a new declared scorecard.
