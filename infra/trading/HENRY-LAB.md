@@ -109,3 +109,36 @@ docker run --rm -u 0 --network none -v /opt/henry-desk:/src:ro -v /opt/henry-des
   --entrypoint python "$BASE" -m evolver.trading.henry_carry test --data /data/carry_test.json.gz \
   --lessons /data/carry_lessons.json --ledger /data/henry_test_ledger.json
 ```
+
+# Robustness battery for the 50-day trend rule
+
+The 50-day trend rule passed its one-shot test on 2017-21. Before it is wired in, the battery runs
+it, frozen, on data it never saw, and judges it against a scorecard written before that data was
+fetched (`SCORECARD` in `evolver/trading/henry_battery.py`).
+
+The datasets:
+
+- BTC before Binance (Bitstamp, 2011 to 2017).
+- 30 unseen Binance coins, including collapsed ones (LUNA, FTT, WAVES, SRM, EOS, ICP and others),
+  over Aug 2017 to Sep 2021 and over Oct 2021 to now. A reused ticker is split into separate listings.
+- S&P 500, Nasdaq 100, gold, oil, TLT and EUR/USD from Stooq, from 1990.
+- Stress tests on the 2017-21 coins: acting 1 and 2 days late, double costs, MAs from 30 to 100 days,
+  and a 2,000-sample block bootstrap.
+
+It passes only if all of these hold:
+
+- drawdown is below buy-and-hold in every dataset
+- it is profitable in at least 75% of datasets
+- on collapsed coins it loses at most half of what holding lost
+- a day of lag keeps at least 70% of the Sharpe
+- it is still profitable at double costs
+- at least 4 of 6 neighboring MAs agree
+- the bootstrap shows Sharpe > 0 in at least 90% of resamples
+
+```bash
+docker run --rm -u 0 -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver --entrypoint python "$BASE" \
+  -m evolver.trading.henry_battery fetch --out /data/battery.json.gz
+docker run --rm -u 0 --network none -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver \
+  --entrypoint python "$BASE" -m evolver.trading.henry_battery run --battery /data/battery.json.gz \
+  --stress-data /data/henry_lab_2017_2021.json.gz
+```
