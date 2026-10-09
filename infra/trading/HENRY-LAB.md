@@ -142,3 +142,38 @@ docker run --rm -u 0 --network none -v /opt/henry-desk:/src:ro -v /opt/henry-des
   --entrypoint python "$BASE" -m evolver.trading.henry_battery run --battery /data/battery.json.gz \
   --stress-data /data/henry_lab_2017_2021.json.gz
 ```
+
+# Stocks and FX: does the rule travel? (henry_tradfi)
+
+The battery's Stooq leg never loaded, so the rule is untested outside crypto. Before any stocks or
+FX book is built, the same frozen rule runs on traditional markets, judged by scorecards written
+before the data was fetched (`SCORECARDS` in `evolver/trading/henry_tradfi.py`).
+
+Choices, declared up front:
+
+- **Stocks**: long only. Equity ETFs only enter while SPY is above its 100-day average (the BTC
+  filter's twin). Bonds, gold and commodities get no filter. Indexes and ETFs only, because free
+  single-stock history covers survivors. Costs: no commission, 1 bp slippage, 2 bp spread.
+- **FX**: long and short, no filter. Interest carry is not modeled (a known gap). Costs: 0.5 bp
+  slippage, 1.5 bp spread. Crypto perp funding is switched off for these runs.
+- **Data**: Yahoo's public chart API (adjusted closes for ETFs), ECB reference rates as an FX
+  fallback.
+
+Stocks pass only if: drawdown is below buy-and-hold in every dataset (6 world indexes from as far
+back as they go, plus a 16-ETF basket), profitable in 75% of datasets, it loses less than holding
+in at least 4 of the 6 named S&P crashes (1973-74, 1987, dot-com, 2008, COVID, 2022), and the ETF
+basket survives a day of lag, double costs, 4 of 6 neighboring MAs and the bootstrap. Crashes the
+data does not cover are reported as missing, never scored as losses.
+
+FX passes only if: portfolio Sharpe is at least 0.3, at least half the pairs are profitable, max
+drawdown is 25% or less, plus the same stress checks.
+
+Whatever passes gets a live paper book (stocks via Alpaca paper, FX via the OANDA practice
+executor). Whatever fails does not.
+
+```bash
+docker run --rm -u 0 -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver --entrypoint python "$BASE" \
+  -m evolver.trading.henry_tradfi fetch --out /data/tradfi.json.gz
+docker run --rm -u 0 --network none -v /opt/henry-desk:/src:ro -v /opt/henry-desk-data:/data -e PYTHONPATH=/src/evolver \
+  --entrypoint python "$BASE" -m evolver.trading.henry_tradfi run --data /data/tradfi.json.gz
+```
