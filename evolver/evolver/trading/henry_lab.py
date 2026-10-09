@@ -204,9 +204,10 @@ def funding_per_bar(bars, funding, period):
     return out
 
 
-def simulate(cfg, symbol, bars, funding, leader):
+def simulate(cfg, symbol, bars, funding, leader, trace=None):
     """Decide at each bar's close, act from the next bar. Returns per-bar (t, net return of the
-    sleeve, position) and the closed trades."""
+    sleeve, position) and the closed trades. If `trace` is a list, the protective stop in force
+    after each bar's decision is appended to it (live trading uses this exact code path)."""
     tf, period = cfg["tf"], TF[cfg["tf"]]
     t = [b[0] for b in bars]
     o, h, l, c = ([b[k] for b in bars] for k in (1, 2, 3, 4))
@@ -358,6 +359,8 @@ def simulate(cfg, symbol, bars, funding, leader):
             trail = c[i]-cur*3*a[i]  # catastrophe stop trails at 3 ATR
             stop = max(stop, trail) if cur > 0 else min(stop, trail)
         rows.append((t[i], r, pos))
+        if trace is not None:
+            trace.append(stop)
     return rows, trades
 
 
