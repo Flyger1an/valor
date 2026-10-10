@@ -180,6 +180,10 @@ def research_tick(policy, p, now):
                   "history_binding": binding, "history_boundary_at": saved.get("history_boundary_at")})
 
 
+QUIET_MARKET_HEALTH_SECONDS = 900  # some allowed quote changed within 15 min: the provider is not frozen
+HELD_QUOTE_HEALTH_SECONDS = 300    # a held asset can still be valued
+
+
 def status(outbox, now=None):
     now = time.time() if now is None else now
     snapshot = read_object(Path(outbox) / "snapshot.json", {})
@@ -189,10 +193,14 @@ def status(outbox, now=None):
     quotes = snapshot.get("quotes", {})
     positions = snapshot.get("positions", [])
     if "market_feed_received_at" in snapshot:
+        # Health means "the system works", not "the market is busy". Provider quote timestamps only
+        # advance when a price changes, so quiet hours (nights, weekends) routinely leave every
+        # quote older than 30 s. Each order still refuses a quote older than max_quote_age_seconds.
         feed_fresh = 0 <= now-snapshot["market_feed_received_at"] <= 30
-        held_fresh = all(p["instrument"] in quotes and Quote(**quotes[p["instrument"]]).fresh(now, 30) for p in positions)
+        held_fresh = all(p["instrument"] in quotes and Quote(**quotes[p["instrument"]]).fresh(now, HELD_QUOTE_HEALTH_SECONDS)
+                         for p in positions)
         usable_quotes = bool(quotes) and (not snapshot.get("entry_session_open", True)
-                                         or any(Quote(**q).fresh(now, 30) for q in quotes.values()))
+                                         or any(Quote(**q).fresh(now, QUIET_MARKET_HEALTH_SECONDS) for q in quotes.values()))
         market_healthy = feed_fresh and held_fresh and usable_quotes
     else:
         market_healthy = bool(quotes) and all(Quote(**q).fresh(now, 30) for q in quotes.values())

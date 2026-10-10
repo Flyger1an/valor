@@ -35,7 +35,10 @@ records. This parser is for Trading API activities, not Broker SSE records.
 - Conflicting amount fields, rebates, ambiguous zero fees, invalid numbers,
   unsupported currency/assets and non-executed status fail closed
 - Existing order-ID attribution remains exact; otherwise allocation is disclosed
-  as daily pro rata. Sell-side cash and buy-side base fees stay distinct. No fee
+  as daily pro rata within the eligible fill set. Allocation version 2 weights
+  that set by each fill's original rounded fee allowance, rather than raw proceeds
+  or quantity. It does not assert exact per-fill attribution without broker links.
+  Sell-side cash and buy-side base fees stay distinct. No fee
   is applied to whichever position happens to be open when it arrives
 - A settlement date can differ from its fill date. No automatic date shifting or
   amount matching is applied. `review_fee_allocation` records an immutable review
@@ -71,6 +74,62 @@ flows, never trading P&L, and preserves the existing external-cash-flow entry pa
 Unknown corrections and journals whose economic purpose is not demonstrably one
 of these two classifications require further review; do not force them into either.
 There is no automatic review, halt clearing, resume or policy migration.
+
+## Split-fill correction and settlement precision (2026-10-09)
+
+A single exit filled in two parts with approved rounded USD fee allowances of
+5 cents and 2 cents. Two unlinked broker fee records totaled 7 cents. The old
+proceeds-weighted allocation assigned about 5.6 cents to the first fill, then
+mistook its own allocation for a broker fee overrun. The unchanged production
+source reproduced `broker fees exceed the approved fee assumption` on a local
+backup with the newly captured account activities.
+
+Version 2 uses the existing rounded allowances as allocation weights. Thus a
+total within this eligible fill set's allowance cannot manufacture an individual
+overrun. Raw fee records, their aggregate amount, eligible fill sets, existing
+review bindings, and original fee ceilings remain unchanged. Genuine overruns
+still halt before publishing a projection. Conflicting order-linked or reviewed
+fill sets still require investigation; this is not a promise to accept every
+possible broker fee shape or settlement-date mismatch.
+
+The same authenticated paper capture exposed a separate monetary precision
+difference: summing full-precision quantity times price and then rounding the
+final cash balance did not match the broker. Rounding each fill's USD value to
+cents, then applying the actual posted USD fees, matched exactly. This is an
+empirically verified paper-account settlement model, not a claim that Alpaca's
+documentation guarantees this rounding rule for every account or half-cent tie.
+
+The adapter checks that deterministic model only with fully posted fees and
+whole-cent broker cash, alongside independent inventory/open-order checks. It
+records `cash_match_basis=per_fill_cent_settlement`, the broker cash, the computed
+settlement cash, and the exact precision difference. Once uniquely established,
+the model is pinned to the book so a later discrepancy cannot be excused by
+switching back to final-balance rounding. An unexplained one-cent difference
+still fails. The pre-existing provisional fee-reserve bridge is unchanged.
+
+Raw activities and high-precision lot costs/P&L are preserved. The rounding
+difference is disclosed separately and is not added to strategy profit. Account
+cash and reconstructed strategy P&L must therefore be reported with their bases,
+rather than presented as identical measurements.
+
+The engine now records a structured `reconciliation_error` with a safe reason,
+selected accounting facts, first/last occurrence times, and a repeat count. It
+emits one failure event per distinct active error, without logging arbitrary
+exception text or HTTP credentials. Successful reconciliation records recovery
+but does not automatically clear a hard halt.
+
+During a halt, unresolved ordinary order, activity lag, or order-state refresh,
+the worker invalidates stale review authority and does not queue more trade
+reviews. Evidence remains archived and recovery requires fresh reviews.
+Reconciliation and protective work still run first. Protection readiness now
+requires fresh, matching broker receipts instead of a retained `complete` flag.
+
+Private verification on 2026-10-09 used all 13 captured activities, including all
+six posted fee records, against a consistent backup. The corrected adapter passed
+full reconciliation with zero fee reserves, positions, pending orders, and net
+external flows. Repeat and restart replay preserved the projection, raw history,
+existing cash/fee reviews, policy, halt, supervisor, and unstarted live clock.
+This was offline replay of authenticated broker evidence, not a VPS deployment.
 
 ## Required private verification, before applying a review
 

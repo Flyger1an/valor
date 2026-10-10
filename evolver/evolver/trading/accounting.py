@@ -11,13 +11,32 @@ import datetime as dt
 import hashlib
 import json
 from collections import defaultdict
-from decimal import ROUND_UP
+from decimal import ROUND_HALF_EVEN, ROUND_UP
 
 from .contracts import Intent, TERMINAL, decimal as D, encode, utc_timestamp
 
 
 class AccountingError(ValueError):
-    pass
+    def __init__(self, message, *, code="accounting_validation_failed", details=None):
+        super().__init__(message)
+        self.code, self.details = code, details or {}
+
+    def diagnostic(self):
+        # Only explicitly constructed accounting facts enter the monitor. Never
+        # copy a generic exception string, HTTP response, headers or credentials.
+        descriptions = {
+            "fee_budget_exceeded": "Allocated fees exceed the approved rounded allowance",
+            "fee_attribution_missing": "Fee has no verified eligible fill set",
+            "activity_changed": "Broker changed an immutable activity",
+            "balance_mismatch": "Broker balances differ from supported journal projections",
+            "unknown_open_orders": "Broker open orders differ from reserved orders",
+        }
+        fields = {"fill_id", "fee_activity_id", "activity_id", "currency", "charged", "allowed",
+                  "broker_cash", "journal_cash", "fee_accrual_cash", "settlement_cash",
+                  "cash_matches", "quantity_matches"}
+        code = self.code if self.code in descriptions else "accounting_validation_failed"
+        return {"code": code, "reason": descriptions.get(code, "Accounting validation failed"),
+                "details": {k: v for k, v in self.details.items() if k in fields}}
 
 
 def day_at(stamp):
@@ -228,7 +247,8 @@ class ActivityJournal:
                 payload = encode(item)
                 existing = self.book.db.execute("SELECT payload FROM broker_activities WHERE id=?", (item["id"],)).fetchone()
                 if existing and existing[0] != payload:
-                    raise AccountingError("broker changed an existing activity; explicit correction review required")
+                    raise AccountingError("broker changed an existing activity; explicit correction review required",
+                                          code="activity_changed", details={"activity_id": item["id"]})
                 if not existing:
                     self.book.db.execute("INSERT INTO broker_activities VALUES (?,?,?,?)",
                                          (item["id"], item["activity_type"], payload, now))
@@ -310,6 +330,14 @@ class ActivityJournal:
             if sum((f["qty"] for f in group), D(0)) > Intent(**json.loads(orders[cid]["intent"])).quantity:
                 raise AccountingError("cumulative fills exceed the reserved quantity")
 
+        rate = policy.fee_bps / 10000
+        increments = book.get("asset_increments", {})
+        expected_fees = {}
+        for f in fills:
+            unit = D(increments.get(f["symbol"], "0.000000001")) if f["side"] == "buy" else D("0.01")
+            raw = (f["qty"] if f["side"] == "buy" else f["value"]) * rate
+            expected_fees[f["id"]] = (raw/unit).to_integral_value(rounding=ROUND_UP)*unit
+
         # A fee activity may represent a day or an individual order. Preserve that distinction.
         actual_quote, actual_base = defaultdict(lambda: D(0)), defaultdict(lambda: D(0))
         covered, allocations = set(), []
@@ -337,9 +365,17 @@ class ActivityJournal:
             else:
                 candidates = [f for f in eligible if fee.get("order_id") or f["day"] == fee_day]
             if not candidates:
-                raise AccountingError("fee cannot be attributed to a known fill; new entries remain blocked")
-            weights = [f["qty"] if base else f["value"] for f in candidates]
+                raise AccountingError("fee cannot be attributed to a known fill; new entries remain blocked",
+                                      code="fee_attribution_missing", details={"fee_activity_id": fee["id"]})
+            # Unlinked fees have no exact per-fill attribution. Allocate by each
+            # fill's already-approved rounded fee allowance, not by raw proceeds:
+            # a 5c + 2c split must not become 5.6c + 1.4c and falsely breach 5c.
+            # Original fee amounts and the original per-fill ceilings are unchanged.
+            weights = [expected_fees[f["id"]] for f in candidates]
             total, used = sum(weights, D(0)), D(0)
+            if not total:
+                raise AccountingError("broker fees exceed the approved fee assumption", code="fee_budget_exceeded",
+                                      details={"fee_activity_id": fee["id"], "charged": str(amount), "allowed": "0"})
             for index, (fill, weight) in enumerate(zip(candidates, weights)):
                 part = amount-used if index == len(candidates)-1 else amount*weight/total
                 used += part
@@ -348,19 +384,17 @@ class ActivityJournal:
                 allocations.append((fee["id"], fill["id"], str(part), symbol if base else "USD",
                                     method))
 
-        rate = policy.fee_bps / 10000
-        increments = book.get("asset_increments", {})
         quote_fee, base_fee, reserves = {}, {}, []
         for f in fills:
-            expected = (f["qty"] if f["side"] == "buy" else f["value"]) * rate
-            unit = D(increments.get(f["symbol"], "0.000000001")) if f["side"] == "buy" else D("0.01")
-            expected = (expected/unit).to_integral_value(rounding=ROUND_UP)*unit
+            expected = expected_fees[f["id"]]
             confirmed = (actual_base if f["side"] == "buy" else actual_quote)[f["id"]]
             # Until a reported fee exists, keep the whole conservative accrual. Same-day partial
             # fee postings cannot prematurely release the accrual for later fills that day.
             effective = max(expected, confirmed) if f["id"] not in covered or f["day"] == day_at(now) else confirmed
             if confirmed > expected + D("0.00000001"):
-                raise AccountingError("broker fees exceed the approved fee assumption")
+                raise AccountingError("broker fees exceed the approved fee assumption", code="fee_budget_exceeded",
+                                      details={"fill_id": f["id"], "currency": f["symbol"] if f["side"] == "buy" else "USD",
+                                               "charged": str(confirmed), "allowed": str(expected)})
             base_fee[f["id"]] = effective if f["side"] == "buy" else D(0)
             quote_fee[f["id"]] = effective if f["side"] == "sell" else D(0)
             if effective > confirmed:
@@ -370,11 +404,16 @@ class ActivityJournal:
 
         cash = policy.starting_cash + sum(flows, D(0))
         actual_cash, actual_qty = cash, defaultdict(lambda: D(0))
+        # A separate, exact cent-per-fill settlement model is checked against the
+        # independently fetched broker cash. Never use an arbitrary error band,
+        # change raw activities, or add this rounding difference to strategy gains.
+        settlement_cash = cash
         lots, closed, realized = {}, {}, D(0)
         for f in fills:
             fid, intent = f["id"], f["intent"]
             sign = 1 if f["side"] == "buy" else -1
             actual_cash -= sign*f["value"] + actual_quote[fid]
+            settlement_cash -= sign*f["value"].quantize(D("0.01"), rounding=ROUND_HALF_EVEN) + actual_quote[fid]
             actual_qty[f["symbol"]] += sign*f["qty"] - actual_base[fid]
             cash -= sign*f["value"] + quote_fee[fid]
             if f["side"] == "buy":
@@ -452,11 +491,13 @@ class ActivityJournal:
                       "net_cash_flows": str(sum(flows, D(0))), "cash_flow_count": len(flows),
                       "opening_cash_journal_ids": opening_journals,
                       "reviewed_fee_activity_ids": sorted(fee_reviews),
-                      "daily_fee_allocation": "proportional to filled quantity for base fees; proceeds for USD fees",
+                      "daily_fee_allocation": "proportional to each eligible fill's approved rounded fee allowance; not exact per-fill attribution",
+                      "fee_allocation_version": 2,
                       "last_ingested_at": now}
         digest = hashlib.sha256(encode({"positions": positions, "dust": dust, "cash": cash, "closed": closed,
                                         "orders": order_updates, "allocations": allocations}).encode()).hexdigest()
         projection = {"cash": actual_cash, "positions": dict(actual_qty), "accounting": accounting,
+                      "settlement_cash": settlement_cash,
                       "effective_cash": cash,
                       "effective_positions": {s: p["quantity"] for s, p in {**positions, **dust}.items()}}
         if not persist:

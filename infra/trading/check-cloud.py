@@ -46,6 +46,7 @@ def main():
     else:
         print(json.dumps({key: snapshot.get(key) for key in
                           ('healthy', 'mode', 'timestamp', 'equity', 'cash', 'realized_pnl', 'halt',
+                           'entry_pause', 'broker_reconciled_at', 'reconciliation_error',
                            'study_started_at', 'study_deadline', 'paper_deadline', 'model_usage', 'host')}, sort_keys=True))
     if backup:
         print(json.dumps({'downloaded_backup': backup}))

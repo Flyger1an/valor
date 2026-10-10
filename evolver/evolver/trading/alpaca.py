@@ -305,14 +305,14 @@ class AlpacaBroker:
                 expected_open.add(row["client_id"])
         live_open = set(a["open_order_ids"])
         if live_open - expected_open:
-            raise AccountingError("unknown or missing open orders")  # a broker order we never reserved
+            raise AccountingError("unknown or missing open orders", code="unknown_open_orders")
         if expected_open - live_open:
             # Race: an order looked up as open filled/cancelled before this account snapshot. Refresh
             # each by its durable client ID; only a still-open-yet-unlisted order is a real mismatch.
             for cid in expected_open - live_open:
                 fresh = self.lookup(cid)
                 if fresh is None or fresh.status in {"open", "partial"}:
-                    raise AccountingError("unknown or missing open orders")
+                    raise AccountingError("unknown or missing open orders", code="unknown_open_orders")
             with self.book.db:
                 self.book.set("entry_pause", "order_state_refresh")
                 self.book.event(now, "broker.order_state_refreshed",
@@ -324,12 +324,21 @@ class AlpacaBroker:
         tolerance = decimal("0.00000001")
         cash_confirmed = abs(a["cash"]-projection["cash"]) <= tolerance
         cash_estimated = abs(a["cash"]-projection["effective_cash"]) <= tolerance
+        cash_settlement_confirmed = False
         # The authenticated account endpoint rounds USD cash to cents while FILL carries
         # sub-cent execution values. Require an exact rounded match, not a loose $0.01 band.
         cents = decimal("0.01")
         if a["cash"] == a["cash"].quantize(cents):
             cash_confirmed |= a["cash"] == projection["cash"].quantize(cents)
             cash_estimated |= a["cash"] == projection["effective_cash"].quantize(cents)
+            # Posted fees can expose per-fill USD cent rounding that differs from
+            # rounding the final high-precision balance. Require this exact model
+            # to match; never use it to excuse unposted fees or an arbitrary delta.
+            cash_settlement_confirmed = (not projection["accounting"]["fees_provisional"]
+                and a["cash"] == projection["settlement_cash"].quantize(cents))
+        if self.book.get("cash_settlement_model") == "per_fill_cent":
+            cash_confirmed = False  # an established model cannot switch to excuse a later discrepancy
+        cash_estimated &= projection["accounting"]["fees_provisional"]
         # Owner decision 2026-10-08: the account endpoint shows cash in whole cents, and unposted
         # fees are reserved rounded UP per fill while the broker withholds the exact rate, so an
         # exact match is often impossible. Until fees post, accept cent-rounded broker cash between
@@ -348,8 +357,13 @@ class AlpacaBroker:
                        decimal(self.asset(s)["min_trade_increment"]) for s in self.policy.allowed_instruments)
         qty_confirmed = quantities_match(gross)
         qty_estimated = quantities_match(effective)
-        if not ((cash_confirmed or cash_estimated) and (qty_confirmed or qty_estimated)):
-            raise AccountingError("broker balance differs from journal and explicit fee accruals")
+        if not ((cash_confirmed or cash_estimated or cash_settlement_confirmed) and (qty_confirmed or qty_estimated)):
+            raise AccountingError("broker balance differs from journal and explicit fee accruals", code="balance_mismatch",
+                                  details={"broker_cash": str(a["cash"]), "journal_cash": str(projection["cash"]),
+                                           "fee_accrual_cash": str(projection["effective_cash"]),
+                                           "settlement_cash": str(projection["settlement_cash"]),
+                                           "cash_matches": cash_confirmed or cash_estimated or cash_settlement_confirmed,
+                                           "quantity_matches": qty_confirmed or qty_estimated})
         self.journal.rebuild(now)
         accounting = projection["accounting"]
         reason = "activity_lag" if accounting["order_activity_lag"] else ""
@@ -357,7 +371,12 @@ class AlpacaBroker:
             reason = "external_cash_flow_review_required"
         with self.book.db:
             self.book.set("entry_pause", reason)
-            self.book.set("accounting", {**accounting, "balance_match": "confirmed" if cash_confirmed and qty_confirmed else "fee_accrual_bridge",
+            if cash_settlement_confirmed and not cash_confirmed:
+                self.book.set("cash_settlement_model", "per_fill_cent")
+            self.book.set("accounting", {**accounting, "balance_match": "confirmed" if (cash_confirmed or cash_settlement_confirmed) and qty_confirmed else "fee_accrual_bridge",
+                           "cash_match_basis": "full_precision_or_final_cent_rounding" if cash_confirmed else
+                                "per_fill_cent_settlement" if cash_settlement_confirmed else "provisional_fee_accrual",
+                           "broker_cash": str(a["cash"]), "cent_settlement_cash": str(projection["settlement_cash"]),
                            "cash_precision_difference": str(a["cash"]-projection["cash"])})
         if reason:
             return False
