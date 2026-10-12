@@ -325,7 +325,7 @@ class MonitorAndCostTests(unittest.TestCase):
         with self.assertRaises(BrokerError):
             recent_bars(Pages(True), ("BTC-USD", "ETH-USD"), NOW)
 
-    def test_idle_quote_is_allowed_only_when_flat_outside_entry_session(self):
+    def test_quiet_market_is_healthy_but_a_frozen_feed_or_unpriced_holding_is_not(self):
         from evolver.trading.runtime import status
         snap = {"timestamp": NOW, "broker_reconciled_at": NOW, "market_feed_received_at": NOW,
                 "entry_session_open": False, "positions": [],
@@ -335,10 +335,16 @@ class MonitorAndCostTests(unittest.TestCase):
             def check(**updates):
                 path.write_text(json.dumps({**snap, **updates}))
                 return status(directory, NOW)["healthy"]
+            quote = lambda age: {"BTC-USD": {"instrument": "BTC-USD", "bid": "100", "ask": "100.01", "timestamp": NOW-age}}
             self.assertTrue(check())
-            self.assertFalse(check(entry_session_open=True))
-            self.assertFalse(check(positions=[{"instrument": "BTC-USD"}]))
-            self.assertFalse(check(market_feed_received_at=NOW-31))
+            # 24/7 session, quiet weekend: quotes only advance on price changes (incident 2026-10-10).
+            self.assertTrue(check(entry_session_open=True))
+            self.assertTrue(check(entry_session_open=True, quotes=quote(899)))
+            self.assertFalse(check(entry_session_open=True, quotes=quote(901)))  # provider frozen
+            self.assertTrue(check(positions=[{"instrument": "BTC-USD"}]))
+            self.assertFalse(check(positions=[{"instrument": "BTC-USD"}], quotes=quote(301)))  # holding unpriced
+            self.assertFalse(check(market_feed_received_at=NOW-31))  # our feed is not running
+            self.assertFalse(check(broker_reconciled_at=NOW-31))     # broker not reconciled
 
     def test_costs_exclude_deposits_and_do_not_double_count_spread(self):
         snap = {"equity": "602", "starting_cash": "500", "mode": "demo", "runtime_started_at": NOW,
