@@ -161,6 +161,7 @@ class Engine:
                 "news": self.book.get("news", {"required": False}),
                 "accounting": self.book.get("accounting", {}),
                 "reconciliation_error": self.book.get("reconciliation_error", {}),
+                "order_visibility": self.book.get("broker_order_visibility", {}),
                 "protection": self.book.get("protection", {"complete": self.policy.mode == "paper", "kind": "local_paper"}),
                 "dust": dust,
                 "protective_orders": [o for o in self.book.orders(pending_only=True, include_protection=True)

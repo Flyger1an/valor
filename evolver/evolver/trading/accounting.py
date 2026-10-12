@@ -30,10 +30,13 @@ class AccountingError(ValueError):
             "activity_changed": "Broker changed an immutable activity",
             "balance_mismatch": "Broker balances differ from supported journal projections",
             "unknown_open_orders": "Broker open orders differ from reserved orders",
+            "order_identity_mismatch": "Broker order identity differs from the reserved order",
+            "order_state_regressed": "A terminal broker order was reported open again",
+            "order_visibility_timeout": "Known broker order endpoints did not converge within 30 seconds",
         }
         fields = {"fill_id", "fee_activity_id", "activity_id", "currency", "charged", "allowed",
                   "broker_cash", "journal_cash", "fee_accrual_cash", "settlement_cash",
-                  "cash_matches", "quantity_matches"}
+                  "cash_matches", "quantity_matches", "known_client_ids", "unknown_order_count", "elapsed_seconds"}
         code = self.code if self.code in descriptions else "accounting_validation_failed"
         return {"code": code, "reason": descriptions.get(code, "Accounting validation failed"),
                 "details": {k: v for k, v in self.details.items() if k in fields}}

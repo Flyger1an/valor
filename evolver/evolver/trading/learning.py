@@ -34,7 +34,15 @@ def evaluate(policy: Policy, histories: dict, state: dict, incumbent: str):
     specs = [BY_VERSION[v] for v in policy.approved_strategies if v in BY_VERSION]
     timestamps = sorted({b["timestamp"] for bars in histories.values() for b in bars})
     if len(timestamps) < 600:
-        return {**state, "status": "collecting_data", "bars": len(timestamps)}
+        # A gap can shorten the usable sample after a challenger was frozen. Keep
+        # that selection, but do not publish old metrics or evidence with the new
+        # research heartbeat. The available candle end is not a forward result.
+        selection = {key: state[key] for key in ("cutoff", "challenger") if key in state}
+        return {**selection, "status": "collecting_data", "bars": len(timestamps),
+                "required_bars": 600, "end": timestamps[-1] if timestamps else None,
+                "incumbent": incumbent, "forward_evaluation_performed": False,
+                "data_source": "market_bars",
+                "return_basis": "screening returns on position notional, not account performance"}
     # Freeze selection at the most recent CLOSED candle; only subsequently arriving bars
     # count as prospective evidence. The initial historical sample is training, not validation.
     cut = state.get("cutoff") or timestamps[-1] + 300

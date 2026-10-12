@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 from decimal import ROUND_DOWN, ROUND_UP
 
-from .contracts import Intent, OrderReport, Policy, Quote, decimal, encode, utc_timestamp
+from .contracts import Intent, OrderReport, Policy, Quote, TERMINAL, decimal, encode, utc_timestamp
 
 
 class BrokerError(RuntimeError):
@@ -187,6 +187,12 @@ class AlpacaBroker:
         if qty > intent.quantity:
             raise BrokerError("broker filled more than the reserved quantity")
         report = OrderReport(cid, state, qty, qty*decimal(order.get("filled_avg_price") or 0), decimal(0))
+        if receipt["report"] and json.loads(receipt["report"])["status"] in TERMINAL and state not in TERMINAL:
+            # Preserve a confirmed terminal receipt even if a later endpoint
+            # response regresses, including before the ledger projection catches up.
+            from .accounting import AccountingError
+            raise AccountingError("terminal order became open", code="order_state_regressed",
+                                  details={"known_client_ids": [cid]})
         with self.book.db:
             self.book.db.execute("UPDATE alpaca_receipts SET remote_id=?,report=? WHERE client_id=?",
                                  (order["id"], encode(report.__dict__), cid))
@@ -275,6 +281,73 @@ class AlpacaBroker:
         # movements; no immediate balance inference or double application through Ledger.
         return self.reconcile(now)
 
+    def _open_orders_agree(self, account, now):
+        """Pause on bounded visibility lag for verified orders; never admit an unknown order.
+
+        Per-order GET and the open-order list are separate broker observations. A
+        confirmed cancellation can disappear from either one first. During a
+        disagreement no projection, replacement stop, or discretionary order is
+        submitted. A persistent disagreement still requires operator recovery.
+        """
+        from .accounting import AccountingError
+        receipts = {r["client_id"]: dict(r) for r in self.book.db.execute(
+            "SELECT client_id,remote_id,report FROM alpaca_receipts WHERE report IS NOT NULL")}
+        expected = {cid for cid, row in receipts.items()
+                    if json.loads(row["report"])["status"] in {"open", "partial"}}
+        listed = set(account["open_order_ids"])
+        different = expected ^ listed
+        previous = self.book.get("broker_order_visibility", {})
+        if not different:
+            if previous.get("active"):
+                with self.book.db:
+                    self.book.set("broker_order_visibility", {**previous, "active": False, "resolved_at": now})
+                    self.book.event(now, "broker.order_visibility_recovered", {})
+            return True
+        # Confirm ownership before looking anything up. Do not log arbitrary IDs
+        # supplied by an outside order; their count suffices to explain the halt.
+        unknown = [cid for cid in different if cid not in receipts
+                   or not receipts[cid]["remote_id"] or self.book.order(cid) is None]
+        if unknown:
+            raise AccountingError("unknown open orders", code="unknown_open_orders",
+                                  details={"unknown_order_count": len(unknown)})
+        observations = []
+        for cid in sorted(different):
+            try:
+                fresh = self.lookup(cid)  # validates symbol, side, size, stop and remote identity
+            except BrokerHTTPError:
+                raise
+            except BrokerError:
+                raise AccountingError("known order identity differs", code="order_identity_mismatch",
+                                      details={"known_client_ids": [cid]}) from None
+            if fresh is None:
+                raise AccountingError("known order disappeared", code="unknown_open_orders",
+                                      details={"known_client_ids": [cid]})
+            observations.append({"client_id": cid, "lookup_status": fresh.status, "listed_open": cid in listed})
+        refreshed = {r["client_id"] for r in self.book.db.execute(
+            "SELECT client_id,report FROM alpaca_receipts WHERE report IS NOT NULL")
+            if json.loads(r["report"])["status"] in {"open", "partial"}}
+        with self.book.db:
+            self.book.set("entry_pause", "order_state_refresh")
+        if refreshed == listed:
+            # A fill/cancellation raced the list. Re-ingest activities on the next
+            # cycle before using the newly terminal order, as with the original exit fix.
+            with self.book.db:
+                self.book.event(now, "broker.order_state_refreshed", {"client_ids": sorted(different)})
+            return False
+        first = previous["first_seen_at"] if previous.get("active") else now
+        state = {"active": True, "first_seen_at": first, "last_seen_at": now,
+                 "observations": observations}
+        with self.book.db:
+            self.book.set("broker_order_visibility", state)
+            if not previous.get("active"):
+                self.book.event(now, "broker.order_visibility_wait", state)
+        # One continuous window, even if the affected order IDs change or the
+        # worker restarts. This does not clear an existing hard halt.
+        if now-first >= 30:
+            raise AccountingError("order endpoints did not converge", code="order_visibility_timeout",
+                                  details={"known_client_ids": sorted(different), "elapsed_seconds": now-first})
+        return False
+
     def reconcile(self, now, protect=True):
         from .accounting import AccountingError
         self.initialize(now)
@@ -299,25 +372,8 @@ class AlpacaBroker:
                 self.book.set("entry_pause", "activity_lag")
             return False
         a = self.account()
-        expected_open = set()
-        for row in self.book.db.execute("SELECT client_id,report FROM alpaca_receipts WHERE report IS NOT NULL"):
-            if json.loads(row["report"])["status"] in {"open", "partial"}:
-                expected_open.add(row["client_id"])
-        live_open = set(a["open_order_ids"])
-        if live_open - expected_open:
-            raise AccountingError("unknown or missing open orders", code="unknown_open_orders")
-        if expected_open - live_open:
-            # Race: an order looked up as open filled/cancelled before this account snapshot. Refresh
-            # each by its durable client ID; only a still-open-yet-unlisted order is a real mismatch.
-            for cid in expected_open - live_open:
-                fresh = self.lookup(cid)
-                if fresh is None or fresh.status in {"open", "partial"}:
-                    raise AccountingError("unknown or missing open orders", code="unknown_open_orders")
-            with self.book.db:
-                self.book.set("entry_pause", "order_state_refresh")
-                self.book.event(now, "broker.order_state_refreshed",
-                                {"client_ids": sorted(expected_open - live_open)})
-            return False  # re-ingest the new fills on the next cycle; never infer them here
+        if not self._open_orders_agree(a, now):
+            return False
         gross = {s: q for s, q in projection["positions"].items() if q}
         effective = projection["effective_positions"]
         actual = {s: q for s, q in a["positions"].items() if q}

@@ -35,6 +35,14 @@ class SupervisorPromptTests(unittest.TestCase):
         command, _ = self.run_supervision(policy(), action="pause_entries")
         self.assertEqual(command["action"], "pause_entries")
 
+    def test_supervisor_knows_response_bound_and_oversize_reason_is_not_a_command(self):
+        p=policy();body={'policy_hash':p.fingerprint,'snapshot':{'supervisor':{'scale':'1'}}}
+        def oversized(system,prompt):
+            self.assertIn('At most 900 characters',json.loads(prompt)['required_output']['reason'])
+            return encode({'action':'resume_entries','risk_scale':'1','reason':'x'*1501})
+        with self.assertRaisesRegex(ValueError,'explanation'):
+            process_request({'kind':'supervision','body':body},p,oversized,oversized,NOW)
+
 
 if __name__ == "__main__":
     unittest.main()

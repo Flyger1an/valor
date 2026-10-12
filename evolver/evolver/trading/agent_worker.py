@@ -137,9 +137,24 @@ def process_request(request, policy, analyst, reviewer, now):
     body = request["body"]
     if body["policy_hash"] != policy.fingerprint:
         raise ValueError("request policy mismatch")
-    # The immutable request retains every binding. Each market card already
-    # includes its exact window binding, so do not send the duplicate map twice.
+    # The immutable request retains every binding and full candidate. Models need the
+    # window hash and last bar, not repeated generation metadata or duplicate intent IDs.
     snapshot = {k: v for k, v in body.get("snapshot", {}).items() if k != "history_binding"}
+    if snapshot.get("outcome_feedback"):
+        snapshot.pop("recent_strategy_outcomes", None)
+    if snapshot.get("market_evidence"):
+        market = snapshot["market_evidence"]
+        cards = {}
+        for symbol, original in market["symbols"].items():
+            card = {k: v for k, v in original.items() if k != "history_binding"}
+            binding = original.get("history_binding", {})
+            card["window_hash"] = binding.get("window_hash")
+            card["last_closed_bar"] = binding.get("last_bar")
+            if card.get("candidate"):
+                card["candidate"] = {k: v for k, v in card["candidate"].items() if k in
+                                     {"side", "quantity", "limit_price", "stop_price", "notional", "execution_block"}}
+            cards[symbol] = card
+        snapshot["market_evidence"] = {**market, "symbols": cards}
     if request["kind"] == "trade":
         if snapshot.get("market_evidence"):
             market = snapshot["market_evidence"]
@@ -153,7 +168,7 @@ def process_request(request, policy, analyst, reviewer, now):
         current_scale = body["snapshot"]["supervisor"]["scale"]
         schema = {"action": "pause_entries, resume_entries, or reduce_risk",
                   "risk_scale": f"A decimal string greater than 0 and at most 1. Current scale is {current_scale}. pause_entries keeps the current scale; reduce_risk can only lower it. resume_entries may restore toward 1 when evidence supports recovery, subject to an independent review. Never use zero.",
-                  "reason": "Explain opportunity, recent strategy outcomes, costs, news and health. Restore risk only on improved evidence, never just to recover losses."}
+                  "reason": "At most 900 characters. Explain decisive price evidence, outcome/cost lessons, news and health. Restore risk only on improved evidence, never to recover losses."}
         result = parse_object(analyst(SYSTEM + "\nSupervise an experiment. Paper exploration is allowed inside the policy; simulated profits do not validate live trading. "
                               "Use market_evidence for actual closed-candle signals, indicators, candidates, and explicit blockers. "
                               "A candidate blocked only by the supervisor pause may still be judged on its price evidence; "
@@ -164,6 +179,8 @@ def process_request(request, policy, analyst, reviewer, now):
                               encode({"policy": prompt_policy(policy), "snapshot": snapshot, "required_output": schema})))
         if set(result) != set(schema):
             raise ValueError("invalid supervision output")
+        if not isinstance(result["reason"], str) or not 1 <= len(result["reason"]) <= 1500:
+            raise ValueError("invalid supervision explanation")
         if result["action"] not in {"pause_entries", "resume_entries", "reduce_risk"} or not 0 < decimal(result["risk_scale"]) <= 1:
             raise ValueError("supervisor exceeded approved risk scale")
         command = {**result, "policy_hash": policy.fingerprint, "issued_at": now,
