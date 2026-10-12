@@ -153,6 +153,7 @@ class Worker:
                     self.engine.supervise(result, now)
                     with self.book.db:
                         self.book.set("supervision_history_binding", request["body"]["snapshot"].get("history_binding"))
+                        self.book.set("supervision_feedback_accepted_hash", request["body"]["snapshot"].get("outcome_feedback", {}).get("evidence_hash"))
                 except (ValueError, TypeError, KeyError):
                     with self.book.db:
                         self.book.event(now, "supervisor.rejected", {"request": request["id"]})
@@ -165,7 +166,7 @@ class Worker:
         news_changed = news_context != self.book.get("supervision_news_context", news_context)
         feedback = self._outcomes()
         feedback_hash = feedback.get("evidence_hash")
-        feedback_changed = bool(feedback.get("summary", {}).get("trades")) and feedback_hash != self.book.get("supervision_feedback_hash")
+        feedback_changed = bool(feedback.get("summary", {}).get("trades")) and feedback_hash != self.book.get("supervision_feedback_accepted_hash")
         utc = dt.datetime.fromtimestamp(now, dt.timezone.utc)
         session = utc.hour in self.policy.trading_hours_utc and utc.weekday() in self.policy.trading_weekdays_utc
         if (not session or snapshot["halt"] or self.engine._expiry_reason(now)
@@ -179,7 +180,6 @@ class Worker:
             self.book.set("supervision_request", request)
             self.book.set("last_supervision_request", now)
             self.book.set("supervision_news_context", news_context)
-            self.book.set("supervision_feedback_hash", feedback_hash)
 
     def _learning(self, snapshot, now):
         if snapshot["halt"] or self.engine._expiry_reason(now):

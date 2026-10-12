@@ -76,7 +76,7 @@ class OrchestrationTests(unittest.TestCase):
         lease=self.book.get('supervisor')
         with self.book.db:
             self.book.set('supervisor',{**lease,'expires_at':NOW+self.p.supervisor_ttl_seconds})
-            self.book.set('supervision_feedback_hash','older-outcomes')
+            self.book.set('supervision_feedback_accepted_hash','older-outcomes')
             self.book.set('last_supervision_request',NOW-299)
         snap=self.worker.engine.snapshot({'BTC-USD':self.q},NOW)
         with patch.object(self.worker,'_outcomes',return_value={'evidence_hash':'new-outcomes','summary':{'trades':1}}):
@@ -85,8 +85,32 @@ class OrchestrationTests(unittest.TestCase):
             self.worker._supervision(snap,NOW+2)
         req=self.book.get('supervision_request')
         self.assertEqual(req['kind'],'supervision')
-        self.assertEqual(self.book.get('supervision_feedback_hash'),req['body']['snapshot']['outcome_feedback']['evidence_hash'])
+        self.assertEqual(self.book.get('supervision_feedback_accepted_hash'),'older-outcomes')
         self.assertEqual(self.book.get('supervisor'),{**lease,'expires_at':NOW+self.p.supervisor_ttl_seconds})
+
+    def test_rejected_feedback_review_is_not_marked_learned_and_retries_with_throttle(self):
+        lease=self.book.get('supervisor')
+        with self.book.db:
+            self.book.set('supervisor',{**lease,'expires_at':NOW+self.p.supervisor_ttl_seconds})
+            self.book.set('supervision_feedback_accepted_hash','older-outcomes')
+            self.book.set('last_supervision_request',NOW-301)
+        snap=self.worker.engine.snapshot({'BTC-USD':self.q},NOW)
+        feedback={'evidence_hash':'new-outcomes','summary':{'trades':1}}
+        with patch.object(self.worker,'_outcomes',return_value=feedback),patch.object(self.worker,'_history_matches',return_value=True):
+            self.worker._supervision(snap,NOW);req=self.book.get('supervision_request')
+            bad=dict(action='resume_entries',risk_scale='1',policy_hash=self.p.fingerprint,
+                     issued_at=NOW,expires_at=NOW+self.p.supervisor_ttl_seconds,reason='x'*1501)
+            self.worker.mailbox.answer(req,bad,NOW+.1)
+            self.worker._supervision(snap,NOW+1)
+            self.assertIsNone(self.book.get('supervision_request'))
+            self.assertEqual(self.book.get('supervision_feedback_accepted_hash'),'older-outcomes')
+            self.worker._supervision(snap,NOW+299)
+            self.assertIsNone(self.book.get('supervision_request'))
+            self.worker._supervision(snap,NOW+300);retry=self.book.get('supervision_request')
+            good={**bad,'issued_at':NOW+300,'expires_at':NOW+300+self.p.supervisor_ttl_seconds,'reason':'bounded follow-up'}
+            self.worker.mailbox.answer(retry,good,NOW+300.1)
+            self.worker._supervision(snap,NOW+301)
+            self.assertEqual(self.book.get('supervision_feedback_accepted_hash'),'new-outcomes')
 
     def test_mailbox_rejects_modified_envelopes_and_future_responses(self):
         box = self.worker.mailbox
