@@ -168,7 +168,7 @@ def process_request(request, policy, analyst, reviewer, now):
         current_scale = body["snapshot"]["supervisor"]["scale"]
         schema = {"action": "pause_entries, resume_entries, or reduce_risk",
                   "risk_scale": f"A decimal string greater than 0 and at most 1. Current scale is {current_scale}. pause_entries keeps the current scale; reduce_risk can only lower it. resume_entries may restore toward 1 when evidence supports recovery, subject to an independent review. Never use zero.",
-                  "reason": "Explain opportunity, recent strategy outcomes, costs, news and health. Restore risk only on improved evidence, never just to recover losses."}
+                  "reason": "At most 900 characters. Explain decisive price evidence, outcome/cost lessons, news and health. Restore risk only on improved evidence, never to recover losses."}
         result = parse_object(analyst(SYSTEM + "\nSupervise an experiment. Paper exploration is allowed inside the policy; simulated profits do not validate live trading. "
                               "Use market_evidence for actual closed-candle signals, indicators, candidates, and explicit blockers. "
                               "A candidate blocked only by the supervisor pause may still be judged on its price evidence; "
@@ -179,6 +179,8 @@ def process_request(request, policy, analyst, reviewer, now):
                               encode({"policy": prompt_policy(policy), "snapshot": snapshot, "required_output": schema})))
         if set(result) != set(schema):
             raise ValueError("invalid supervision output")
+        if not isinstance(result["reason"], str) or not 1 <= len(result["reason"]) <= 1500:
+            raise ValueError("invalid supervision explanation")
         if result["action"] not in {"pause_entries", "resume_entries", "reduce_risk"} or not 0 < decimal(result["risk_scale"]) <= 1:
             raise ValueError("supervisor exceeded approved risk scale")
         command = {**result, "policy_hash": policy.fingerprint, "issued_at": now,

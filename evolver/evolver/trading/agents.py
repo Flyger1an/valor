@@ -94,7 +94,7 @@ def review_entry(intent: Intent, policy: Policy, snapshot: dict, analyst, review
     """
     digest = intent_digest(intent)
     schema = {"verdict": "approve or reject", "intent_hash": digest,
-              "policy_hash": policy.fingerprint, "reason": "brief evidence-based explanation"}
+              "policy_hash": policy.fingerprint, "reason": "At most 900 characters: decisive price evidence, after-cost thesis, and relevant outcome lessons."}
     news = snapshot.get("news", {})
     if news.get("required"):
         if intent.side == "buy" and news.get("entry_blocked", True):
@@ -102,7 +102,7 @@ def review_entry(intent: Intent, policy: Policy, snapshot: dict, analyst, review
             return False
         schema.update(news_hash=news["evidence_hash"], news_risk="low, elevated, high, or unknown",
                       news_evidence_ids="Array of relevant supplied headline IDs; cite at least one when headlines exist",
-                      news_reason="Explain how the supplied news affects this exact trade; distinguish absence of news from unavailable coverage")
+                      news_reason="At most 600 characters: how supplied news affects this exact trade; distinguish absence of news from unavailable coverage")
     facts = {"intent": asdict(intent), "policy": asdict(policy), "snapshot": snapshot,
              "execution_math": execution_math(intent, policy, snapshot), "required_output": schema}
     for role, model in (("analyst", analyst), ("reviewer", reviewer)):
