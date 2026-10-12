@@ -184,11 +184,22 @@ class ApprovalEvidenceTests(unittest.TestCase):
             facts['recent_strategy_outcomes']=[{'lot_id':str(i)*64,'instrument':'BTC-USD','strategy':CATALOG[0].version,
                 'opened':NOW-3600,'closed':NOW-600,'quantity':'0.00250000','cost_basis':'25.00000000',
                 'proceeds':'25.08000000','realized_pnl':'0.08000000'} for i in range(6)]
+            from evolver.trading.feedback import compact, summarize
+            from test_trading_feedback import Book
+            feedback_book=Book()
+            try:
+                for i in range(6):feedback_book.add('lot'+str(i)*64,100+i*20)
+                report=summarize(feedback_book)
+                report['groups']=[{**report['groups'][0],'instrument':symbol} for symbol in p.allowed_instruments]
+                facts['outcome_feedback']=compact(report)
+            finally:feedback_book.db.close()
             self.assertEqual(sum(bool(c['candidate']) for c in facts['market_evidence']['symbols'].values()),6)
             def model(system,prompt):
                 self.assertLessEqual(len((system+prompt).encode()),23850)  # keep >=150 B headroom under the 24 KB hard cap
                 decoded=json.loads(prompt);value=decoded['snapshot']
                 self.assertEqual(value['news']['items'],facts['news']['items'])
+                self.assertEqual(value['outcome_feedback'],facts['outcome_feedback'])
+                self.assertNotIn('recent_strategy_outcomes',value)
                 if 'intent' in decoded:
                     self.assertEqual(set(value['market_evidence']['symbols']),{'BTC-USD'})
                     return encode({**decoded['required_output'],'verdict':'reject','reason':'fixture'})

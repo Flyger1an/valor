@@ -137,9 +137,24 @@ def process_request(request, policy, analyst, reviewer, now):
     body = request["body"]
     if body["policy_hash"] != policy.fingerprint:
         raise ValueError("request policy mismatch")
-    # The immutable request retains every binding. Each market card already
-    # includes its exact window binding, so do not send the duplicate map twice.
+    # The immutable request retains every binding and full candidate. Models need the
+    # window hash and last bar, not repeated generation metadata or duplicate intent IDs.
     snapshot = {k: v for k, v in body.get("snapshot", {}).items() if k != "history_binding"}
+    if snapshot.get("outcome_feedback"):
+        snapshot.pop("recent_strategy_outcomes", None)
+    if snapshot.get("market_evidence"):
+        market = snapshot["market_evidence"]
+        cards = {}
+        for symbol, original in market["symbols"].items():
+            card = {k: v for k, v in original.items() if k != "history_binding"}
+            binding = original.get("history_binding", {})
+            card["window_hash"] = binding.get("window_hash")
+            card["last_closed_bar"] = binding.get("last_bar")
+            if card.get("candidate"):
+                card["candidate"] = {k: v for k, v in card["candidate"].items() if k in
+                                     {"side", "quantity", "limit_price", "stop_price", "notional", "execution_block"}}
+            cards[symbol] = card
+        snapshot["market_evidence"] = {**market, "symbols": cards}
     if request["kind"] == "trade":
         if snapshot.get("market_evidence"):
             market = snapshot["market_evidence"]

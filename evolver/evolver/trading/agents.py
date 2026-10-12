@@ -25,6 +25,13 @@ If Fed coverage is degraded but crypto news is current, weigh the missing covera
 Use the supplied execution_math for numeric facts; do not substitute mental arithmetic. An IOC buy limit
 slightly ABOVE the ask is an intentional execution ceiling, allowed within max_slippage_bps. A 1% stop
 distance means 0.01 times position notional, not 10% and not 1% of account equity.
+Use outcome_feedback to learn from executed wins AND losses: distinguish price losses, costs erasing
+gross gains, and operational exits. Fee reserves remain provisional. A small losing sample is not a
+reason to require profitable history, switch strategy untested, or pause all healthy paper exploration.
+For each buy, explain a testable price-based reason it may clear the supplied fee break-even hurdle,
+and what current evidence supports or weakens repeating the observed setup. Risk-limit compliance alone
+is not evidence of edge; a configured profit target and EMA gap are not expected returns. Cite relevant
+supplied outcome lot IDs when useful. Do not invent causal news effects or winning counterfactuals.
 """
 
 
@@ -69,6 +76,13 @@ def execution_math(intent, policy, snapshot):
                       gross_loss_at_assumed_stop_usd=str(gross_loss),
                       round_trip_fee_estimate_usd=str(fees), planned_loss_with_fees_usd=str(gross_loss+fees),
                       loss_limit_is_not_a_fill_guarantee=True)
+        # Buy fees reduce base inventory; sell fees reduce proceeds. Exact rate-only arithmetic,
+        # explicitly excluding per-fill rounding and unknown future spread/slippage.
+        rate = policy.fee_bps/10000
+        breakeven = price/(1-rate)**2
+        result.update(rate_only_break_even_exit_usd=str(breakeven),
+                      rate_only_break_even_rise_bps=str((breakeven/price-1)*10000),
+                      break_even_limitations="Fee rates only; rounding, split fills and exit slippage can raise the hurdle. No return forecast.")
     return result
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import sqlite3
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -19,6 +20,8 @@ class Worker:
         self.state, self.outbox, self.inbox = Path(state), Path(outbox), Path(inbox)
         self.market, self.research = Path(market), Path(research)
         self.news = Path(news) if news is not None else None
+        self._feedback_key = None
+        self._feedback = None
         self.mailbox = Mailbox(self.outbox / "requests", self.inbox / "responses")
         self.engine = Engine(book, policy, broker, kill_path=self.state / "kill.flag")
         if not all(v in BY_VERSION for v in policy.approved_strategies):
@@ -46,7 +49,7 @@ class Worker:
         engineering = {o["client_id"] for o in orders
                        if json.loads(o["intent"])["reason"].startswith("broker_demo_validation")}
         outcomes = [c for c in self.book.closed_trades() if c.get("lot_id") not in engineering]
-        facts.update(recent_strategy_outcomes=outcomes[-6:],
+        facts.update(outcome_feedback=self._outcomes(),
                      strategy_completed_trades=len(outcomes),
                      strategy_realized_pnl=str(sum((decimal(c["realized_pnl"]) for c in outcomes), decimal(0))),
                      engineering_excluded=True, daily_equity=snapshot["daily_equity"][-7:],
@@ -69,6 +72,21 @@ class Worker:
         facts["market_evidence"] = evidence
         facts["history_binding"] = binding
         return facts
+
+    def _outcomes(self):
+        from .feedback import compact, summarize
+        key = self.book.get("broker_projection_hash") if self.book.get("activity_accounting") else self.book.revision
+        if key != self._feedback_key or self._feedback is None:
+            try:
+                report = summarize(self.book)
+                write_snapshot(self.outbox / "outcome-evidence" / (report["evidence_hash"] + ".json"), report)
+                write_snapshot(self.outbox / "outcome-feedback.json", report)
+                self._feedback = compact(report)
+            except (ValueError, KeyError, TypeError, ArithmeticError, OSError, sqlite3.Error) as exc:
+                # Diagnostics never disable reconciliation or pre-authorized protective exits.
+                self._feedback = {"status": "unavailable", "error_type": type(exc).__name__}
+            self._feedback_key = key
+        return self._feedback
 
     def _history_data(self):
         try:
@@ -145,10 +163,14 @@ class Worker:
         lease = self.book.get("supervisor")
         news_context = {k: snapshot.get("news", {}).get(k) for k in ("evidence_hash", "status")}
         news_changed = news_context != self.book.get("supervision_news_context", news_context)
+        feedback = self._outcomes()
+        feedback_hash = feedback.get("evidence_hash")
+        feedback_changed = bool(feedback.get("summary", {}).get("trades")) and feedback_hash != self.book.get("supervision_feedback_hash")
         utc = dt.datetime.fromtimestamp(now, dt.timezone.utc)
         session = utc.hour in self.policy.trading_hours_utc and utc.weekday() in self.policy.trading_weekdays_utc
         if (not session or snapshot["halt"] or self.engine._expiry_reason(now)
-                or (lease["expires_at"] - now > self.policy.supervisor_ttl_seconds / 2 and not news_changed)
+                or (lease["expires_at"] - now > self.policy.supervisor_ttl_seconds / 2
+                    and not news_changed and not feedback_changed)
                 or now - self.book.get("last_supervision_request", 0) < 300):
             return
         request = self.mailbox.put("supervision", {"policy_hash": self.policy.fingerprint,
@@ -157,6 +179,7 @@ class Worker:
             self.book.set("supervision_request", request)
             self.book.set("last_supervision_request", now)
             self.book.set("supervision_news_context", news_context)
+            self.book.set("supervision_feedback_hash", feedback_hash)
 
     def _learning(self, snapshot, now):
         if snapshot["halt"] or self.engine._expiry_reason(now):
@@ -350,6 +373,7 @@ class Worker:
         snapshot["entry_session_open"] = utc.hour in self.policy.trading_hours_utc and utc.weekday() in self.policy.trading_weekdays_utc
         usage = read_object(self.inbox / "responses" / "usage.json", {})
         snapshot["model_usage"] = usage
+        snapshot["outcome_feedback"] = self._outcomes()
         snapshot["market_source"] = bars.get("source", "unavailable")
         assessment = read_object(self.research / "assessment.json", {})
         snapshot["pipeline"] = {"signals_updated_at": bars.get("timestamp", 0),

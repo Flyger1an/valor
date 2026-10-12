@@ -72,6 +72,22 @@ class OrchestrationTests(unittest.TestCase):
             self.worker.tick(NOW+32)
             self.assertFalse(self.book.orders())
 
+    def test_new_outcomes_refresh_supervision_without_bypassing_call_throttle(self):
+        lease=self.book.get('supervisor')
+        with self.book.db:
+            self.book.set('supervisor',{**lease,'expires_at':NOW+self.p.supervisor_ttl_seconds})
+            self.book.set('supervision_feedback_hash','older-outcomes')
+            self.book.set('last_supervision_request',NOW-299)
+        snap=self.worker.engine.snapshot({'BTC-USD':self.q},NOW)
+        with patch.object(self.worker,'_outcomes',return_value={'evidence_hash':'new-outcomes','summary':{'trades':1}}):
+            self.worker._supervision(snap,NOW)
+            self.assertIsNone(self.book.get('supervision_request'))
+            self.worker._supervision(snap,NOW+2)
+        req=self.book.get('supervision_request')
+        self.assertEqual(req['kind'],'supervision')
+        self.assertEqual(self.book.get('supervision_feedback_hash'),req['body']['snapshot']['outcome_feedback']['evidence_hash'])
+        self.assertEqual(self.book.get('supervisor'),{**lease,'expires_at':NOW+self.p.supervisor_ttl_seconds})
+
     def test_mailbox_rejects_modified_envelopes_and_future_responses(self):
         box = self.worker.mailbox
         req = box.put('trade', {'policy_hash': self.p.fingerprint}, NOW, 30)
