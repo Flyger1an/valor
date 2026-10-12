@@ -267,6 +267,10 @@ class BrokerTests(unittest.TestCase):
         self.assertFalse(self.broker.active_protection())
         self.assertEqual(self.book.performance()["closed_trades"], 1)
         self.assertLess(D(self.book.get("realized_pnl")), 0)
+        from evolver.trading.feedback import summarize
+        feedback = summarize(self.book)
+        self.assertEqual(feedback['summary']['attributed_trades'], 1)
+        self.assertIn('broker_protective_stop', feedback['exit_counts'])
 
     def test_actual_broker_cent_precision_and_base_fee_rounding(self):
         self.http.price = D("85396.87")

@@ -84,7 +84,9 @@ class Worker:
                 self._feedback = compact(report)
             except (ValueError, KeyError, TypeError, ArithmeticError, OSError, sqlite3.Error) as exc:
                 # Diagnostics never disable reconciliation or pre-authorized protective exits.
-                self._feedback = {"status": "unavailable", "error_type": type(exc).__name__}
+                # Do not cache failure under a successful projection key: retry when
+                # storage recovers even if the account stays flat with no new fills.
+                return {"status": "unavailable", "error_type": type(exc).__name__}
             self._feedback_key = key
         return self._feedback
 

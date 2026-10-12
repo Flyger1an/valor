@@ -27,7 +27,17 @@ def attribution(trade, fills, orders):
     sq = sum((D(f["qty"]) for f in sells), D(0))
     sv = sum((D(f["qty"])*D(f["price"]) for f in sells), D(0))
     entry = orders[lot]
+    # Check every exit order against the reconciled projection too. A partial
+    # journal excerpt must not turn a surviving low/high-price fill into a VWAP.
+    exit_groups = defaultdict(list)
+    for fill in sells:
+        exit_groups[fill["cid"]].append(fill)
+    exits_complete = all(
+        sum((D(f["qty"]) for f in group), D(0)) == D(orders[cid]["quantity"])
+        and sum((D(f["qty"])*D(f["price"]) for f in group), D(0)) == D(orders[cid]["value"])
+        for cid, group in exit_groups.items())
     if (not 0 < sq <= bq or bq != D(entry["quantity"]) or bv != D(entry["value"])
+            or not exits_complete
             or any(f["stamp"] < trade["opened"] or f["stamp"] > trade["closed"] for f in buys)):
         return {"attribution": "incomplete_fill_evidence"}
     gross = bq*sv/sq-bv
@@ -43,19 +53,21 @@ def attribution(trade, fills, orders):
 
 def summarize(book):
     """Recompute from current projections so later fee postings revise memory, not raw facts."""
-    orders = {o["client_id"]: {**o, "intent": json.loads(o["intent"])} for o in book.orders()}
+    orders = {o["client_id"]: {**o, "intent": json.loads(o["intent"])}
+              for o in book.orders(include_protection=True)}
     engineering = {cid for cid, o in orders.items()
                    if o["intent"]["reason"].startswith("broker_demo_validation")}
     trades = [t for t in book.closed_trades() if t.get("lot_id") not in engineering]
     fills = []
     if book.get("activity_accounting"):
+        from .accounting import normalize_symbol
         remote = {r["remote_id"]: r["client_id"] for r in book.db.execute("SELECT * FROM alpaca_receipts")}
         for row in book.db.execute("SELECT payload FROM broker_activities WHERE kind='FILL'"):
             f = json.loads(row[0])
             cid = remote.get(f["order_id"])
             if cid in orders:
                 fills.append({**f, "cid": cid, "stamp": utc_timestamp(f["transaction_time"]),
-                              "symbol": f["symbol"].replace("/", "-")})
+                              "symbol": normalize_symbol(f["symbol"], book.policy)})
     halts = [r[0] for r in book.db.execute("SELECT timestamp FROM events WHERE event='risk.halted'")]
     rows = []
     for t in trades:

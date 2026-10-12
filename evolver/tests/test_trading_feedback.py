@@ -25,7 +25,9 @@ class Book:
         self.meta = {'activity_accounting': True, 'broker_projection_hash': 'first'}
         self.order_rows = []; self.trades = []
     def get(self, k, default=None): return self.meta.get(k, default)
-    def orders(self): return copy.deepcopy(self.order_rows)
+    def orders(self, include_protection=False):
+        return copy.deepcopy([o for o in self.order_rows
+                              if include_protection or o.get('purpose') != 'protection'])
     def closed_trades(self): return copy.deepcopy(self.trades)
     def add(self, name='lot1', at=100, net='-.1', engineering=False, price='100.1'):
         for cid, side, qty, px, stamp in [(name,'buy','0.25','100',at), (name+'exit','sell','0.249375',price,at+10)]:
@@ -85,6 +87,34 @@ class FeedbackTests(unittest.TestCase):
         self.assertEqual(report['summary']['attributed_trades'],0)
         self.assertEqual(D(report['summary']['net_pnl_usd']),D('-.1'))
 
+    def test_broker_held_stop_fills_are_included_in_learning(self):
+        self.book.add(price='99', net='-.4')
+        self.book.order_rows[-1]['purpose'] = 'protection'
+        intent = json.loads(self.book.order_rows[-1]['intent'])
+        intent['reason'] = 'broker_protective_stop'
+        self.book.order_rows[-1]['intent'] = encode(intent)
+        report = summarize(self.book)
+        self.assertEqual(report['summary']['attributed_trades'], 1)
+        self.assertEqual(report['exit_counts'], {'broker_protective_stop': 1})
+        self.assertEqual(D(report['summary']['gross_fill_price_pnl_usd']), D('-.25'))
+
+    def test_compact_broker_symbol_uses_the_same_normalization_as_accounting(self):
+        self.book.add()
+        before = summarize(self.book)
+        self.book.db.execute("UPDATE broker_activities SET payload=replace(payload,'BTC/USD','BTCUSD')")
+        self.assertEqual(summarize(self.book), before)
+
+    def test_missing_part_of_a_split_exit_never_fabricates_cost_attribution(self):
+        self.book.add()
+        row = self.book.db.execute("SELECT rowid,payload FROM broker_activities WHERE payload LIKE '%lot1exitfill%'").fetchone()
+        fill = json.loads(row['payload'])
+        fill['qty'] = str(D(fill['qty'])/2)
+        self.book.db.execute('UPDATE broker_activities SET payload=? WHERE rowid=?', (encode(fill), row['rowid']))
+        report = summarize(self.book)
+        self.assertEqual(report['summary']['attributed_trades'], 0)
+        self.assertEqual(report['trades'][0]['attribution'], 'incomplete_fill_evidence')
+        self.assertEqual(D(report['summary']['net_pnl_usd']), D('-.1'))
+
     def test_operational_halt_is_visible_without_discarding_the_loss(self):
         self.book.add();self.book.db.execute('INSERT INTO events VALUES (?,?)',(105,'risk.halted'))
         report=summarize(self.book)
@@ -125,6 +155,17 @@ class FeedbackTests(unittest.TestCase):
         worker=Worker.__new__(Worker);worker.book=self.book;worker._feedback_key=None;worker._feedback=None
         with patch('evolver.trading.feedback.summarize',side_effect=sqlite3.OperationalError('fixture')):
             self.assertEqual(worker._outcomes()['status'],'unavailable')
+
+    def test_temporary_archive_failure_recovers_without_a_new_trade(self):
+        self.book.add();worker=Worker.__new__(Worker)
+        worker.book=self.book;worker._feedback_key=None;worker._feedback=None
+        with tempfile.TemporaryDirectory() as temp:
+            worker.outbox=Path(temp)
+            with patch('evolver.trading.worker.write_snapshot', side_effect=OSError('temporary fixture')):
+                self.assertEqual(worker._outcomes()['status'], 'unavailable')
+            recovered = worker._outcomes()
+            self.assertEqual(recovered['summary']['trades'], 1)
+            self.assertTrue((worker.outbox/'outcome-feedback.json').exists())
 
     def test_both_reviewers_receive_current_feedback_independently(self):
         self.book.add();p=self.book.policy;seen=[]
